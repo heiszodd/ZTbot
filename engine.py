@@ -10,19 +10,17 @@ def classify_volatility(atr_ratio: float) -> dict:
 
 
 def calc_htf_modifier(htf_1h: str, htf_4h: str, bias: str) -> dict:
-    """Both 1H and 4H must agree for +0.5. Either conflicting = -1.0."""
     aligned  = (htf_1h == bias) and (htf_4h == bias)
     conflict = (htf_1h != bias and htf_1h != "Neutral") or \
                (htf_4h != bias and htf_4h != "Neutral")
-    if aligned:  return {"modifier":  0.5, "label": "Both 1H+4H aligned"}
-    if conflict: return {"modifier": -1.0, "label": "HTF conflict"}
+    if aligned:  return {"modifier":  0.5, "label": "Both 1H+4H aligned ✅"}
+    if conflict: return {"modifier": -1.0, "label": "HTF conflict ❌"}
     return               {"modifier":  0.0, "label": "HTF neutral"}
 
 
 def get_session(utc_hour: int = None) -> str:
     if utc_hour is None:
         utc_hour = datetime.now(timezone.utc).hour
-    # Overlap must be checked before London/NY (it's a subset of both)
     if 12 <= utc_hour < 16: return "Overlap"
     if  8 <= utc_hour < 16: return "London"
     if 13 <= utc_hour < 21: return "NY"
@@ -31,31 +29,14 @@ def get_session(utc_hour: int = None) -> str:
 
 
 def score_setup(setup: dict, model: dict) -> dict:
-    """
-    Full scoring pipeline:
-      ① Mandatory gate  — fail = invalidate immediately
-      ② News gate       — high-impact news within 30 min = invalidate
-      ③ Raw score       — sum weights of all passing rules
-      ④ Flat modifiers  — ATR volatility + HTF alignment
-      ⑤ Tier assignment — A / B / C or None
-    """
     result = {
-        "valid":            True,
-        "invalid_reason":   None,
-        "mandatory_failed": [],
-        "passed_rules":     [],
-        "failed_rules":     [],
-        "raw_score":        0.0,
-        "modifiers":        [],
-        "modifier_total":   0.0,
-        "final_score":      0.0,
-        "tier":             None,
-        "risk_pct":         None,
-        "vol_label":        "Normal",
-        "htf_label":        "Neutral",
-        "session":          get_session(),
+        "valid": True, "invalid_reason": None,
+        "mandatory_failed": [], "passed_rules": [], "failed_rules": [],
+        "raw_score": 0.0, "modifiers": [], "modifier_total": 0.0,
+        "final_score": 0.0, "tier": None, "risk_pct": None,
+        "vol_label": "Normal", "htf_label": "Neutral",
+        "session": get_session(),
     }
-
     passed_ids = set(setup.get("passed_rule_ids", []))
 
     # ① Mandatory gate
@@ -63,10 +44,8 @@ def score_setup(setup: dict, model: dict) -> dict:
         if rule.get("mandatory") and rule["id"] not in passed_ids:
             result["valid"] = False
             result["mandatory_failed"].append(rule["name"])
-
     if not result["valid"]:
-        failed = ", ".join(result["mandatory_failed"])
-        result["invalid_reason"] = f"Mandatory rule failed: {failed}"
+        result["invalid_reason"] = "Mandatory rule failed: " + ", ".join(result["mandatory_failed"])
         return result
 
     # ② News gate
@@ -88,10 +67,7 @@ def score_setup(setup: dict, model: dict) -> dict:
     vol = classify_volatility(setup.get("atr_ratio", 1.0))
     result["vol_label"] = vol["label"]
     if vol["modifier"] != 0:
-        result["modifiers"].append({
-            "label": f"Volatility ({vol['label']})",
-            "value": vol["modifier"]
-        })
+        result["modifiers"].append({"label": f"Volatility ({vol['label']})", "value": vol["modifier"]})
 
     htf = calc_htf_modifier(
         setup.get("htf_1h", "Neutral"),
@@ -100,10 +76,7 @@ def score_setup(setup: dict, model: dict) -> dict:
     )
     result["htf_label"] = htf["label"]
     if htf["modifier"] != 0:
-        result["modifiers"].append({
-            "label": htf["label"],
-            "value": htf["modifier"]
-        })
+        result["modifiers"].append({"label": htf["label"], "value": htf["modifier"]})
 
     result["modifier_total"] = sum(m["value"] for m in result["modifiers"])
     result["final_score"]    = round(result["raw_score"] + result["modifier_total"], 2)
@@ -117,3 +90,20 @@ def score_setup(setup: dict, model: dict) -> dict:
         result["tier"] = "C"; result["risk_pct"] = TIER_RISK["C"]
 
     return result
+
+
+def calc_trade_levels(price: float, direction: str, atr: float) -> dict:
+    """
+    Calculate entry, SL, TP from live price and ATR.
+    SL = 1.5× ATR from entry, TP = 3× ATR (RR 1:2).
+    """
+    if direction == "BUY":
+        entry = price
+        sl    = round(price - atr * 1.5, 5)
+        tp    = round(price + atr * 3.0, 5)
+    else:
+        entry = price
+        sl    = round(price + atr * 1.5, 5)
+        tp    = round(price - atr * 3.0, 5)
+    rr = 2.0
+    return {"entry": entry, "sl": sl, "tp": tp, "rr": rr}
