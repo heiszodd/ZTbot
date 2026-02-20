@@ -6,6 +6,9 @@ load_dotenv()
 TOKEN   = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
 DB_URL  = os.getenv("DB_URL", "")
+CRYPTOCOMPARE_API_KEY = os.getenv("CRYPTOCOMPARE_API_KEY", "")
+CRYPTOCOMPARE_BASE_URL = os.getenv("CRYPTOCOMPARE_BASE_URL", "https://min-api.cryptocompare.com")
+CRYPTOCOMPARE_EXTRA_PARAMS = os.getenv("CRYPTOCOMPARE_EXTRA_PARAMS", "ztbot")
 
 # ── Tier risk sizing ──────────────────────────────────
 TIER_RISK = {"A": 2.0, "B": 1.0, "C": 0.5}
@@ -54,12 +57,6 @@ TIMEFRAMES = ["1m", "5m", "15m", "30m", "1H", "4H"]
 SESSIONS_LIST = ["London", "NY", "Asia", "Overlap", "Any"]
 BIASES = ["Bullish", "Bearish"]
 
-# ── Binance public market-data endpoints ─────────────
-BINANCE_BASE_URLS = [
-    "https://api.binance.com",
-    "https://api1.binance.com",
-    "https://api-gcp.binance.com",
-]
 SCANNER_INTERVAL = 60
 SUPPORTED_PAIRS = ALL_PAIRS
 SUPPORTED_TIMEFRAMES = TIMEFRAMES

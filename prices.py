@@ -1,4 +1,4 @@
-"""Market data, Binance integrations, and utility pricing functions."""
+"""Market data utilities powered by CryptoCompare for historical and live-ready feeds."""
 from __future__ import annotations
 
 import hashlib
@@ -13,29 +13,38 @@ from statistics import mean
 
 import requests
 
-from config import BINANCE_BASE_URLS, CRYPTO_PAIRS
+try:
+    import pandas as pd
+except Exception:  # optional dependency for backtest dataframe export
+    pd = None
+
+from config import (
+    CRYPTO_PAIRS,
+    CRYPTOCOMPARE_API_KEY,
+    CRYPTOCOMPARE_BASE_URL,
+    CRYPTOCOMPARE_EXTRA_PARAMS,
+)
 
 log = logging.getLogger(__name__)
 
-BINANCE_KLINES_PATH = "/api/v3/klines"
-BINANCE_TIME_PATH = "/api/v3/time"
-BINANCE_EXCHANGE_INFO_PATH = "/api/v3/exchangeInfo"
-BINANCE_MAX_LIMIT = 1000
-KLINE_INTERVAL_MS = {
-    "1m": 60_000,
-    "3m": 180_000,
-    "5m": 300_000,
-    "15m": 900_000,
-    "30m": 1_800_000,
-    "1h": 3_600_000,
-    "2h": 7_200_000,
-    "4h": 14_400_000,
-    "6h": 21_600_000,
-    "8h": 28_800_000,
-    "12h": 43_200_000,
-    "1d": 86_400_000,
+CRYPTOCOMPARE_HISTO_MINUTE_PATH = "/data/v2/histominute"
+CRYPTOCOMPARE_HISTO_HOUR_PATH = "/data/v2/histohour"
+CRYPTOCOMPARE_HISTO_DAY_PATH = "/data/v2/histoday"
+CRYPTOCOMPARE_PRICE_MULTI_PATH = "/data/pricemulti"
+CRYPTOCOMPARE_STREAM_URL = "wss://streamer.cryptocompare.com/v2"
+CRYPTOCOMPARE_MAX_LIMIT = 2000
+
+KLINE_INTERVAL_SEC = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
 }
-CACHE_DIR = Path(".cache/binance")
+
+CACHE_DIR = Path(".cache/cryptocompare")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 FALLBACK_PRICES = {
@@ -45,16 +54,9 @@ FALLBACK_PRICES = {
     "BNBUSDT": 450.0,
     "XRPUSDT": 0.6,
     "DOGEUSDT": 0.11,
-    "EURUSD": 1.08,
-    "GBPUSD": 1.27,
-    "XAUUSD": 2030.0,
-    "USDJPY": 150.0,
-    "AUDUSD": 0.65,
-    "GBPJPY": 191.0,
 }
 
 _SESSION = requests.Session()
-_SELECTED_BASE_URL: str | None = None
 
 
 @dataclass(slots=True)
@@ -69,24 +71,33 @@ class Candle:
     trades_count: int
 
 
-def _fallback_series(pair: str, days: int) -> list[float]:
-    base = FALLBACK_PRICES.get(pair)
-    if not base:
-        return []
-    return [base * (1 + ((i % 10) - 5) * 0.0012) for i in range(days * 24)]
+def _split_pair(symbol: str) -> tuple[str, str]:
+    symbol = symbol.upper().strip()
+    if "/" in symbol:
+        base, quote = symbol.split("/", 1)
+        return base, quote
+
+    known_quotes = ["USDT", "USDC", "BUSD", "TUSD", "FDUSD", "USD", "EUR", "BTC", "ETH"]
+    for quote in known_quotes:
+        if symbol.endswith(quote) and len(symbol) > len(quote):
+            return symbol[: -len(quote)], quote
+
+    if len(symbol) >= 6:
+        return symbol[:-3], symbol[-3:]
+    raise ValueError(f"Unable to parse symbol '{symbol}'. Use format like BTCUSDT or BTC/USD")
 
 
-def _cache_key(symbol: str, interval: str, start_ms: int, end_ms: int) -> Path:
-    raw_key = f"{symbol}:{interval}:{start_ms}:{end_ms}"
-    digest = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()[:16]
-    return CACHE_DIR / f"{symbol}_{interval}_{digest}.json"
+def _cache_key(prefix: str, payload: dict) -> Path:
+    raw_key = f"{prefix}:{json.dumps(payload, sort_keys=True)}"
+    digest = hashlib.sha1(raw_key.encode("utf-8")).hexdigest()[:20]
+    return CACHE_DIR / f"{prefix}_{digest}.json"
 
 
-def _save_cache(path: Path, payload: list[list]) -> None:
+def _save_cache(path: Path, payload) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _load_cache(path: Path) -> list[list] | None:
+def _load_cache(path: Path):
     if not path.exists():
         return None
     try:
@@ -95,120 +106,206 @@ def _load_cache(path: Path) -> list[list] | None:
         return None
 
 
-def _select_fastest_binance_base_url(timeout: float = 2.0) -> str:
-    global _SELECTED_BASE_URL
-    if _SELECTED_BASE_URL:
-        return _SELECTED_BASE_URL
+def _request(path: str, params: dict, retries: int = 5, timeout: float = 10.0):
+    if CRYPTOCOMPARE_API_KEY:
+        params["api_key"] = CRYPTOCOMPARE_API_KEY
+    if CRYPTOCOMPARE_EXTRA_PARAMS:
+        params["extraParams"] = CRYPTOCOMPARE_EXTRA_PARAMS
 
-    timings: list[tuple[float, str]] = []
-    for base_url in BINANCE_BASE_URLS:
-        started = time.perf_counter()
-        try:
-            response = _SESSION.get(f"{base_url}{BINANCE_TIME_PATH}", timeout=timeout)
-            response.raise_for_status()
-            timings.append((time.perf_counter() - started, base_url))
-        except Exception as exc:
-            log.warning("Binance base URL check failed for %s: %s", base_url, exc)
-
-    _SELECTED_BASE_URL = min(timings, key=lambda item: item[0])[1] if timings else BINANCE_BASE_URLS[0]
-    log.info("Using Binance base URL: %s", _SELECTED_BASE_URL)
-    return _SELECTED_BASE_URL
-
-
-def _binance_get(path: str, params: dict, retries: int = 5, timeout: float = 10.0):
-    base_url = _select_fastest_binance_base_url()
-    backoff = 0.6
+    backoff = 1.0
     for attempt in range(1, retries + 1):
         try:
-            response = _SESSION.get(f"{base_url}{path}", params=params, timeout=timeout)
-            if response.status_code == 429:
-                raise requests.HTTPError("429 Too Many Requests", response=response)
-            response.raise_for_status()
-            data = response.json()
-            if isinstance(data, dict) and data.get("code") == -1003:
-                raise requests.HTTPError("-1003 Too much request weight", response=response)
-            return data
+            resp = _SESSION.get(f"{CRYPTOCOMPARE_BASE_URL}{path}", params=params, timeout=timeout)
+            if resp.status_code == 429:
+                raise requests.HTTPError("429 Too Many Requests", response=resp)
+            resp.raise_for_status()
+            payload = resp.json()
+            if isinstance(payload, dict) and payload.get("Response") == "Error":
+                raise RuntimeError(payload.get("Message", "CryptoCompare API error"))
+            return payload
         except Exception as exc:
             if attempt == retries:
                 raise
-            sleep_for = min(backoff * (2 ** (attempt - 1)), 8.0)
-            log.warning("Binance request failed (%s). attempt=%s/%s sleep=%.2fs", exc, attempt, retries, sleep_for)
+            sleep_for = min(backoff * (2 ** (attempt - 1)), 10.0)
+            log.warning("CryptoCompare request failed (%s). attempt=%s/%s sleep=%.1fs", exc, attempt, retries, sleep_for)
             time.sleep(sleep_for)
 
 
-def _parse_klines(raw_klines: list[list]) -> list[Candle]:
+def _parse_histodata_rows(rows: list[dict], interval_sec: int) -> list[Candle]:
     candles: list[Candle] = []
-    for row in raw_klines:
+    for row in rows:
+        open_time_sec = int(row.get("time", 0))
+        if open_time_sec <= 0:
+            continue
         candles.append(
             Candle(
-                open_time_ms=int(row[0]),
-                open=Decimal(row[1]),
-                high=Decimal(row[2]),
-                low=Decimal(row[3]),
-                close=Decimal(row[4]),
-                volume=Decimal(row[5]),
-                close_time_ms=int(row[6]),
-                trades_count=int(row[8]),
+                open_time_ms=open_time_sec * 1000,
+                open=Decimal(str(row.get("open", 0.0))),
+                high=Decimal(str(row.get("high", 0.0))),
+                low=Decimal(str(row.get("low", 0.0))),
+                close=Decimal(str(row.get("close", 0.0))),
+                volume=Decimal(str(row.get("volumefrom", 0.0))),
+                close_time_ms=(open_time_sec + interval_sec) * 1000 - 1,
+                trades_count=0,
             )
         )
     return candles
 
 
-def fetch_binance_klines(
+def fetch_cryptocompare_ohlcv(
     symbol: str,
     interval: str,
     start_time_ms: int,
     end_time_ms: int | None = None,
-    limit: int = BINANCE_MAX_LIMIT,
     use_cache: bool = True,
-    sleep_between_calls: float = 0.12,
 ) -> list[Candle]:
-    """Fetch Binance klines with pagination and optional disk cache."""
-    if interval not in KLINE_INTERVAL_MS:
+    """Fetch OHLCV candles with backwards pagination (up to 2000 per call)."""
+    normalized_interval = interval.lower()
+    if normalized_interval == "1h":
+        normalized_interval = "1h"
+    if normalized_interval not in KLINE_INTERVAL_SEC:
         raise ValueError(f"Unsupported interval: {interval}")
-    limit = max(1, min(limit, BINANCE_MAX_LIMIT))
+
+    interval_sec = KLINE_INTERVAL_SEC[normalized_interval]
     if end_time_ms is None:
         end_time_ms = int(time.time() * 1000)
 
-    cache_file = _cache_key(symbol, interval, start_time_ms, end_time_ms)
+    cache_payload = {
+        "symbol": symbol,
+        "interval": normalized_interval,
+        "start_time_ms": start_time_ms,
+        "end_time_ms": end_time_ms,
+    }
+    cache_file = _cache_key("hist", cache_payload)
     if use_cache:
         cached = _load_cache(cache_file)
         if cached is not None:
-            return _parse_klines(cached)
+            return _parse_histodata_rows(cached, interval_sec)
 
-    raw_all: list[list] = []
-    cursor = start_time_ms
+    base, quote = _split_pair(symbol)
+    endpoint = CRYPTOCOMPARE_HISTO_MINUTE_PATH
+    aggregate = max(1, interval_sec // 60)
+    if interval_sec >= 3600 and interval_sec < 86400:
+        endpoint = CRYPTOCOMPARE_HISTO_HOUR_PATH
+        aggregate = max(1, interval_sec // 3600)
+    elif interval_sec >= 86400:
+        endpoint = CRYPTOCOMPARE_HISTO_DAY_PATH
+        aggregate = max(1, interval_sec // 86400)
 
-    while cursor < end_time_ms:
+    start_sec = int(start_time_ms // 1000)
+    end_sec = int(end_time_ms // 1000)
+
+    rows_all: list[dict] = []
+    seen_times: set[int] = set()
+    cursor_to_ts: int | None = end_sec
+
+    while True:
         params = {
-            "symbol": symbol,
-            "interval": interval,
-            "startTime": cursor,
-            "endTime": end_time_ms,
-            "limit": limit,
+            "fsym": base,
+            "tsym": quote,
+            "limit": CRYPTOCOMPARE_MAX_LIMIT,
+            "aggregate": aggregate,
         }
-        batch = _binance_get(BINANCE_KLINES_PATH, params=params)
-        if not batch:
+        if cursor_to_ts is not None:
+            params["toTs"] = cursor_to_ts
+
+        payload = _request(endpoint, params=params)
+        data_block = payload.get("Data", {}) if isinstance(payload, dict) else {}
+        batch_rows = data_block.get("Data", []) if isinstance(data_block, dict) else []
+        if not batch_rows:
             break
 
-        raw_all.extend(batch)
-        last_close_ms = int(batch[-1][6])
-        cursor = last_close_ms + 1
+        batch_rows.sort(key=lambda row: row.get("time", 0))
+        earliest = int(batch_rows[0].get("time", 0))
 
-        if len(batch) < limit:
+        for row in batch_rows:
+            ts = int(row.get("time", 0))
+            if ts < start_sec or ts > end_sec:
+                continue
+            if ts in seen_times:
+                continue
+            seen_times.add(ts)
+            rows_all.append(row)
+
+        if earliest <= start_sec:
             break
-        time.sleep(sleep_between_calls)
 
+        next_to_ts = earliest - 1
+        if cursor_to_ts is not None and next_to_ts >= cursor_to_ts:
+            break
+        cursor_to_ts = next_to_ts
+        time.sleep(0.08)
+
+    rows_all.sort(key=lambda row: row.get("time", 0))
     if use_cache:
-        _save_cache(cache_file, raw_all)
-    return _parse_klines(raw_all)
+        _save_cache(cache_file, rows_all)
+    return _parse_histodata_rows(rows_all, interval_sec)
+
+
+def fetch_historical_1m(
+    fsym: str = "BTC",
+    tsym: str = "USD",
+    start_unix_sec: int | None = None,
+    end_unix_sec: int | None = None,
+) -> "pd.DataFrame":
+    """Full-pagination 1m OHLCV fetch for backtesting and ICT/SMC pattern scans."""
+    now_sec = int(time.time())
+    if end_unix_sec is None:
+        end_unix_sec = now_sec
+    if start_unix_sec is None:
+        start_unix_sec = end_unix_sec - (24 * 60 * 60)
+
+    symbol = f"{fsym.upper()}/{tsym.upper()}"
+    candles = fetch_cryptocompare_ohlcv(
+        symbol=symbol,
+        interval="1m",
+        start_time_ms=start_unix_sec * 1000,
+        end_time_ms=end_unix_sec * 1000,
+        use_cache=True,
+    )
+
+    if pd is None:
+        raise RuntimeError("pandas is required for fetch_historical_1m(). Install pandas to get DataFrame output.")
+
+    frame = pd.DataFrame(
+        {
+            "timestamp_ms": [c.open_time_ms for c in candles],
+            "open": [float(c.open) for c in candles],
+            "high": [float(c.high) for c in candles],
+            "low": [float(c.low) for c in candles],
+            "close": [float(c.close) for c in candles],
+            "volume_from": [float(c.volume) for c in candles],
+        }
+    )
+    if frame.empty:
+        return frame
+
+    frame = frame.drop_duplicates(subset=["timestamp_ms"]).sort_values("timestamp_ms").reset_index(drop=True)
+    return frame
+
+
+def cryptocompare_ws_details(fsym: str, tsym: str) -> dict[str, str | list[str]]:
+    fsym = fsym.upper()
+    tsym = tsym.upper()
+    ws_url = f"{CRYPTOCOMPARE_STREAM_URL}?api_key={CRYPTOCOMPARE_API_KEY}" if CRYPTOCOMPARE_API_KEY else CRYPTOCOMPARE_STREAM_URL
+    return {
+        "url": ws_url,
+        "subscribe": [f"5~CCCAGG~{fsym}~{tsym}", f"0~CCCAGG~{fsym}~{tsym}~m"],
+    }
+
+
+def _fallback_series(pair: str, days: int) -> list[float]:
+    base = FALLBACK_PRICES.get(pair)
+    if not base:
+        return []
+    return [base * (1 + ((i % 10) - 5) * 0.0012) for i in range(days * 24)]
 
 
 def validate_kline_consistency(candles: list[Candle], interval: str) -> list[int]:
-    """Return list of missing open_time_ms values if gaps are found."""
-    if interval not in KLINE_INTERVAL_MS or len(candles) < 2:
+    normalized_interval = interval.lower()
+    if normalized_interval not in KLINE_INTERVAL_SEC or len(candles) < 2:
         return []
-    step = KLINE_INTERVAL_MS[interval]
+    step = KLINE_INTERVAL_SEC[normalized_interval] * 1000
     gaps: list[int] = []
     for idx in range(1, len(candles)):
         expected = candles[idx - 1].open_time_ms + step
@@ -218,7 +315,6 @@ def validate_kline_consistency(candles: list[Candle], interval: str) -> list[int
 
 
 def detect_fvg(candles: list[Candle]) -> list[dict]:
-    """Detect simple ICT fair value gaps."""
     fvgs = []
     for idx in range(1, len(candles) - 1):
         left = candles[idx - 1]
@@ -273,24 +369,42 @@ def detect_order_blocks(candles: list[Candle], lookback: int = 30) -> list[dict]
 
 
 def fetch_historical_1m_btcusdt_2023_to_now() -> list[Candle]:
-    """Example helper requested by users: 1m BTCUSDT from 2023-01-01 UTC to now."""
     start_ms = int(datetime(2023, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
-    return fetch_binance_klines("BTCUSDT", "1m", start_ms)
+    return fetch_cryptocompare_ohlcv("BTCUSDT", "1m", start_ms)
 
 
 def get_crypto_prices(pairs: list[str]) -> dict[str, float]:
-    crypto_pairs = [pair for pair in pairs if pair in CRYPTO_PAIRS]
-    if not crypto_pairs:
+    if not pairs:
         return {}
 
-    symbols = list(sorted(set(crypto_pairs)))
-    try:
-        tickers = _binance_get("/api/v3/ticker/price", params={"symbols": json.dumps(symbols)}, timeout=8.0)
-        data = {t["symbol"]: float(t["price"]) for t in tickers}
-        return {pair: data[pair] for pair in pairs if pair in data}
-    except Exception as exc:
-        log.error("Binance price error: %s", exc)
+    parsed: list[tuple[str, str, str]] = []
+    for pair in sorted(set(pairs)):
+        try:
+            fsym, tsym = _split_pair(pair)
+            parsed.append((pair, fsym, tsym))
+        except ValueError:
+            continue
+
+    if not parsed:
         return {}
+
+    quotes = sorted(set(tsym for _, _, tsym in parsed))
+    if len(quotes) > 1:
+        return {pair: FALLBACK_PRICES[pair] for pair in pairs if pair in FALLBACK_PRICES}
+
+    fsyms = ",".join(fsym for _, fsym, _ in parsed)
+    tsym = quotes[0]
+    try:
+        payload = _request(CRYPTOCOMPARE_PRICE_MULTI_PATH, {"fsyms": fsyms, "tsyms": tsym}, timeout=8.0)
+        out: dict[str, float] = {}
+        for pair, fsym, _ in parsed:
+            price = payload.get(fsym, {}).get(tsym)
+            if price is not None:
+                out[pair] = float(price)
+        return {pair: out[pair] for pair in pairs if pair in out}
+    except Exception as exc:
+        log.error("CryptoCompare live price error: %s", exc)
+        return {pair: FALLBACK_PRICES[pair] for pair in pairs if pair in FALLBACK_PRICES}
 
 
 def fetch_prices(pairs: list[str]) -> dict[str, float]:
@@ -303,18 +417,17 @@ def get_price(pair: str) -> float | None:
 
 def get_recent_series(pair: str, days: int = 7, interval: str = "1m") -> list[float]:
     days = max(1, min(days, 90))
-    if pair not in CRYPTO_PAIRS:
-        return _fallback_series(pair, days)
-
     end_ms = int(time.time() * 1000)
     start_ms = end_ms - (days * 24 * 60 * 60 * 1000)
 
     try:
-        candles = fetch_binance_klines(pair, interval, start_ms, end_ms=end_ms)
-        return [float(c.close) for c in candles]
+        candles = fetch_cryptocompare_ohlcv(pair, interval.lower(), start_ms, end_time_ms=end_ms)
+        closes = [float(c.close) for c in candles]
+        if closes:
+            return closes
     except Exception as exc:
-        log.error("Binance klines error for %s: %s", pair, exc)
-        return _fallback_series(pair, days)
+        log.error("CryptoCompare klines error for %s: %s", pair, exc)
+    return _fallback_series(pair, days)
 
 
 def estimate_atr(prices: list[float], window: int = 14) -> float:
