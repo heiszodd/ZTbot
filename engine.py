@@ -107,3 +107,89 @@ def calc_trade_levels(price: float, direction: str, atr: float) -> dict:
         tp    = round(price - atr * 3.0, 5)
     rr = 2.0
     return {"entry": entry, "sl": sl, "tp": tp, "rr": rr}
+
+
+def build_live_setup(model: dict, prices_series: list[float]) -> dict:
+    """Generate a deterministic setup snapshot from recent prices."""
+    if len(prices_series) < 20:
+        return {"pair": model["pair"], "passed_rule_ids": []}
+
+    recent = prices_series[-1]
+    prev = prices_series[-6]
+    mom = (recent - prev) / prev if prev else 0
+    direction = "BUY" if mom >= 0 else "SELL"
+    if model.get("bias") == "Bearish":
+        direction = "SELL"
+    elif model.get("bias") == "Bullish":
+        direction = "BUY"
+
+    passed = []
+    for idx, rule in enumerate(model.get("rules", []), start=1):
+        # Staggered deterministic pass rates by momentum and rule index
+        threshold = 0.0005 * idx
+        cond = abs(mom) >= threshold or (idx % 2 == 0)
+        if cond:
+            passed.append(rule["id"])
+
+    return {
+        "pair": model["pair"],
+        "passed_rule_ids": passed,
+        "atr_ratio": 1.0 + min(abs(mom) * 80, 1.5),
+        "htf_1h": model.get("bias", "Neutral"),
+        "htf_4h": model.get("bias", "Neutral"),
+        "news_minutes": None,
+        "direction": direction,
+    }
+
+
+def backtest_model(model: dict, prices_series: list[float]) -> dict:
+    """Simple bar-by-bar backtest returning win-rate and sample stats."""
+    if len(prices_series) < 40:
+        return {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": 0.0,
+            "avg_rr": 0.0,
+        }
+
+    wins = losses = 0
+    rr_values = []
+
+    for i in range(30, len(prices_series) - 8, 3):
+        window = prices_series[: i + 1]
+        setup = build_live_setup(model, window)
+        scored = score_setup(setup, model)
+        if not scored["valid"] or not scored["tier"]:
+            continue
+
+        entry = prices_series[i]
+        if setup["direction"] == "BUY":
+            future_max = max(prices_series[i + 1 : i + 7])
+            future_min = min(prices_series[i + 1 : i + 7])
+            hit_tp = (future_max - entry) / entry >= 0.006
+            hit_sl = (entry - future_min) / entry >= 0.003
+        else:
+            future_max = max(prices_series[i + 1 : i + 7])
+            future_min = min(prices_series[i + 1 : i + 7])
+            hit_tp = (entry - future_min) / entry >= 0.006
+            hit_sl = (future_max - entry) / entry >= 0.003
+
+        if hit_tp and not hit_sl:
+            wins += 1
+            rr_values.append(2.0)
+        elif hit_sl:
+            losses += 1
+            rr_values.append(-1.0)
+
+    trades = wins + losses
+    avg_rr = round(sum(rr_values) / len(rr_values), 2) if rr_values else 0.0
+    win_rate = round((wins / trades * 100), 2) if trades else 0.0
+
+    return {
+        "trades": trades,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": win_rate,
+        "avg_rr": avg_rr,
+    }
