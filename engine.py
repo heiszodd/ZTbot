@@ -1,5 +1,14 @@
 from datetime import datetime, timezone
 from config import ATR_BANDS, SESSIONS, NEWS_BLACKOUT_MIN, TIER_RISK
+from collections import defaultdict
+from typing import Any
+from decimal import Decimal
+import prices as px
+
+try:
+    import db
+except Exception:  # DB may be unavailable in local CLI usage
+    db = None
 
 
 def classify_volatility(atr_ratio: float) -> dict:
@@ -193,3 +202,325 @@ def backtest_model(model: dict, prices_series: list[float]) -> dict:
         "win_rate": win_rate,
         "avg_rr": avg_rr,
     }
+
+
+MODELS = [
+    "FVG Basic",
+    "Sweep Reversal",
+    "OB Confluence",
+    "FVG + OB Filter",
+    "Breaker Block",
+]
+
+
+def _to_candle_dict(candle: Any) -> dict:
+    return {
+        "timestamp": int(candle.open_time_ms // 1000),
+        "open": float(candle.open),
+        "high": float(candle.high),
+        "low": float(candle.low),
+        "close": float(candle.close),
+        "volume": float(candle.volume),
+    }
+
+
+def _resample_candles(candles_1m: list[dict], timeframe: str) -> list[dict]:
+    tf_to_minutes = {"1m": 1, "5m": 5, "15m": 15, "1h": 60}
+    step = tf_to_minutes.get(timeframe, 1)
+    if step == 1:
+        return candles_1m
+
+    out = []
+    bucket = []
+    for candle in candles_1m:
+        bucket.append(candle)
+        if len(bucket) == step:
+            out.append(
+                {
+                    "timestamp": bucket[0]["timestamp"],
+                    "open": bucket[0]["open"],
+                    "high": max(x["high"] for x in bucket),
+                    "low": min(x["low"] for x in bucket),
+                    "close": bucket[-1]["close"],
+                    "volume": sum(x["volume"] for x in bucket),
+                }
+            )
+            bucket = []
+    return out
+
+
+def _default_sl_tp(candles: list[dict], idx: int, side: str, rr: float = 2.0) -> tuple[float, float]:
+    entry = candles[idx]["close"]
+    lookback = candles[max(0, idx - 10) : idx + 1]
+    swing_low = min(c["low"] for c in lookback)
+    swing_high = max(c["high"] for c in lookback)
+    if side == "long":
+        risk = max(entry - swing_low, entry * 0.002)
+        sl = entry - risk
+        tp = entry + risk * rr
+    else:
+        risk = max(swing_high - entry, entry * 0.002)
+        sl = entry + risk
+        tp = entry - risk * rr
+    return sl, tp
+
+
+
+
+def _to_cc_candle(c: dict) -> px.Candle:
+    ts_ms = c["timestamp"] * 1000
+    return px.Candle(
+        open_time_ms=ts_ms,
+        open=Decimal(str(c["open"])),
+        high=Decimal(str(c["high"])),
+        low=Decimal(str(c["low"])),
+        close=Decimal(str(c["close"])),
+        volume=Decimal(str(c["volume"])),
+        close_time_ms=ts_ms + 59999,
+        trades_count=0,
+    )
+
+def _setups_from_fvg(candles: list[dict]) -> list[dict]:
+    candle_objs = [_to_cc_candle(c) for c in candles]
+    fvgs = px.detect_fvg(candle_objs)
+    out = []
+    for f in fvgs:
+        idx = f["index"]
+        side = "long" if f["type"] == "bullish" else "short"
+        out.append({"index": idx, "type": side})
+    return out
+
+
+def _setups_from_sweeps(candles: list[dict]) -> list[dict]:
+    candle_objs = [_to_cc_candle(c) for c in candles]
+    sweeps = px.detect_liquidity_sweeps(candle_objs)
+    out = []
+    for s in sweeps:
+        side = "short" if s["side"] == "buy_side_liquidity" else "long"
+        out.append({"index": s["index"], "type": side})
+    return out
+
+
+def _setups_from_obs(candles: list[dict]) -> list[dict]:
+    candle_objs = [_to_cc_candle(c) for c in candles]
+    obs = px.detect_order_blocks(candle_objs)
+    out = []
+    for ob in obs:
+        side = "short" if ob["type"] == "supply" else "long"
+        out.append({"index": ob["index"], "type": side})
+    return out
+
+
+def get_setups(model_name: str, candles: list[dict]) -> list[dict]:
+    model_key = model_name.lower()
+    if "sweep" in model_key:
+        return _setups_from_sweeps(candles)
+    if "ob" in model_key or "order block" in model_key or "breaker" in model_key:
+        return _setups_from_obs(candles)
+    return _setups_from_fvg(candles)
+
+
+def _simulate_trade(candles: list[dict], setup: dict) -> dict:
+    idx = setup["index"]
+    if idx >= len(candles) - 1:
+        return {"status": "open"}
+
+    side = setup.get("type", "long")
+    entry = setup.get("entry_price", candles[idx]["close"])
+    sl = setup.get("sl")
+    tp = setup.get("tp")
+    if sl is None or tp is None:
+        sl, tp = _default_sl_tp(candles, idx, side)
+
+    risk = abs(entry - sl)
+    if risk <= 0:
+        return {"status": "open"}
+
+    for j in range(idx + 1, len(candles)):
+        c = candles[j]
+        if side == "long":
+            hit_sl = c["low"] <= sl
+            hit_tp = c["high"] >= tp
+        else:
+            hit_sl = c["high"] >= sl
+            hit_tp = c["low"] <= tp
+
+        if hit_sl and hit_tp:
+            return {"status": "loss", "exit_index": j, "rr": -1.0, "exit_reason": "SL+TP same candle (conservative SL)"}
+        if hit_tp:
+            rr = abs(tp - entry) / risk
+            return {"status": "win", "exit_index": j, "rr": rr, "exit_reason": "TP hit"}
+        if hit_sl:
+            return {"status": "loss", "exit_index": j, "rr": -1.0, "exit_reason": "SL hit"}
+
+    return {"status": "open", "rr": 0.0, "exit_reason": "still open at end"}
+
+
+def _parse_date_to_unix(value: str) -> int:
+    return int(datetime.strptime(value.strip(), "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+
+
+def _available_models() -> list[str]:
+    if db is not None:
+        try:
+            names = [m.get("name") for m in db.get_all_models() if m.get("name")]
+            if names:
+                return sorted(set(names))
+        except Exception:
+            pass
+    return MODELS
+
+
+def run_backtest() -> None:
+    print("\n=== Interactive Backtest ===")
+    print("Pair examples: BTCUSDT, ETHUSDT (or enter fsym/tsym separately)")
+
+    fsym = input("Base symbol (fsym, e.g. BTC): ").strip().upper() or "BTC"
+    tsym = input("Quote symbol (tsym, e.g. USDT/USD): ").strip().upper() or "USDT"
+
+    models = _available_models()
+    print("\nAvailable models:")
+    for i, model_name in enumerate(models, start=1):
+        print(f"  {i}. {model_name}")
+
+    model_choice = input("Choose model by number or name: ").strip()
+    selected_model = models[0]
+    if model_choice.isdigit() and 1 <= int(model_choice) <= len(models):
+        selected_model = models[int(model_choice) - 1]
+    else:
+        for m in models:
+            if m.lower() == model_choice.lower():
+                selected_model = m
+                break
+
+    timeframe = (input("Timeframe (1m/5m/15m/1h): ").strip().lower() or "1m")
+    if timeframe not in {"1m", "5m", "15m", "1h"}:
+        print("Unsupported timeframe, defaulting to 1m")
+        timeframe = "1m"
+
+    start_date = input("Start date (YYYY-MM-DD): ").strip()
+    end_date = input("End date (YYYY-MM-DD): ").strip()
+    start_unix = _parse_date_to_unix(start_date)
+    end_unix = _parse_date_to_unix(end_date) + 86399
+
+    if start_unix >= end_unix:
+        print("Invalid date range: start must be before end")
+        return
+
+    symbol = f"{fsym}{tsym}"
+    print(f"\nFetching 1m candles for {symbol} from {start_date} to {end_date}...")
+    try:
+        raw = px.fetch_cryptocompare_ohlcv(symbol, "1m", start_unix * 1000, end_time_ms=end_unix * 1000, use_cache=True)
+    except Exception as exc:
+        print(f"Data fetch failed: {exc}")
+        return
+
+    candles_1m = [_to_candle_dict(c) for c in raw]
+    if len(candles_1m) < 30:
+        print("Insufficient data returned for the selected period.")
+        return
+
+    candles = _resample_candles(candles_1m, timeframe)
+    if len(candles) < 20:
+        print("Insufficient candles after resampling.")
+        return
+
+    setups = get_setups(selected_model, candles)
+    if not setups:
+        print("No setups found for selected model/timeframe in this range.")
+        return
+
+    wins = losses = breakevens = opens = 0
+    rr_total = 0.0
+    gross_profit = 0.0
+    gross_loss = 0.0
+    trade_logs = []
+    wins_by_day = defaultdict(int)
+    losses_by_day = defaultdict(int)
+
+    current_streak = 0
+    streak_side = None
+    max_win_streak = 0
+    max_loss_streak = 0
+
+    for setup in setups:
+        if setup["index"] >= len(candles) - 2:
+            continue
+        outcome = _simulate_trade(candles, setup)
+        entry_ts = candles[setup["index"]]["timestamp"]
+        session_day = datetime.fromtimestamp(entry_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+
+        status = outcome.get("status", "open")
+        rr = float(outcome.get("rr", 0.0))
+        rr_total += rr
+
+        if status == "win":
+            wins += 1
+            gross_profit += rr
+            wins_by_day[session_day] += 1
+            if streak_side == "win":
+                current_streak += 1
+            else:
+                streak_side = "win"
+                current_streak = 1
+            max_win_streak = max(max_win_streak, current_streak)
+        elif status == "loss":
+            losses += 1
+            gross_loss += abs(rr)
+            losses_by_day[session_day] += 1
+            if streak_side == "loss":
+                current_streak += 1
+            else:
+                streak_side = "loss"
+                current_streak = 1
+            max_loss_streak = max(max_loss_streak, current_streak)
+        elif status == "breakeven":
+            breakevens += 1
+            streak_side = None
+            current_streak = 0
+        else:
+            opens += 1
+            streak_side = None
+            current_streak = 0
+
+        trade_logs.append(
+            {
+                "day": session_day,
+                "side": setup.get("type", "long"),
+                "status": status,
+                "rr": round(rr, 2),
+                "reason": outcome.get("exit_reason", "n/a"),
+            }
+        )
+
+    total_setups = wins + losses + breakevens + opens
+    if total_setups == 0:
+        print("No executable setups found after filtering.")
+        return
+
+    avg_rr = (gross_profit / wins) if wins else 0.0
+    winrate = (wins / total_setups) * 100 if total_setups else 0.0
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float("inf")
+
+    best_win_day = max(wins_by_day.items(), key=lambda x: x[1]) if wins_by_day else ("N/A", 0)
+    worst_loss_day = max(losses_by_day.items(), key=lambda x: x[1]) if losses_by_day else ("N/A", 0)
+
+    print("\n| Metric | Value |")
+    print("|---|---:|")
+    print(f"| Pair | {symbol} |")
+    print(f"| Model | {selected_model} |")
+    print(f"| Timeframe | {timeframe} |")
+    print(f"| Total setups | {total_setups} |")
+    print(f"| Wins / Losses | {wins} / {losses} |")
+    print(f"| Winrate | {winrate:.2f}% |")
+    print(f"| Average RR (wins) | {avg_rr:.2f} |")
+    print(f"| Net Profit (R ~= %) | {rr_total:.2f}% |")
+    print(f"| Profit Factor | {profit_factor:.2f} |")
+    print(f"| Most win session | {best_win_day[0]}: {best_win_day[1]} wins |")
+    print(f"| Most loss session | {worst_loss_day[0]}: {worst_loss_day[1]} losses |")
+    print(f"| Max win streak | {max_win_streak} |")
+    print(f"| Max loss streak | {max_loss_streak} |")
+
+    print("\nFirst 5 trades:")
+    for t in trade_logs[:5]:
+        print(f"- {t['day']} | {t['side']} | {t['status']} | RR {t['rr']} | {t['reason']}")
