@@ -16,8 +16,9 @@ log = logging.getLogger(__name__)
 (
     ASK_NAME, ASK_PAIR, ASK_TF, ASK_SESSION,
     ASK_BIAS, ASK_RULES, ASK_RULE_WEIGHT,
-    ASK_RULE_MANDATORY, ASK_MORE_RULES, ASK_TIERS, CONFIRM
-) = range(11)
+    ASK_RULE_MANDATORY, ASK_MORE_RULES, ASK_TIERS,
+    ASK_TIER_B, ASK_TIER_C, CONFIRM
+) = range(13)
 
 
 def _guard(update: Update) -> bool:
@@ -308,7 +309,7 @@ async def got_tier_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "wiz_tierB", cols=4, back=True
         )
     )
-    return ASK_TIERS + 1   # reuse state with different prefix handled by pattern
+    return ASK_TIER_B
 
 
 async def got_tier_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -324,7 +325,7 @@ async def got_tier_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "wiz_tierC", cols=4, back=True
         )
     )
-    return ASK_TIERS + 2
+    return ASK_TIER_C
 
 
 async def got_tier_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -467,8 +468,8 @@ def build_wizard_handler() -> ConversationHandler:
             ASK_RULE_MANDATORY:[CallbackQueryHandler(got_rule_mandatory,pattern="^wiz_mand:")],
             ASK_MORE_RULES:    [CallbackQueryHandler(got_more_rules,    pattern="^wiz_more:")],
             ASK_TIERS:         [CallbackQueryHandler(got_tier_a,        pattern="^wiz_tierA:")],
-            ASK_TIERS + 1:     [CallbackQueryHandler(got_tier_b,        pattern="^wiz_tierB:")],
-            ASK_TIERS + 2:     [CallbackQueryHandler(got_tier_c,        pattern="^wiz_tierC:")],
+            ASK_TIER_B:        [CallbackQueryHandler(got_tier_b,        pattern="^wiz_tierB:")],
+            ASK_TIER_C:        [CallbackQueryHandler(got_tier_c,        pattern="^wiz_tierC:")],
             CONFIRM:           [CallbackQueryHandler(confirm,           pattern="^wiz_confirm:")],
         },
         fallbacks=[
