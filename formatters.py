@@ -111,7 +111,7 @@ def fmt_models_list(models: list) -> str:
 
 
 # ── Single model detail ───────────────────────────────
-def fmt_model_detail(m: dict) -> str:
+def fmt_model_detail(m: dict, price=None) -> str:
     rules_str = "\n".join(
         f"  {'🔒' if r.get('mandatory') else '🔓'}  {r['name']}  +{r['weight']}"
         for r in m["rules"]
@@ -124,7 +124,8 @@ def fmt_model_detail(m: dict) -> str:
         f"Pair:       {m['pair']}\n"
         f"Timeframe:  {m['timeframe']}\n"
         f"Session:    {m['session']}\n"
-        f"Bias:       {'📈' if m['bias']=='Bullish' else '📉'}  {m['bias']}\n\n"
+        f"Bias:       {'📈' if m['bias']=='Bullish' else '📉'}  {m['bias']}\n"
+        f"Price:      {fmt_price(price) if price is not None else '—'}\n\n"
         f"📋  *Rules*\n{rules_str}\n\n"
         f"🏆  *Tiers*\n"
         f"  Tier A  ≥{m['tier_a']}   →  2.0% risk\n"
@@ -390,4 +391,37 @@ def fmt_help() -> str:
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "⚡  Scanner runs every 15 min automatically\n"
         "    and fires alerts when a setup is found."
+    )
+
+
+# ── Backward-compatible aliases used by handlers ─────
+def fmt_home(active_models: list, live_alerts: list, prices: dict) -> str:
+    return fmt_dashboard(active_models, live_alerts, prices)
+
+
+def fmt_models(models: list, prices: dict) -> str:
+    _ = prices
+    return fmt_models_list(models)
+
+
+def fmt_stats(row: dict, tiers: list, sessions: list) -> str:
+    return "\n\n".join([
+        fmt_stats_overview(row),
+        fmt_stats_tiers(tiers),
+        fmt_stats_sessions(sessions),
+    ])
+
+
+def fmt_alert_log(alerts: list) -> str:
+    return fmt_alerts_log(alerts)
+
+
+def fmt_status(session: str, db_ok: bool, active_models: int, prices_ok: bool) -> str:
+    return (
+        "⚡ *System Status*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Session:      `{session}`\n"
+        f"Database:     {'✅ OK' if db_ok else '❌ Error'}\n"
+        f"Price feed:   {'✅ OK' if prices_ok else '❌ Error'}\n"
+        f"Active models:`{active_models}`"
     )
