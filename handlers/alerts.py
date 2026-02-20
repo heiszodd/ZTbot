@@ -33,17 +33,10 @@ async def _evaluate_and_send(bot, model: dict, force: bool = False) -> bool:
         log.warning(f"No price for {pair}")
         return False
 
-    # All rules pass in this demo — replace with real candle checks
-    all_ids = [r["id"] for r in model["rules"]]
-    setup   = {
-        "pair":            pair,
-        "passed_rule_ids": all_ids,
-        "atr_ratio":       1.2,
-        "htf_1h":          model["bias"],
-        "htf_4h":          model["bias"],
-        "news_minutes":    None,
-        "direction":       "BUY" if model["bias"] == "Bullish" else "SELL",
-    }
+    series = px.get_recent_series(pair, days=2)
+    setup = engine.build_live_setup(model, series)
+    if not setup.get("passed_rule_ids"):
+        return False
 
     scored = engine.score_setup(setup, model)
     if not scored["valid"] or not scored["tier"]:
@@ -52,7 +45,8 @@ async def _evaluate_and_send(bot, model: dict, force: bool = False) -> bool:
     if not force and _is_dup(pair, model["id"], scored["tier"]):
         return False
 
-    sl, tp, rr     = px.calc_sl_tp(price, setup["direction"])
+    atr = px.estimate_atr(series[-30:]) if series else None
+    sl, tp, rr     = px.calc_sl_tp(price, setup["direction"], atr=atr)
     setup["entry"] = price
     setup["sl"]    = sl
     setup["tp"]    = tp

@@ -324,3 +324,44 @@ def _disc_score(violations):
     for v in violations:
         score -= 10 if v["violation"] in ("V1", "V3", "V4") else 5
     return max(0, score)
+
+
+async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _guard(update):
+        return
+
+    args = context.args
+    if not args:
+        models = db.get_all_models()[:10]
+        if not models:
+            await update.message.reply_text("No models found. Create one with /create_model first.")
+            return
+        listing = "\n".join([f"• `{m['id']}` — {m['name']} ({m['pair']})" for m in models])
+        await update.message.reply_text(
+            "Usage: `/backtest <model_id> [days]`\n\nAvailable models:\n" + listing,
+            parse_mode="Markdown"
+        )
+        return
+
+    model_id = args[0]
+    days = 30
+    if len(args) > 1:
+        try:
+            days = max(3, min(90, int(args[1])))
+        except ValueError:
+            pass
+
+    model = db.get_model(model_id)
+    if not model:
+        await update.message.reply_text(f"Model `{model_id}` not found.", parse_mode="Markdown")
+        return
+
+    series = px.get_recent_series(model["pair"], days=days)
+    if len(series) < 40:
+        await update.message.reply_text(
+            "Not enough historical data for this pair. Backtest currently supports crypto pairs with CoinGecko data.",
+        )
+        return
+
+    result = engine.backtest_model(model, series)
+    await update.message.reply_text(formatters.fmt_backtest(model, result, days), parse_mode="Markdown")

@@ -33,6 +33,7 @@ def main():
     app.add_handler(CommandHandler("discipline",  stats.discipline_cmd))
     app.add_handler(CommandHandler("result",      stats.result_cmd))
     app.add_handler(CommandHandler("create_model",wizard.wiz_start))
+    app.add_handler(CommandHandler("backtest",    commands.backtest))
 
     # ── Model wizard (ConversationHandler — must be first) ──
     app.add_handler(wizard.build_wizard_handler())

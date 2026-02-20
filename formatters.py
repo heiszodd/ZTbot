@@ -382,13 +382,16 @@ def fmt_help() -> str:
         "• Open *⚙️ Models*\n"
         "• Select your model\n"
         "• Tap *✅ Activate*\n\n"
-        "*Step 3 — Scan market now*\n"
+        "*Step 3 — Backtest your model*\n"
+        "• Run `/backtest <model_id> [days]`\n"
+        "• Review win rate and average R\n\n"
+        "*Step 4 — Scan market now*\n"
         "• Tap *🔍 Manual Scan*\n"
         "• Pick a pair to force a scan\n\n"
-        "*Step 4 — Manage alerts*\n"
+        "*Step 5 — Manage alerts*\n"
         "• Use Entered / Skipped / Watching\n"
         "• Track outcomes with `/result <id> TP|SL`\n\n"
-        "*Step 5 — Improve performance*\n"
+        "*Step 6 — Improve performance*\n"
         "• Review *📊 Stats*\n"
         "• Audit behavior in *🛡️ Discipline*\n\n"
         "Need a reset? Tap *🏠 Dashboard* anytime."
@@ -426,4 +429,18 @@ def fmt_status(session: str, db_ok: bool, active_models: int, prices_ok: bool) -
         f"Database:     {'✅ OK' if db_ok else '❌ Error'}\n"
         f"Price feed:   {'✅ OK' if prices_ok else '❌ Error'}\n"
         f"Active models:`{active_models}`"
+    )
+
+
+
+def fmt_backtest(model: dict, result: dict, days: int) -> str:
+    return (
+        f"🧪 *Backtest Result*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Model: *{model['name']}* (`{model['id']}`)\n"
+        f"Pair: `{model['pair']}` · Window: `{days}d`\n\n"
+        f"Trades: *{result['trades']}*\n"
+        f"Wins/Losses: *{result['wins']}* / *{result['losses']}*\n"
+        f"Win Rate: *{result['win_rate']}%*\n"
+        f"Avg R: *{result['avg_rr']}R*"
     )
