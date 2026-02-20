@@ -1,0 +1,18 @@
+[Unit]
+Description=Trading Intelligence Bot
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=tradingbot
+WorkingDirectory=/home/tradingbot/trading_bot
+ExecStart=/home/tradingbot/trading_bot/venv/bin/python main.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/home/tradingbot/trading_bot/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
