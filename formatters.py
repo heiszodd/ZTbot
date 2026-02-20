@@ -195,7 +195,7 @@ def fmt_invalidation(reason: str, pair: str, model_name: str) -> str:
 # ── Live prices ───────────────────────────────────────
 def fmt_prices(prices: dict) -> str:
     if not prices:
-        return "❌  Could not fetch prices. CoinGecko may be rate-limited — try again shortly."
+        return "❌  Could not fetch prices from Binance right now — please retry shortly."
     lines = [
         "💰  *Live Crypto Prices*",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",

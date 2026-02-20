@@ -54,15 +54,12 @@ TIMEFRAMES = ["1m", "5m", "15m", "30m", "1H", "4H"]
 SESSIONS_LIST = ["London", "NY", "Asia", "Overlap", "Any"]
 BIASES = ["Bullish", "Bearish"]
 
-# ── CoinGecko ID map ──────────────────────────────────
-COINGECKO_IDS = {
-    "BTCUSDT":  "bitcoin",
-    "ETHUSDT":  "ethereum",
-    "SOLUSDT":  "solana",
-    "BNBUSDT":  "binancecoin",
-    "XRPUSDT":  "ripple",
-    "DOGEUSDT": "dogecoin",
-}
+# ── Binance public market-data endpoints ─────────────
+BINANCE_BASE_URLS = [
+    "https://api.binance.com",
+    "https://api1.binance.com",
+    "https://api-gcp.binance.com",
+]
 SCANNER_INTERVAL = 60
 SUPPORTED_PAIRS = ALL_PAIRS
 SUPPORTED_TIMEFRAMES = TIMEFRAMES
