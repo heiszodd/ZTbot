@@ -63,3 +63,4 @@ COINGECKO_IDS = {
     "XRPUSDT":  "ripple",
     "DOGEUSDT": "dogecoin",
 }
+SCANNER_INTERVAL = 60
