@@ -1,4 +1,5 @@
 import logging
+import sys
 import db
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -6,6 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, SCANNER_INTERVAL
 from handlers import commands, alerts, wizard, stats
+from engine import run_backtest
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -57,4 +59,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1].lower() in {"backtest", "--backtest", "-b"}:
+        run_backtest()
+    else:
+        main()
