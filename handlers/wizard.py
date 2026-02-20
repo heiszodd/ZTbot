@@ -1,52 +1,71 @@
-import logging, re, json, uuid
+import logging, json, uuid
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes, ConversationHandler, CommandHandler,
-    MessageHandler, CallbackQueryHandler, filters
+    CallbackQueryHandler, MessageHandler, filters
 )
-import db, formatters
-from config import CHAT_ID
+import db
+from config import (
+    CHAT_ID, SUPPORTED_PAIRS, SUPPORTED_TIMEFRAMES,
+    SUPPORTED_SESSIONS, SUPPORTED_BIASES, TIER_RISK
+)
 
 log = logging.getLogger(__name__)
 
-# ── Conversation states ───────────────────────────────
+# ── States ────────────────────────────────────────────
 (
     ASK_NAME, ASK_PAIR, ASK_TF, ASK_SESSION,
-    ASK_BIAS, ASK_RULES, ASK_TIERS, CONFIRM
-) = range(8)
-
-PAIRS     = ["EURUSD","GBPUSD","XAUUSD","BTCUSDT","ETHUSDT","USDJPY","AUDUSD"]
-TFS       = ["1m","5m","15m","1H","4H","1D"]
-SESSIONS  = ["London","NY","Asia","Overlap"]
-BIASES    = ["Bullish","Bearish"]
+    ASK_BIAS, ASK_RULES, ASK_RULE_WEIGHT,
+    ASK_RULE_MANDATORY, ASK_MORE_RULES, ASK_TIERS, CONFIRM
+) = range(11)
 
 
 def _guard(update: Update) -> bool:
     return update.effective_chat.id == CHAT_ID
 
 
-def _keyboard(options: list, prefix: str = "wiz") -> InlineKeyboardMarkup:
-    """Build a 2-column inline keyboard from a list of strings."""
+def _kb(options, prefix, cols=2, back=None):
+    """Build an inline keyboard from a list of strings."""
     rows = []
-    for i in range(0, len(options), 2):
-        row = [InlineKeyboardButton(o, callback_data=f"{prefix}:{o}") for o in options[i:i+2]]
-        rows.append(row)
+    for i in range(0, len(options), cols):
+        rows.append([
+            InlineKeyboardButton(o, callback_data=f"{prefix}:{o}")
+            for o in options[i:i+cols]
+        ])
+    if back:
+        rows.append([InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
-# ── Entry ─────────────────────────────────────────────
-async def create_model_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _guard(update): return ConversationHandler.END
+def _progress(step, total=6):
+    filled = "●" * step + "○" * (total - step)
+    return f"`[{filled}]`  Step {step}/{total}"
+
+
+# ── Step 0: Entry ─────────────────────────────────────
+async def wiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point — works from both /create_model and wiz:start callback."""
+    if hasattr(update, "callback_query") and update.callback_query:
+        q = update.callback_query
+        await q.answer()
+        reply = q.message.reply_text
+    else:
+        if not _guard(update): return ConversationHandler.END
+        reply = update.message.reply_text
+
     context.user_data.clear()
     context.user_data["rules"] = []
 
-    await update.message.reply_text(
-        "⚙️ Model Wizard\n"
+    await reply(
+        "⚙️ *Model Wizard*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Step 1/7 — Model name\n\n"
-        "Send a short name for this model.\n"
-        "Example:  London Sweep Reversal\n\n"
-        "Send /cancel to abort."
+        f"{_progress(1)}\n\n"
+        "What's the name of this model?\n\n"
+        "_Example: London Sweep Reversal_",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")
+        ]])
     )
     return ASK_NAME
 
@@ -54,225 +73,304 @@ async def create_model_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ── Step 1: Name ──────────────────────────────────────
 async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
-    if len(name) < 3:
-        await update.message.reply_text("Name too short. Try again:")
+    if len(name) < 2:
+        await update.message.reply_text("❗ Name is too short. Try again:")
         return ASK_NAME
-
     context.user_data["name"] = name
     await update.message.reply_text(
-        f"✅ Name: {name}\n\n"
-        f"Step 2/7 — Pair\n"
-        f"Choose the pair this model trades:",
-        reply_markup=_keyboard(PAIRS)
+        f"✅ *{name}*\n\n"
+        f"{_progress(2)}\n\n"
+        "🪙 Which pair does this model trade?",
+        parse_mode="Markdown",
+        reply_markup=_kb(SUPPORTED_PAIRS, "wiz_pair", cols=3, back=True)
     )
     return ASK_PAIR
 
 
 # ── Step 2: Pair ──────────────────────────────────────
 async def got_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    pair = query.data.split(":")[1]
+    q = update.callback_query
+    await q.answer()
+    pair = q.data.split(":")[1]
     context.user_data["pair"] = pair
-
-    await query.message.reply_text(
-        f"✅ Pair: {pair}\n\n"
-        f"Step 3/7 — Timeframe:",
-        reply_markup=_keyboard(TFS)
+    await q.message.reply_text(
+        f"✅ Pair: *{pair}*\n\n"
+        f"{_progress(3)}\n\n"
+        "⏱ Choose the timeframe:",
+        parse_mode="Markdown",
+        reply_markup=_kb(SUPPORTED_TIMEFRAMES, "wiz_tf", cols=3, back=True)
     )
     return ASK_TF
 
 
 # ── Step 3: Timeframe ─────────────────────────────────
 async def got_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    tf = query.data.split(":")[1]
+    q = update.callback_query
+    await q.answer()
+    tf = q.data.split(":")[1]
     context.user_data["timeframe"] = tf
-
-    await query.message.reply_text(
-        f"✅ Timeframe: {tf}\n\n"
-        f"Step 4/7 — Session this model trades:",
-        reply_markup=_keyboard(SESSIONS)
+    await q.message.reply_text(
+        f"✅ Timeframe: *{tf}*\n\n"
+        f"{_progress(3)}\n\n"
+        "🧭 Which session does this model trade?",
+        parse_mode="Markdown",
+        reply_markup=_kb(SUPPORTED_SESSIONS, "wiz_session", cols=2, back=True)
     )
     return ASK_SESSION
 
 
 # ── Step 4: Session ───────────────────────────────────
 async def got_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    session = query.data.split(":")[1]
+    q = update.callback_query
+    await q.answer()
+    session = q.data.split(":")[1]
     context.user_data["session"] = session
-
-    await query.message.reply_text(
-        f"✅ Session: {session}\n\n"
-        f"Step 5/7 — Directional bias:",
-        reply_markup=_keyboard(BIASES)
+    await q.message.reply_text(
+        f"✅ Session: *{session}*\n\n"
+        f"{_progress(4)}\n\n"
+        "📈 Directional bias:",
+        parse_mode="Markdown",
+        reply_markup=_kb(SUPPORTED_BIASES, "wiz_bias", cols=2, back=True)
     )
     return ASK_BIAS
 
 
 # ── Step 5: Bias ──────────────────────────────────────
 async def got_bias(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    bias = query.data.split(":")[1]
+    q = update.callback_query
+    await q.answer()
+    bias = q.data.split(":")[1]
     context.user_data["bias"] = bias
-
-    await query.message.reply_text(
-        f"✅ Bias: {bias}\n\n"
-        f"Step 6/7 — Rules\n\n"
-        f"Add rules one at a time. Format:\n\n"
-        f"  NAME | WEIGHT | MANDATORY\n\n"
-        f"Examples:\n"
-        f"  Liquidity Sweep | 3.2 | yes\n"
-        f"  4H Order Block | 2.8 | yes\n"
-        f"  SMT Divergence | 2.4 | no\n\n"
-        f"Rules added so far: 0\n\n"
-        f"Send a rule, or /done when finished."
+    icon = "📈" if bias == "Bullish" else "📉"
+    await q.message.reply_text(
+        f"✅ Bias: *{icon} {bias}*\n\n"
+        f"{_progress(5)}\n\n"
+        "📋 *Add Rules*\n\n"
+        "Rules are the conditions that must be met\n"
+        "before this model fires an alert.\n\n"
+        "Type the name of your first rule:\n"
+        "_Example: External Liquidity Sweep_",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")
+        ]])
     )
     return ASK_RULES
 
 
-# ── Step 6: Rules (loop) ──────────────────────────────
-async def got_rule(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+# ── Step 5a: Rule name ────────────────────────────────
+async def got_rule_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text.strip()
+    if len(name) < 2:
+        await update.message.reply_text("❗ Too short. Try again:")
+        return ASK_RULES
+    context.user_data["_current_rule"] = {"name": name}
+    await update.message.reply_text(
+        f"📋 Rule: *{name}*\n\n"
+        "⚖️ Set the weight for this rule:\n"
+        "_Higher weight = more influence on score_",
+        parse_mode="Markdown",
+        reply_markup=_kb(["0.5","1.0","1.5","2.0","2.5","3.0","3.5","4.0"], "wiz_weight", cols=4, back=True)
+    )
+    return ASK_RULE_WEIGHT
 
-    # Parse   NAME | WEIGHT | MANDATORY
-    parts = [p.strip() for p in text.split("|")]
-    if len(parts) != 3:
-        await update.message.reply_text(
-            "Format: NAME | WEIGHT | yes/no\n"
-            "Example: Liquidity Sweep | 3.2 | yes"
+
+# ── Step 5b: Rule weight ──────────────────────────────
+async def got_rule_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    weight = float(q.data.split(":")[1])
+    context.user_data["_current_rule"]["weight"] = weight
+    rule_name = context.user_data["_current_rule"]["name"]
+    await q.message.reply_text(
+        f"📋 Rule: *{rule_name}*  `+{weight}`\n\n"
+        "🔒 Is this rule *mandatory*?\n\n"
+        "• *Required* — setup is invalidated if this rule fails\n"
+        "• *Optional* — adds score but won't block the alert",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔒 Required",  callback_data="wiz_mand:yes"),
+                InlineKeyboardButton("✨ Optional",  callback_data="wiz_mand:no"),
+            ],
+            [InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")]
+        ])
+    )
+    return ASK_RULE_MANDATORY
+
+
+# ── Step 5c: Mandatory toggle ─────────────────────────
+async def got_rule_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    mandatory = q.data.split(":")[1] == "yes"
+    rule = context.user_data.pop("_current_rule")
+    rule["mandatory"] = mandatory
+    rule["id"] = f"r{len(context.user_data['rules']) + 1}"
+    context.user_data["rules"].append(rule)
+
+    rules     = context.user_data["rules"]
+    max_raw   = sum(r["weight"] for r in rules)
+    max_score = round(max_raw + 1.0, 2)
+
+    rules_lines = "\n".join(
+        f"  {'🔒' if r['mandatory'] else '✨'} {r['name']}  `+{r['weight']}`"
+        for r in rules
+    )
+
+    warns = []
+    if not any(r["mandatory"] for r in rules):
+        warns.append("⚠️ No required rules — any score can trigger alerts")
+    if max_score < 5.5:
+        warns.append(f"⚠️ Max score ({max_score}) is below default Tier C — model won't alert")
+    warn_text = ("\n\n" + "\n".join(warns)) if warns else ""
+
+    await q.message.reply_text(
+        f"✅ Rule added!\n\n"
+        f"📋 *Rules so far* ({len(rules)}):\n"
+        f"{rules_lines}\n\n"
+        f"🎯 Max possible score: `{max_score}`"
+        f"{warn_text}\n\n"
+        "Add another rule or continue?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("➕ Add Rule",  callback_data="wiz_more:yes"),
+                InlineKeyboardButton("✅ Done",       callback_data="wiz_more:no"),
+            ],
+            [InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")]
+        ])
+    )
+    return ASK_MORE_RULES
+
+
+# ── Step 5d: More rules? ──────────────────────────────
+async def got_more_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    want_more = q.data.split(":")[1] == "yes"
+
+    if want_more:
+        await q.message.reply_text(
+            "📋 *Add another rule*\n\nType the rule name:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")
+            ]])
         )
         return ASK_RULES
 
-    name_r, weight_str, mandatory_str = parts
-    try:
-        weight = float(weight_str)
-    except ValueError:
-        await update.message.reply_text("Weight must be a number. Try again:")
-        return ASK_RULES
-
-    mandatory = mandatory_str.lower() in ("yes", "y", "true", "1")
-    rule_id   = f"r{len(context.user_data['rules']) + 1}"
-
-    context.user_data["rules"].append({
-        "id":        rule_id,
-        "name":      name_r,
-        "weight":    weight,
-        "mandatory": mandatory,
-    })
-
-    rules     = context.user_data["rules"]
-    rules_str = "\n".join(
-        f"  {'[REQ]' if r['mandatory'] else '[OPT]'} {r['name']}  +{r['weight']}"
-        for r in rules
-    )
-    max_raw   = sum(r["weight"] for r in rules)
-    max_score = round(max_raw + 1.0, 2)  # +1.0 best modifier
-
-    # Warnings
-    warns = []
-    if not any(r["mandatory"] for r in rules):
-        warns.append("⚠️ No mandatory rules set")
-    if max_score < 5.5:
-        warns.append(f"⚠️ Max score ({max_score}) below default Tier C — model won't alert")
-    warn_block = ("\n" + "\n".join(warns)) if warns else ""
-
-    await update.message.reply_text(
-        f"✅ Rule added.\n\n"
-        f"Rules so far ({len(rules)}):\n{rules_str}\n\n"
-        f"Max possible score: {max_score}"
-        f"{warn_block}\n\n"
-        f"Add another rule, or /done to continue."
-    )
-    return ASK_RULES
-
-
-async def rules_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rules = context.user_data.get("rules", [])
-    if not rules:
-        await update.message.reply_text("Add at least one rule first.")
-        return ASK_RULES
-
-    await update.message.reply_text(
-        f"Step 7/7 — Tier thresholds & risk\n\n"
-        f"Send three numbers on one line:\n\n"
-        f"  TIER_A  TIER_B  TIER_C\n\n"
-        f"Example:  9.5  7.5  5.5\n\n"
-        f"Risk is fixed:\n"
-        f"  Tier A = 2.0%\n"
-        f"  Tier B = 1.0%\n"
-        f"  Tier C = 0.5%"
+    # Move to tiers step
+    await q.message.reply_text(
+        f"{_progress(6)}\n\n"
+        "🏆 *Set Tier Thresholds*\n\n"
+        "Choose the minimum score for each tier.\n"
+        "_Tier A is the highest conviction._\n\n"
+        "Choose *Tier A* minimum score:",
+        parse_mode="Markdown",
+        reply_markup=_kb(
+            ["7.0","7.5","8.0","8.5","9.0","9.5","10.0","10.5"],
+            "wiz_tierA", cols=4, back=True
+        )
     )
     return ASK_TIERS
 
 
-# ── Step 7: Tiers ─────────────────────────────────────
-async def got_tiers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    parts = update.message.text.strip().split()
-    if len(parts) != 3:
-        await update.message.reply_text("Send exactly 3 numbers:  9.5  7.5  5.5")
-        return ASK_TIERS
-    try:
-        a, b, c = float(parts[0]), float(parts[1]), float(parts[2])
-    except ValueError:
-        await update.message.reply_text("Numbers only. Try again:")
-        return ASK_TIERS
-
-    if not (a > b > c > 0):
-        await update.message.reply_text("Must be decreasing: A > B > C > 0. Try again:")
-        return ASK_TIERS
-
-    context.user_data["tier_a"] = a
-    context.user_data["tier_b"] = b
-    context.user_data["tier_c"] = c
-
-    d = context.user_data
-    rules     = d["rules"]
-    max_raw   = sum(r["weight"] for r in rules)
-    max_score = round(max_raw + 1.0, 2)
-    rules_str = "\n".join(
-        f"  {'[REQ]' if r['mandatory'] else '[OPT]'} {r['name']}  +{r['weight']}"
-        for r in rules
+# ── Step 6: Tiers ─────────────────────────────────────
+async def got_tier_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["tier_a"] = float(q.data.split(":")[1])
+    await q.message.reply_text(
+        f"✅ Tier A ≥ `{context.user_data['tier_a']}`\n\n"
+        "🥈 Choose *Tier B* minimum score:",
+        parse_mode="Markdown",
+        reply_markup=_kb(
+            ["5.0","5.5","6.0","6.5","7.0","7.5","8.0","8.5"],
+            "wiz_tierB", cols=4, back=True
+        )
     )
-    tier_reach = []
-    for label, thresh in [("A",a),("B",b),("C",c)]:
-        ok = max_score >= thresh
-        tier_reach.append(f"  Tier {label} ≥{thresh}  {'✅' if ok else '❌ unreachable'}")
+    return ASK_TIERS + 1   # reuse state with different prefix handled by pattern
 
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Confirm & Save", callback_data="wiz_confirm:yes"),
-        InlineKeyboardButton("❌ Cancel",         callback_data="wiz_confirm:no"),
-    ]])
-    await update.message.reply_text(
-        f"📋 Review — confirm to save\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Name:      {d['name']}\n"
-        f"Pair:      {d['pair']}\n"
-        f"Timeframe: {d['timeframe']}\n"
-        f"Session:   {d['session']}\n"
-        f"Bias:      {d['bias']}\n\n"
-        f"Rules ({len(rules)}):\n{rules_str}\n\n"
-        f"Tiers:\n" + "\n".join(tier_reach) + "\n\n"
-        f"Max possible score: {max_score}\n\n"
-        f"Status will be INACTIVE until backtested.",
-        reply_markup=keyboard
+
+async def got_tier_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["tier_b"] = float(q.data.split(":")[1])
+    await q.message.reply_text(
+        f"✅ Tier B ≥ `{context.user_data['tier_b']}`\n\n"
+        "🥉 Choose *Tier C* minimum score:",
+        parse_mode="Markdown",
+        reply_markup=_kb(
+            ["3.0","3.5","4.0","4.5","5.0","5.5","6.0","6.5"],
+            "wiz_tierC", cols=4, back=True
+        )
     )
+    return ASK_TIERS + 2
+
+
+async def got_tier_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["tier_c"] = float(q.data.split(":")[1])
+    await _show_review(q.message.reply_text, context.user_data)
     return CONFIRM
 
 
-# ── Step 8: Confirm ───────────────────────────────────
+async def _show_review(reply_fn, d):
+    rules     = d["rules"]
+    max_raw   = sum(r["weight"] for r in rules)
+    max_score = round(max_raw + 1.0, 2)
+
+    rules_lines = "\n".join(
+        f"  {'🔒' if r['mandatory'] else '✨'} {r['name']}  `+{r['weight']}`"
+        for r in rules
+    )
+
+    tier_reach = []
+    for label, thresh in [("A", d["tier_a"]), ("B", d["tier_b"]), ("C", d["tier_c"])]:
+        ok = max_score >= thresh
+        tier_reach.append(
+            f"  {'✅' if ok else '❌'} Tier {label} ≥ {thresh}  →  {TIER_RISK[label]}% risk"
+        )
+
+    await reply_fn(
+        "📋 *Review Your Model*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 *{d['name']}*\n"
+        f"🪙 Pair:       `{d['pair']}`\n"
+        f"⏱ Timeframe:  `{d['timeframe']}`\n"
+        f"🧭 Session:    `{d['session']}`\n"
+        f"📈 Bias:       `{d['bias']}`\n"
+        f"\n📋 *Rules* ({len(rules)}):\n{rules_lines}\n"
+        f"🎯 Max score: `{max_score}`\n"
+        f"\n🏅 *Tiers*:\n" + "\n".join(tier_reach) + "\n\n"
+        "⚡ Status will be *INACTIVE* until you activate it.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Save Model",  callback_data="wiz_confirm:yes"),
+                InlineKeyboardButton("❌ Cancel",      callback_data="wiz_confirm:no"),
+            ]
+        ])
+    )
+
+
+# ── Confirm ───────────────────────────────────────────
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    choice = query.data.split(":")[1]
+    q = update.callback_query
+    await q.answer()
+    choice = q.data.split(":")[1]
 
     if choice == "no":
         context.user_data.clear()
-        await query.message.reply_text("❌ Cancelled. Model was not saved.")
+        await q.message.reply_text(
+            "❌ *Cancelled* — model not saved.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Home", callback_data="nav:home")
+            ]])
+        )
         return ConversationHandler.END
 
     d = context.user_data
@@ -292,46 +390,72 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         db.insert_model(model)
     except Exception as e:
-        await query.message.reply_text(f"❌ DB error saving model: {e}")
+        await q.message.reply_text(f"❌ Error saving model: `{e}`", parse_mode="Markdown")
         return ConversationHandler.END
 
     context.user_data.clear()
-    await query.message.reply_text(
-        f"✅ Model saved!\n"
-        f"{'─'*22}\n"
-        f"Name:   {model['name']}\n"
-        f"ID:     {model_id}\n"
-        f"Status: inactive\n\n"
-        f"Run backtest before activating:\n"
-        f"  /activate {model_id}"
+    await q.message.reply_text(
+        f"✅ *Model Saved!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 {model['name']}\n"
+        f"🆔 ID: `{model_id}`\n"
+        f"⚡ Status: *inactive*\n\n"
+        f"Tap *Activate* to start scanning.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Activate Now", callback_data=f"model:toggle:{model_id}"),
+                InlineKeyboardButton("⚙️ View Models",  callback_data="nav:models"),
+            ],
+            [InlineKeyboardButton("🏠 Home", callback_data="nav:home")]
+        ])
     )
     return ConversationHandler.END
 
 
 # ── Cancel ────────────────────────────────────────────
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        await update.callback_query.answer()
+        reply = update.callback_query.message.reply_text
+    else:
+        reply = update.message.reply_text
     context.user_data.clear()
-    await update.message.reply_text("❌ Wizard cancelled.")
+    await reply(
+        "❌ *Wizard cancelled.*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🏠 Home", callback_data="nav:home")
+        ]])
+    )
     return ConversationHandler.END
 
 
-# ── Build handler ─────────────────────────────────────
+# ── Build the ConversationHandler ─────────────────────
 def build_wizard_handler() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("create_model", create_model_start)],
+        entry_points=[
+            CommandHandler("create_model", wiz_start),
+            CallbackQueryHandler(wiz_start, pattern="^wiz:start$"),
+        ],
         states={
-            ASK_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, got_name)],
-            ASK_PAIR:    [CallbackQueryHandler(got_pair,    pattern="^wiz:")],
-            ASK_TF:      [CallbackQueryHandler(got_tf,      pattern="^wiz:")],
-            ASK_SESSION: [CallbackQueryHandler(got_session, pattern="^wiz:")],
-            ASK_BIAS:    [CallbackQueryHandler(got_bias,    pattern="^wiz:")],
-            ASK_RULES:   [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, got_rule),
-                CommandHandler("done", rules_done),
-            ],
-            ASK_TIERS:   [MessageHandler(filters.TEXT & ~filters.COMMAND, got_tiers)],
-            CONFIRM:     [CallbackQueryHandler(confirm, pattern="^wiz_confirm:")],
+            ASK_NAME:          [MessageHandler(filters.TEXT & ~filters.COMMAND, got_name)],
+            ASK_PAIR:          [CallbackQueryHandler(got_pair,          pattern="^wiz_pair:")],
+            ASK_TF:            [CallbackQueryHandler(got_tf,            pattern="^wiz_tf:")],
+            ASK_SESSION:       [CallbackQueryHandler(got_session,       pattern="^wiz_session:")],
+            ASK_BIAS:          [CallbackQueryHandler(got_bias,          pattern="^wiz_bias:")],
+            ASK_RULES:         [MessageHandler(filters.TEXT & ~filters.COMMAND, got_rule_name)],
+            ASK_RULE_WEIGHT:   [CallbackQueryHandler(got_rule_weight,   pattern="^wiz_weight:")],
+            ASK_RULE_MANDATORY:[CallbackQueryHandler(got_rule_mandatory,pattern="^wiz_mand:")],
+            ASK_MORE_RULES:    [CallbackQueryHandler(got_more_rules,    pattern="^wiz_more:")],
+            ASK_TIERS:         [CallbackQueryHandler(got_tier_a,        pattern="^wiz_tierA:")],
+            ASK_TIERS + 1:     [CallbackQueryHandler(got_tier_b,        pattern="^wiz_tierB:")],
+            ASK_TIERS + 2:     [CallbackQueryHandler(got_tier_c,        pattern="^wiz_tierC:")],
+            CONFIRM:           [CallbackQueryHandler(confirm,           pattern="^wiz_confirm:")],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CallbackQueryHandler(cancel, pattern="^wiz:cancel$"),
+        ],
         allow_reentry=True,
     )

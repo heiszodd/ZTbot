@@ -1,9 +1,10 @@
 import logging
+import db
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ConversationHandler
+    MessageHandler, filters
 )
-from config import TOKEN
+from config import TOKEN, SCANNER_INTERVAL
 from handlers import commands, alerts, wizard, stats
 
 logging.basicConfig(
@@ -14,41 +15,42 @@ log = logging.getLogger(__name__)
 
 
 def main():
+    # Ensure DB tables exist on startup
+    try:
+        db.setup_db()
+        log.info("DB ready")
+    except Exception as e:
+        log.error(f"DB setup failed: {e}")
+
     app = Application.builder().token(TOKEN).build()
 
-    # ── Core commands ─────────────────────────────────
-    app.add_handler(CommandHandler("start",      commands.start))
-    app.add_handler(CommandHandler("help",       commands.help_cmd))
-    app.add_handler(CommandHandler("status",     commands.status))
-    app.add_handler(CommandHandler("menu",       commands.menu))
+    # ── Core navigation ───────────────────────────────
+    app.add_handler(CommandHandler("start",       commands.start))
+    app.add_handler(CommandHandler("home",        commands.start))
+    app.add_handler(CommandHandler("scan",        commands.scan))
+    app.add_handler(CommandHandler("stats",       stats.stats_cmd))
+    app.add_handler(CommandHandler("discipline",  stats.discipline_cmd))
+    app.add_handler(CommandHandler("result",      stats.result_cmd))
+    app.add_handler(CommandHandler("create_model",wizard.wiz_start))
 
-    # ── Model commands ────────────────────────────────
-    app.add_handler(CommandHandler("models",     commands.list_models))
-    app.add_handler(CommandHandler("activate",   commands.activate_model))
-    app.add_handler(CommandHandler("deactivate", commands.deactivate_model))
-
-    # ── Scanning ──────────────────────────────────────
-    app.add_handler(CommandHandler("scan",       commands.scan))
-    app.add_handler(CommandHandler("alerts",     commands.list_alerts))
-
-    # ── Performance ───────────────────────────────────
-    app.add_handler(CommandHandler("stats",      stats.stats_cmd))
-    app.add_handler(CommandHandler("discipline", stats.discipline_cmd))
-    app.add_handler(CommandHandler("regime",     stats.regime_cmd))
-
-    # ── Model wizard (conversation) ───────────────────
+    # ── Model wizard (ConversationHandler — must be first) ──
     app.add_handler(wizard.build_wizard_handler())
 
-    # ── Inline button callbacks ───────────────────────
-    app.add_handler(CallbackQueryHandler(alerts.handle_alert_response, pattern="^(entered|skipped|watching):"))
-    app.add_handler(CallbackQueryHandler(commands.handle_menu_callback, pattern="^menu:"))
-    app.add_handler(CallbackQueryHandler(commands.handle_model_callback, pattern="^model:"))
+    # ── Callback routers ──────────────────────────────
+    app.add_handler(CallbackQueryHandler(commands.handle_nav,       pattern="^nav:"))
+    app.add_handler(CallbackQueryHandler(commands.handle_model_cb,  pattern="^model:"))
+    app.add_handler(CallbackQueryHandler(commands.handle_scan_cb,   pattern="^scan:"))
+    app.add_handler(CallbackQueryHandler(alerts.handle_alert_response, pattern="^alert:"))
 
-    # ── Scheduler: scanner every 15 min ──────────────
-    job_queue = app.job_queue
-    job_queue.run_repeating(alerts.run_scanner, interval=900, first=10, name="scanner")
+    # ── Scanner job ───────────────────────────────────
+    app.job_queue.run_repeating(
+        alerts.run_scanner,
+        interval=SCANNER_INTERVAL,
+        first=15,
+        name="scanner"
+    )
 
-    log.info("Bot started.")
+    log.info("🤖 Bot started — polling")
     app.run_polling(drop_pending_updates=True)
 
 
