@@ -222,14 +222,15 @@ def log_alert(pair, model_id, model_name, score, tier, direction,
                   entry, sl, tp, rr, valid, reason))
         conn.commit()
 
-def get_recent_alerts(hours=24):
+def get_recent_alerts(hours=24, limit=20):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT * FROM alert_log
-                WHERE alerted_at > NOW() - INTERVAL '%s hours'
-                ORDER BY alerted_at DESC LIMIT 20
-            """, (hours,))
+                WHERE alerted_at > NOW() - make_interval(hours => %s)
+                ORDER BY alerted_at DESC
+                LIMIT %s
+            """, (hours, limit))
             return [dict(r) for r in cur.fetchall()]
 
 def get_valid_alerts_today():
