@@ -359,7 +359,7 @@ async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     series = px.get_recent_series(model["pair"], days=days)
     if len(series) < 40:
         await update.message.reply_text(
-            "Not enough historical data for this pair. Backtest currently supports crypto pairs with CoinGecko data.",
+            "Not enough historical data for this pair from Binance yet. Try a larger day range or check symbol support.",
         )
         return
 
