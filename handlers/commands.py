@@ -30,7 +30,10 @@ def main_kb():
             InlineKeyboardButton("🛡️ Discipline",    callback_data="nav:discipline"),
         ],
         [
+            InlineKeyboardButton("🧪 Backtest",      callback_data="nav:backtest"),
             InlineKeyboardButton("📋 Alert Log",     callback_data="nav:alerts"),
+        ],
+        [
             InlineKeyboardButton("⚡ Status",        callback_data="nav:status"),
         ],
     ])
@@ -139,6 +142,9 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "\n".join(lines), reply_markup=kb, parse_mode="Markdown"
         )
+
+    elif dest == "backtest":
+        await _send_backtest_model_picker(query.message.reply_text)
 
     elif dest == "status":
         session = engine.get_session()
@@ -317,6 +323,100 @@ async def _send_scan_picker(reply_fn):
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(rows)
     )
+
+
+async def _send_backtest_model_picker(reply_fn):
+    models = db.get_all_models()[:20]
+    if not models:
+        await reply_fn(
+            "⚙️ *No models found*\n\nCreate a model first, then run a backtest.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("➕ New Model", callback_data="wiz:start"),
+                InlineKeyboardButton("🏠 Home", callback_data="nav:home"),
+            ]])
+        )
+        return
+
+    rows = [
+        [InlineKeyboardButton(f"{m['name']} ({m['pair']})", callback_data=f"backtest:model:{m['id']}")]
+        for m in models
+    ]
+    rows.append([InlineKeyboardButton("🏠 Home", callback_data="nav:home")])
+    await reply_fn(
+        "🧪 *Backtest Setup*\n\nChoose a model to backtest:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def handle_backtest_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split(":")
+    action = parts[1]
+
+    if action == "model":
+        model_id = parts[2]
+        model = db.get_model(model_id)
+        if not model:
+            await query.message.reply_text("❌ Model not found.")
+            return
+
+        day_options = [7, 14, 30, 60, 90]
+        rows = []
+        for i in range(0, len(day_options), 3):
+            rows.append([
+                InlineKeyboardButton(
+                    f"{days}d",
+                    callback_data=f"backtest:run:{model_id}:{days}"
+                )
+                for days in day_options[i:i + 3]
+            ])
+        rows.append([InlineKeyboardButton("« Back", callback_data="nav:backtest")])
+
+        await query.message.reply_text(
+            f"🧪 *{model['name']}*\n"
+            f"Pair: `{model['pair']}`\n\n"
+            "Choose lookback period:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+
+    elif action == "run":
+        model_id = parts[2]
+        days = int(parts[3])
+        model = db.get_model(model_id)
+        if not model:
+            await query.message.reply_text("❌ Model not found.")
+            return
+
+        await query.message.reply_text(
+            f"⏳ Running backtest for *{model['name']}* ({days}d)...",
+            parse_mode="Markdown"
+        )
+
+        series = px.get_recent_series(model["pair"], days=days)
+        if len(series) < 40:
+            await query.message.reply_text(
+                "Not enough historical data for this pair from Binance yet. "
+                "Try a larger day range or check symbol support.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔁 Try Again", callback_data=f"backtest:model:{model_id}"),
+                    InlineKeyboardButton("🏠 Home", callback_data="nav:home"),
+                ]])
+            )
+            return
+
+        result = engine.backtest_model(model, series)
+        await query.message.reply_text(
+            formatters.fmt_backtest(model, result, days),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🧪 Run Again", callback_data="nav:backtest"),
+                InlineKeyboardButton("🏠 Home", callback_data="nav:home"),
+            ]])
+        )
 
 
 def _disc_score(violations):
