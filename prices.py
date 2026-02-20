@@ -281,22 +281,16 @@ def fetch_historical_1m_btcusdt_2023_to_now() -> list[Candle]:
 def get_crypto_prices(pairs: list[str]) -> dict[str, float]:
     crypto_pairs = [pair for pair in pairs if pair in CRYPTO_PAIRS]
     if not crypto_pairs:
-        return {p: FALLBACK_PRICES[p] for p in pairs if p in FALLBACK_PRICES}
+        return {}
 
     symbols = list(sorted(set(crypto_pairs)))
     try:
         tickers = _binance_get("/api/v3/ticker/price", params={"symbols": json.dumps(symbols)}, timeout=8.0)
         data = {t["symbol"]: float(t["price"]) for t in tickers}
-        result = {}
-        for pair in pairs:
-            if pair in data:
-                result[pair] = data[pair]
-            elif pair in FALLBACK_PRICES:
-                result[pair] = FALLBACK_PRICES[pair]
-        return result
+        return {pair: data[pair] for pair in pairs if pair in data}
     except Exception as exc:
         log.error("Binance price error: %s", exc)
-        return {p: FALLBACK_PRICES[p] for p in pairs if p in FALLBACK_PRICES}
+        return {}
 
 
 def fetch_prices(pairs: list[str]) -> dict[str, float]:

@@ -47,8 +47,8 @@ CLEAN_TRADE_BONUS = 2
 
 # ── Supported assets ──────────────────────────────────
 CRYPTO_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"]
-FOREX_PAIRS  = ["EURUSD", "GBPUSD", "XAUUSD", "USDJPY", "AUDUSD", "GBPJPY"]
-ALL_PAIRS    = CRYPTO_PAIRS + FOREX_PAIRS
+FOREX_PAIRS  = []
+ALL_PAIRS    = CRYPTO_PAIRS
 
 TIMEFRAMES = ["1m", "5m", "15m", "30m", "1H", "4H"]
 SESSIONS_LIST = ["London", "NY", "Asia", "Overlap", "Any"]
