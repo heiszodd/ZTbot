@@ -80,7 +80,7 @@ async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ *{name}*\n\n"
         f"{_progress(2)}\n\n"
-        "🪙 Which pair does this model trade?",
+        "🪙 Which pair does this model trade?\n\n🧭 *Guide:* Choose the market where this setup is most reliable.",
         parse_mode="Markdown",
         reply_markup=_kb(SUPPORTED_PAIRS, "wiz_pair", cols=3, back=True)
     )
@@ -96,7 +96,7 @@ async def got_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(
         f"✅ Pair: *{pair}*\n\n"
         f"{_progress(3)}\n\n"
-        "⏱ Choose the timeframe:",
+        "⏱ Choose the timeframe:\n\n🧭 *Guide:* Match this to the candles you use for entries.",
         parse_mode="Markdown",
         reply_markup=_kb(SUPPORTED_TIMEFRAMES, "wiz_tf", cols=3, back=True)
     )
@@ -112,7 +112,7 @@ async def got_tf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(
         f"✅ Timeframe: *{tf}*\n\n"
         f"{_progress(3)}\n\n"
-        "🧭 Which session does this model trade?",
+        "🧭 Which session does this model trade?\n\n🧭 *Guide:* Pick when liquidity/volatility is best for this setup.",
         parse_mode="Markdown",
         reply_markup=_kb(SUPPORTED_SESSIONS, "wiz_session", cols=2, back=True)
     )
@@ -128,7 +128,7 @@ async def got_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text(
         f"✅ Session: *{session}*\n\n"
         f"{_progress(4)}\n\n"
-        "📈 Directional bias:",
+        "📈 Directional bias:\n\n🧭 *Guide:* Set your dominant direction to filter low-quality trades.",
         parse_mode="Markdown",
         reply_markup=_kb(SUPPORTED_BIASES, "wiz_bias", cols=2, back=True)
     )
@@ -149,7 +149,7 @@ async def got_bias(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Rules are the conditions that must be met\n"
         "before this model fires an alert.\n\n"
         "Type the name of your first rule:\n"
-        "_Example: External Liquidity Sweep_",
+        "_Example: External Liquidity Sweep_\n\n🧭 *Guide:* Start with your non-negotiable condition.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")
@@ -168,7 +168,7 @@ async def got_rule_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"📋 Rule: *{name}*\n\n"
         "⚖️ Set the weight for this rule:\n"
-        "_Higher weight = more influence on score_",
+        "_Higher weight = more influence on score_\n\n🧭 *Guide:* Use bigger weights for stronger confirmations.",
         parse_mode="Markdown",
         reply_markup=_kb(["0.5","1.0","1.5","2.0","2.5","3.0","3.5","4.0"], "wiz_weight", cols=4, back=True)
     )
@@ -186,7 +186,7 @@ async def got_rule_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📋 Rule: *{rule_name}*  `+{weight}`\n\n"
         "🔒 Is this rule *mandatory*?\n\n"
         "• *Required* — setup is invalidated if this rule fails\n"
-        "• *Optional* — adds score but won't block the alert",
+        "• *Optional* — adds score but won't block the alert\n\n🧭 *Guide:* Keep at least one required rule to avoid noisy alerts.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [
@@ -266,7 +266,7 @@ async def got_more_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏆 *Set Tier Thresholds*\n\n"
         "Choose the minimum score for each tier.\n"
         "_Tier A is the highest conviction._\n\n"
-        "Choose *Tier A* minimum score:",
+        "Choose *Tier A* minimum score:\n\n🧭 *Guide:* Tier A should represent your best, highest-conviction setups.",
         parse_mode="Markdown",
         reply_markup=_kb(
             ["7.0","7.5","8.0","8.5","9.0","9.5","10.0","10.5"],
@@ -283,7 +283,7 @@ async def got_tier_a(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["tier_a"] = float(q.data.split(":")[1])
     await q.message.reply_text(
         f"✅ Tier A ≥ `{context.user_data['tier_a']}`\n\n"
-        "🥈 Choose *Tier B* minimum score:",
+        "🥈 Choose *Tier B* minimum score:\n\n🧭 *Guide:* Tier B should capture solid but not elite setups.",
         parse_mode="Markdown",
         reply_markup=_kb(
             ["5.0","5.5","6.0","6.5","7.0","7.5","8.0","8.5"],
@@ -299,7 +299,7 @@ async def got_tier_b(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["tier_b"] = float(q.data.split(":")[1])
     await q.message.reply_text(
         f"✅ Tier B ≥ `{context.user_data['tier_b']}`\n\n"
-        "🥉 Choose *Tier C* minimum score:",
+        "🥉 Choose *Tier C* minimum score:\n\n🧭 *Guide:* Tier C is your minimum acceptable quality floor.",
         parse_mode="Markdown",
         reply_markup=_kb(
             ["3.0","3.5","4.0","4.5","5.0","5.5","6.0","6.5"],
@@ -345,7 +345,7 @@ async def _show_review(reply_fn, d):
         f"\n📋 *Rules* ({len(rules)}):\n{rules_lines}\n"
         f"🎯 Max score: `{max_score}`\n"
         f"\n🏅 *Tiers*:\n" + "\n".join(tier_reach) + "\n\n"
-        "⚡ Status will be *INACTIVE* until you activate it.",
+        "⚡ Status will be *INACTIVE* until you activate it.\n\n🧭 *Guide:* Save now, then activate from the model detail screen.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [
@@ -400,7 +400,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📌 {model['name']}\n"
         f"🆔 ID: `{model_id}`\n"
         f"⚡ Status: *inactive*\n\n"
-        f"Tap *Activate* to start scanning.",
+        f"Tap *Activate* to start scanning.\n\n🧭 *Guide:* Once active, the scanner checks this model automatically.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [

@@ -14,8 +14,16 @@ def _guard(update: Update) -> bool:
 def main_kb():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🏠 Home",         callback_data="nav:home"),
+            InlineKeyboardButton("🏠 Dashboard",    callback_data="nav:home"),
+            InlineKeyboardButton("🧭 Quick Guide",  callback_data="nav:guide"),
+        ],
+        [
             InlineKeyboardButton("⚙️ Models",        callback_data="nav:models"),
+            InlineKeyboardButton("➕ New Model",     callback_data="wiz:start"),
+        ],
+        [
+            InlineKeyboardButton("🔍 Manual Scan",   callback_data="nav:scan"),
+            InlineKeyboardButton("💹 Prices",        callback_data="nav:prices"),
         ],
         [
             InlineKeyboardButton("📊 Stats",         callback_data="nav:stats"),
@@ -23,11 +31,7 @@ def main_kb():
         ],
         [
             InlineKeyboardButton("📋 Alert Log",     callback_data="nav:alerts"),
-            InlineKeyboardButton("💹 Prices",        callback_data="nav:prices"),
-        ],
-        [
             InlineKeyboardButton("⚡ Status",        callback_data="nav:status"),
-            InlineKeyboardButton("➕ New Model",     callback_data="wiz:start"),
         ],
     ])
 
@@ -35,6 +39,19 @@ def main_kb():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update): return
     await _render_home(update.message.reply_text)
+
+
+async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _guard(update):
+        return
+    await update.message.reply_text(
+        formatters.fmt_help(),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Build First Model", callback_data="wiz:start")],
+            [InlineKeyboardButton("🏠 Dashboard", callback_data="nav:home")],
+        ])
+    )
 
 
 async def _render_home(reply_fn):
@@ -61,6 +78,24 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif dest == "models":
         await _render_models(query)
+
+    elif dest == "guide":
+        await query.message.reply_text(
+            formatters.fmt_help(),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Build First Model", callback_data="wiz:start")],
+                [InlineKeyboardButton("🏠 Dashboard", callback_data="nav:home")],
+            ])
+        )
+
+    elif dest == "scan":
+        await query.message.reply_text(
+            "🔍 *Manual Scan*\n"
+            "Pick a pair from active models to force-check for setups.",
+            parse_mode="Markdown"
+        )
+        await _send_scan_picker(query.message.reply_text)
 
     elif dest == "stats":
         row      = db.get_stats_30d()
@@ -253,9 +288,13 @@ async def handle_scan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update): return
+    await _send_scan_picker(update.message.reply_text)
+
+
+async def _send_scan_picker(reply_fn):
     active = db.get_active_models()
     if not active:
-        await update.message.reply_text(
+        await reply_fn(
             "⚙️ *No active models*\n\nActivate a model first to start scanning.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[
@@ -271,9 +310,10 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(pair_set[j], callback_data=f"scan:{pair_set[j]}")
             for j in range(i, min(i + 2, len(pair_set)))
         ])
-    rows.append([InlineKeyboardButton("🏠 Home", callback_data="nav:home")])
-    await update.message.reply_text(
-        "🔍 *Manual Scan*\n\nChoose a pair:",
+    rows.append([InlineKeyboardButton("🏠 Dashboard", callback_data="nav:home")])
+    await reply_fn(
+        "🔍 *Manual Scan*\n\n"
+        "Choose a pair. We'll instantly evaluate all active models on that pair.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(rows)
     )
