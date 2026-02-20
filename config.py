@@ -68,3 +68,17 @@ SUPPORTED_PAIRS = ALL_PAIRS
 SUPPORTED_TIMEFRAMES = TIMEFRAMES
 SUPPORTED_SESSIONS = SESSIONS_LIST
 SUPPORTED_BIASES = BIASES
+
+# ── Model rule catalog (wizard selection) ────────────
+SUPPORTED_MODEL_RULES = [
+    "External Liquidity Sweep",
+    "Market Structure Shift",
+    "Fair Value Gap Reaction",
+    "Order Block Respect",
+    "Session High/Low Sweep",
+    "Displacement Candle",
+    "Premium/Discount Alignment",
+    "Higher-Timeframe Bias Match",
+    "Volume Expansion Confirmation",
+    "News Risk Cleared",
+]

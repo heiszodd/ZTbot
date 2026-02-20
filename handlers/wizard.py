@@ -7,7 +7,7 @@ from telegram.ext import (
 import db
 from config import (
     CHAT_ID, SUPPORTED_PAIRS, SUPPORTED_TIMEFRAMES,
-    SUPPORTED_SESSIONS, SUPPORTED_BIASES, TIER_RISK
+    SUPPORTED_SESSIONS, SUPPORTED_BIASES, SUPPORTED_MODEL_RULES, TIER_RISK
 )
 
 log = logging.getLogger(__name__)
@@ -34,6 +34,15 @@ def _kb(options, prefix, cols=2, back=None):
         ])
     if back:
         rows.append([InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _rule_kb():
+    rows = [
+        [InlineKeyboardButton(rule, callback_data=f"wiz_rule:{idx}")]
+        for idx, rule in enumerate(SUPPORTED_MODEL_RULES)
+    ]
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -148,24 +157,35 @@ async def got_bias(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 *Add Rules*\n\n"
         "Rules are the conditions that must be met\n"
         "before this model fires an alert.\n\n"
-        "Type the name of your first rule:\n"
-        "_Example: External Liquidity Sweep_\n\n🧭 *Guide:* Start with your non-negotiable condition.",
+        "Select your first rule from the list below.\n\n🧭 *Guide:* Start with your non-negotiable condition.",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")
-        ]])
+        reply_markup=_rule_kb()
     )
     return ASK_RULES
 
 
 # ── Step 5a: Rule name ────────────────────────────────
 async def got_rule_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.message.text.strip()
-    if len(name) < 2:
-        await update.message.reply_text("❗ Too short. Try again:")
+    q = update.callback_query
+    await q.answer()
+    idx = int(q.data.split(":")[1])
+
+    if idx < 0 or idx >= len(SUPPORTED_MODEL_RULES):
+        await q.message.reply_text("❗ Invalid rule selection. Please choose again.", reply_markup=_rule_kb())
         return ASK_RULES
+
+    name = SUPPORTED_MODEL_RULES[idx]
+
+    if any(r["name"] == name for r in context.user_data.get("rules", [])):
+        await q.message.reply_text(
+            "⚠️ That rule is already added. Select a different one.",
+            parse_mode="Markdown",
+            reply_markup=_rule_kb(),
+        )
+        return ASK_RULES
+
     context.user_data["_current_rule"] = {"name": name}
-    await update.message.reply_text(
+    await q.message.reply_text(
         f"📋 Rule: *{name}*\n\n"
         "⚖️ Set the weight for this rule:\n"
         "_Higher weight = more influence on score_\n\n🧭 *Guide:* Use bigger weights for stronger confirmations.",
@@ -252,11 +272,9 @@ async def got_more_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if want_more:
         await q.message.reply_text(
-            "📋 *Add another rule*\n\nType the rule name:",
+            "📋 *Add another rule*\n\nSelect the next rule:",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")
-            ]])
+            reply_markup=_rule_kb()
         )
         return ASK_RULES
 
@@ -444,7 +462,7 @@ def build_wizard_handler() -> ConversationHandler:
             ASK_TF:            [CallbackQueryHandler(got_tf,            pattern="^wiz_tf:")],
             ASK_SESSION:       [CallbackQueryHandler(got_session,       pattern="^wiz_session:")],
             ASK_BIAS:          [CallbackQueryHandler(got_bias,          pattern="^wiz_bias:")],
-            ASK_RULES:         [MessageHandler(filters.TEXT & ~filters.COMMAND, got_rule_name)],
+            ASK_RULES:         [CallbackQueryHandler(got_rule_name,   pattern="^wiz_rule:")],
             ASK_RULE_WEIGHT:   [CallbackQueryHandler(got_rule_weight,   pattern="^wiz_weight:")],
             ASK_RULE_MANDATORY:[CallbackQueryHandler(got_rule_mandatory,pattern="^wiz_mand:")],
             ASK_MORE_RULES:    [CallbackQueryHandler(got_more_rules,    pattern="^wiz_more:")],
