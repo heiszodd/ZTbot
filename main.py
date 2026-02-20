@@ -44,6 +44,7 @@ def main():
     app.add_handler(CallbackQueryHandler(commands.handle_nav,       pattern="^nav:"))
     app.add_handler(CallbackQueryHandler(commands.handle_model_cb,  pattern="^model:"))
     app.add_handler(CallbackQueryHandler(commands.handle_scan_cb,   pattern="^scan:"))
+    app.add_handler(CallbackQueryHandler(commands.handle_backtest_cb, pattern="^backtest:"))
     app.add_handler(CallbackQueryHandler(alerts.handle_alert_response, pattern="^alert:"))
 
     # ── Scanner job ───────────────────────────────────
