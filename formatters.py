@@ -48,7 +48,7 @@ def fmt_welcome(active_count: int, alert_count: int) -> str:
 # ── Dashboard ─────────────────────────────────────────
 def fmt_dashboard(active_models: list, live_alerts: list, prices: dict) -> str:
     lines = [
-        "📊  *Dashboard*",
+        "📊  *Mission Control Dashboard*",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
     ]
@@ -81,6 +81,7 @@ def fmt_dashboard(active_models: list, live_alerts: list, prices: dict) -> str:
     else:
         lines.append("  No valid setups in the last 12 hours.")
 
+    lines += ["", "🧭  *Suggested Next Step*", "  1) Open Models", "  2) Activate one model", "  3) Run Manual Scan"]
     return "\n".join(lines)
 
 
@@ -91,7 +92,7 @@ def fmt_models_list(models: list) -> str:
             "⚙️  *My Models*\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "You haven't created any models yet.\n\n"
-            "Tap *➕ New Model* to get started."
+            "Tap *➕ New Model* to launch the guided wizard."
         )
     lines = [
         "⚙️  *My Models*",
@@ -371,27 +372,28 @@ def fmt_wiz_review(d: dict, max_score: float, tier_reach: list) -> str:
 
 def fmt_help() -> str:
     return (
-        "📖  *Help & Commands*\n"
+        "🧭  *Step-by-Step App Guide*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Everything is button-driven — just tap away.\n\n"
-        "🏠  /start  —  Home menu\n\n"
-        "📊  *Dashboard*\n"
-        "  Live prices, active models,\n"
-        "  and today's valid setups\n\n"
-        "⚙️  *My Models*\n"
-        "  Create, activate, scan, delete\n\n"
-        "🔔  *Live Alerts*\n"
-        "  All alerts from the last 24 hours\n\n"
-        "📈  *Performance*\n"
-        "  30-day win rate, R, tier & session breakdown\n\n"
-        "🛡️  *Discipline*\n"
-        "  Violation log and rolling score\n\n"
-        "💰  *Live Prices*\n"
-        "  Real-time crypto prices via CoinGecko\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⚡  Scanner runs every 15 min automatically\n"
-        "    and fires alerts when a setup is found."
+        "*Step 1 — Create your model*\n"
+        "• Tap *➕ New Model*\n"
+        "• Follow the wizard prompts\n"
+        "• Add mandatory + optional rules\n\n"
+        "*Step 2 — Activate it*\n"
+        "• Open *⚙️ Models*\n"
+        "• Select your model\n"
+        "• Tap *✅ Activate*\n\n"
+        "*Step 3 — Scan market now*\n"
+        "• Tap *🔍 Manual Scan*\n"
+        "• Pick a pair to force a scan\n\n"
+        "*Step 4 — Manage alerts*\n"
+        "• Use Entered / Skipped / Watching\n"
+        "• Track outcomes with `/result <id> TP|SL`\n\n"
+        "*Step 5 — Improve performance*\n"
+        "• Review *📊 Stats*\n"
+        "• Audit behavior in *🛡️ Discipline*\n\n"
+        "Need a reset? Tap *🏠 Dashboard* anytime."
     )
+
 
 
 # ── Backward-compatible aliases used by handlers ─────

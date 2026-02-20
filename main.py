@@ -28,6 +28,7 @@ def main():
     app.add_handler(CommandHandler("start",       commands.start))
     app.add_handler(CommandHandler("home",        commands.start))
     app.add_handler(CommandHandler("scan",        commands.scan))
+    app.add_handler(CommandHandler("guide",       commands.guide))
     app.add_handler(CommandHandler("stats",       stats.stats_cmd))
     app.add_handler(CommandHandler("discipline",  stats.discipline_cmd))
     app.add_handler(CommandHandler("result",      stats.result_cmd))
