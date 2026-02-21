@@ -69,8 +69,25 @@ async def handle_degen_model_cb(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "degen_model:list":
         models = db.get_all_degen_models()
         rows = [[InlineKeyboardButton(f"{'🟢' if m['status']=='active' else '⚫'} {m['name']} | {','.join(m.get('chains',[]))} | {len(m.get('rules',[]))}r | {m.get('alert_count',0)}a", callback_data=f"degen_model:detail:{m['id']}")] for m in models]
+        rows.append([InlineKeyboardButton("🗑 Delete All Degen Models", callback_data="degen_model:delete_all_confirm")])
         rows.append([InlineKeyboardButton("➕ New Degen Model", callback_data="degen_model:new")])
         await q.message.reply_text("Degen models", reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data == "degen_model:delete_all_confirm":
+        await q.message.reply_text(
+            "⚠️ Delete *all* degen models? This cannot be undone.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑 Yes, Delete All", callback_data="degen_model:delete_all")],
+                [InlineKeyboardButton("Cancel", callback_data="degen_model:list")],
+            ]),
+        )
+        return
+    if data == "degen_model:delete_all":
+        db.delete_all_degen_models()
+        await q.message.reply_text("✅ All degen models deleted.", parse_mode="Markdown")
+        await q.message.reply_text("Degen models", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ New Degen Model", callback_data="degen_model:new")]]))
         return
 
     parts = data.split(":")
