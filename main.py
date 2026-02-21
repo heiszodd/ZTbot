@@ -410,6 +410,15 @@ def show_dashboard() -> None:
         _save_dashboard_state(state)
 
 
+async def keepalive_job(context):
+    try:
+        with db.get_conn():
+            pass
+        log.debug("Keepalive ping OK")
+    except Exception as e:
+        log.warning(f"Keepalive failed: {e}")
+
+
 def main():
     for var in ["BOT_TOKEN", "CHAT_ID", "DB_URL"]:
         if not os.getenv(var):
@@ -419,6 +428,7 @@ def main():
     print("ZTbot main.py starting", flush=True)
 
     try:
+        db.init_pool()
         db.setup_db()
         log.info("DB ready")
     except Exception as e:
@@ -474,6 +484,13 @@ def main():
         interval=SCANNER_INTERVAL,
         first=15,
         name="scanner"
+    )
+
+    app.job_queue.run_repeating(
+        keepalive_job,
+        interval=300,
+        first=60,
+        name="keepalive"
     )
 
     app.job_queue.run_daily(

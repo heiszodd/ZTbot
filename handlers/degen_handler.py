@@ -13,17 +13,20 @@ from degen.templates import TEMPLATES
 
 
 async def degen_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = __import__("handlers.commands", fromlist=["degen_keyboard"]).degen_keyboard()
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        msg = await query.message.reply_text("🎰 Degen Zone\n━━━━━━━━━━━━━━━━\n⏳ Loading live data...", reply_markup=kb)
+    else:
+        msg = await update.message.reply_text("🎰 Degen Zone\n━━━━━━━━━━━━━━━━\n⏳ Loading live data...", reply_markup=kb)
     active = db.get_active_degen_models()
     wallets = db.get_tracked_wallets(active_only=True)
     finds_today = len(db.get_recent_degen_tokens(limit=500))
     alerts_today = len(db.get_recent_wallet_alerts(hours=24))
     scanner_active = True
     txt = __import__("formatters").fmt_degen_home(active, wallets, scanner_active, finds_today, alerts_today)
-    kb = __import__("handlers.commands", fromlist=["degen_keyboard"]).degen_keyboard()
-    sender = update.callback_query.message.reply_text if update.callback_query else update.message.reply_text
-    if update.callback_query:
-        await update.callback_query.answer()
-    await sender(txt, reply_markup=kb)
+    await msg.edit_text(txt, reply_markup=kb)
 
 
 def degen_dashboard_kb():

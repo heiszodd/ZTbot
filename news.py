@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import requests
+import httpx
 from bs4 import BeautifulSoup
 
 from config import CRYPTOPANIC_TOKEN, WAT
@@ -47,17 +47,17 @@ def _safe_float(raw: Any) -> float | None:
         return None
 
 
-def _fetch_cryptopanic_events(pairs: list[str], horizon_end: datetime) -> list[dict]:
+async def _fetch_cryptopanic_events(pairs: list[str], horizon_end: datetime) -> list[dict]:
     if not CRYPTOPANIC_TOKEN:
         return []
     try:
-        resp = requests.get(
-            CRYPTO_PANIC_URL,
-            params={"auth_token": CRYPTOPANIC_TOKEN, "filter": "important", "kind": "news"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                CRYPTO_PANIC_URL,
+                params={"auth_token": CRYPTOPANIC_TOKEN, "filter": "important", "kind": "news"},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
         now = datetime.now(timezone.utc)
         events: list[dict] = []
         for item in payload.get("results", []):
@@ -89,11 +89,12 @@ def _fetch_cryptopanic_events(pairs: list[str], horizon_end: datetime) -> list[d
         return []
 
 
-def _fetch_coingecko_events(pairs: list[str], horizon_end: datetime) -> list[dict]:
+async def _fetch_coingecko_events(pairs: list[str], horizon_end: datetime) -> list[dict]:
     try:
-        resp = requests.get(COINGECKO_NEWS_URL, timeout=10)
-        resp.raise_for_status()
-        payload = resp.json()
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(COINGECKO_NEWS_URL)
+            resp.raise_for_status()
+            payload = resp.json()
         now = datetime.now(timezone.utc)
         events: list[dict] = []
         items = payload.get("data") if isinstance(payload, dict) else payload
@@ -144,13 +145,14 @@ def _parse_calendar_time(raw_time: str, now_utc: datetime) -> datetime | None:
     return None
 
 
-def _fetch_investing_calendar(pairs: list[str], horizon_end: datetime) -> list[dict]:
+async def _fetch_investing_calendar(pairs: list[str], horizon_end: datetime) -> list[dict]:
     now = datetime.now(timezone.utc)
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(INVESTING_CALENDAR_URL, timeout=12, headers=headers)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
+        async with httpx.AsyncClient(timeout=12) as client:
+            resp = await client.get(INVESTING_CALENDAR_URL, headers=headers)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "lxml")
         rows = soup.select("tr.js-event-item")
         events: list[dict] = []
         pair_set = set(pairs)
@@ -223,20 +225,20 @@ def _fallback_recurring_events(pairs: list[str], horizon_end: datetime) -> list[
     return out
 
 
-def get_upcoming_events(pairs: list, hours_ahead: int = 8) -> list[dict]:
+async def get_upcoming_events(pairs: list, hours_ahead: int = 8) -> list[dict]:
     now = datetime.now(timezone.utc)
     cache_key = f"{','.join(sorted(pairs))}:{hours_ahead}"
     if _EVENT_CACHE.get("key") == cache_key and now < _EVENT_CACHE["expires_at"]:
         return _EVENT_CACHE["data"]
 
     horizon_end = now + timedelta(hours=hours_ahead)
-    events = _fetch_investing_calendar(pairs, horizon_end)
+    events = await _fetch_investing_calendar(pairs, horizon_end)
     if not events:
         events = _fallback_recurring_events(pairs, horizon_end)
 
-    crypto_news = _fetch_cryptopanic_events(pairs, horizon_end)
+    crypto_news = await _fetch_cryptopanic_events(pairs, horizon_end)
     if not crypto_news:
-        crypto_news = _fetch_coingecko_events(pairs, horizon_end)
+        crypto_news = await _fetch_coingecko_events(pairs, horizon_end)
 
     all_events = [e for e in (events + crypto_news) if e.get("impact") == "high" and now <= e.get("time_utc", now) <= horizon_end]
     all_events.sort(key=lambda x: x["time_utc"])

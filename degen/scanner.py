@@ -4,7 +4,8 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-import requests
+import httpx
+from concurrent.futures import ThreadPoolExecutor
 
 import db
 from degen.model_engine import evaluate_token_against_model
@@ -17,6 +18,7 @@ log = logging.getLogger(__name__)
 
 SOLSCAN_RATE_LIMIT_DELAY = 0.2
 _RESCORING_JOBS: dict[str, object] = {}
+_executor = ThreadPoolExecutor(max_workers=2)
 
 
 async def send_model_alert(bot, chat_id: int, model: dict, token_data: dict, result: dict):
@@ -38,10 +40,19 @@ async def send_model_alert(bot, chat_id: int, model: dict, token_data: dict, res
     await bot.send_message(chat_id=chat_id, text=msg)
 
 
+
+
+async def score_token_async(token_data: dict) -> dict:
+    loop = asyncio.get_event_loop()
+    risk = await loop.run_in_executor(_executor, score_token_risk, token_data)
+    moon = await loop.run_in_executor(_executor, score_moonshot_potential, token_data, risk.get("profile"))
+    return {"risk": risk, "moon": moon}
+
 async def _fetch_external_data(token: dict) -> dict:
     out = dict(token)
     try:
-        payload = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{token.get('address')}", timeout=8).json()
+        async with httpx.AsyncClient(timeout=8) as client:
+            payload = (await client.get(f"https://api.dexscreener.com/latest/dex/tokens/{token.get('address')}" )).json()
         pair = (payload.get("pairs") or [{}])[0]
         out.update({
             "liquidity_usd": float((pair.get("liquidity") or {}).get("usd") or out.get("liquidity_usd") or 0),
@@ -62,7 +73,7 @@ async def rescore_token_job(context):
     if not tok or tok.get("rugged"):
         return
     fresh = await _fetch_external_data(tok)
-    risk2 = score_token_risk(fresh, token_profile=fresh.get("token_profile"))
+    risk2 = (await score_token_async(fresh))["risk"]
     traj = score_trajectory({"risk_score": tok.get("initial_risk_score") or tok.get("risk_score")}, risk2)
     payload = {**fresh, **risk2, "trajectory": traj["trajectory"]}
     db.update_degen_token_rescore(address, chain, payload)
@@ -130,8 +141,9 @@ async def degen_scan_job(context):
         async with sem:
             token_data = await _fetch_external_data(dict(token))
             await asyncio.sleep(SOLSCAN_RATE_LIMIT_DELAY)
-            risk = score_token_risk(token_data)
-            moon = score_moonshot_potential(token_data, token_profile=risk.get("profile"))
+            scored = await score_token_async(token_data)
+            risk = scored["risk"]
+            moon = scored["moon"]
             token_data.update(risk)
             token_data.update(moon)
             token_data["confluence"] = moon.get("confluence")
@@ -141,6 +153,10 @@ async def degen_scan_job(context):
             token_data["initial_reply_count"] = token_data.get("initial_reply_count") or int(token_data.get("reply_count") or 0)
             token_data["replies_per_hour"] = (moon.get("social_velocity") or {}).get("replies_per_hour")
             token_data["social_velocity_score"] = (moon.get("social_velocity") or {}).get("velocity_score")
+            if token_data.get("is_honeypot"):
+                token_data["holder_cluster_skipped"] = True
+            elif int(risk.get("risk_score") or 0) <= 30:
+                token_data["holder_cluster_skipped"] = True
             token_id = db.upsert_degen_token_snapshot(token_data)
             update_narrative_trends(token_data, moon.get("moon_score", 0), risk.get("risk_score", 0))
 

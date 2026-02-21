@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 KNOWN_RUG_WALLETS: set[str] = set()
+_wallet_age_cache: dict[str, int] = {}
 
 
 def load_known_rug_wallets(wallets: list[str]) -> None:
@@ -27,3 +28,10 @@ def check_dev_network(dev_wallet: str, chain: str) -> dict:
         label = f"💀 Connected to {sibling_rugger_count} other ruggers" if sibling_rugger_count else "💀 Dev network risk found"
         rep = "risky"
     return {"funding_wallet": funding_wallet, "funding_wallet_reputation": rep, "sibling_rugger_count": sibling_rugger_count, "network_risk_added": network_risk, "network_label": label, "connections": conns}
+
+
+def cache_wallet_creation_date(wallet: str, created_ts: int) -> int:
+    if wallet in _wallet_age_cache:
+        return _wallet_age_cache[wallet]
+    _wallet_age_cache[wallet] = created_ts
+    return created_ts

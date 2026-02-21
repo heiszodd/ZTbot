@@ -1,11 +1,76 @@
 import psycopg2
 import psycopg2.extras
+from psycopg2 import pool as pg_pool
 import json
+import time
 from config import DB_URL
+
+_pool = None
+_cache = {}
+_CACHE_TTL = {
+    "active_models": 30,
+    "active_degen_models": 30,
+    "tracked_wallets": 60,
+    "demo_accounts": 10,
+}
+
+
+class _PooledConn:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __enter__(self):
+        return self._conn
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self._conn.rollback()
+        release_conn(self._conn)
+        return False
+
+    def __getattr__(self, item):
+        return getattr(self._conn, item)
+
+
+def _cache_get(key: str):
+    entry = _cache.get(key)
+    if entry and time.time() - entry["ts"] < _CACHE_TTL.get(key, 30):
+        return entry["data"]
+    return None
+
+
+def _cache_set(key: str, data):
+    _cache[key] = {"data": data, "ts": time.time()}
+
+
+def _cache_clear(key: str):
+    _cache.pop(key, None)
+
+
+def init_pool():
+    global _pool
+    if _pool is None:
+        _pool = pg_pool.ThreadedConnectionPool(
+            minconn=2,
+            maxconn=10,
+            dsn=DB_URL,
+            cursor_factory=psycopg2.extras.RealDictCursor,
+        )
+
+
+def acquire_conn():
+    if _pool is None:
+        init_pool()
+    return _pool.getconn()
 
 
 def get_conn():
-    return psycopg2.connect(DB_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    return _PooledConn(acquire_conn())
+
+
+def release_conn(conn):
+    if _pool is not None and conn is not None:
+        _pool.putconn(conn)
 
 
 def setup_db():
@@ -350,6 +415,7 @@ def setup_db():
             ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS social_velocity_score INT;
             ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS token_profile VARCHAR(40);
             ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS holders_last_checked_at TIMESTAMP;
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS holder_check_progress INT DEFAULT 0;
             ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS rugged BOOLEAN DEFAULT FALSE;
             CREATE TABLE IF NOT EXISTS rug_postmortems (
                 id SERIAL PRIMARY KEY,
@@ -469,6 +535,9 @@ def get_model(model_id):
     return d
 
 def get_active_models():
+    cached = _cache_get("active_models")
+    if cached is not None:
+        return cached
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM models WHERE status='active'")
@@ -478,6 +547,7 @@ def get_active_models():
         d = dict(r)
         d["rules"] = d["rules"] if isinstance(d["rules"], list) else json.loads(d["rules"] or "[]")
         result.append(d)
+    _cache_set("active_models", result)
     return result
 
 def insert_model(model):
@@ -496,6 +566,7 @@ def set_model_status(model_id, status):
         with conn.cursor() as cur:
             cur.execute("UPDATE models SET status=%s WHERE id=%s", (status, model_id))
         conn.commit()
+    _cache_clear("active_models")
 
 
 def update_model_fields(model_id, fields: dict):
@@ -1243,10 +1314,15 @@ def get_degen_model(model_id: str) -> dict:
 
 
 def get_active_degen_models() -> list:
+    cached = _cache_get("active_degen_models")
+    if cached is not None:
+        return cached
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM degen_models WHERE status='active' ORDER BY created_at DESC")
-            return [_normalize_degen_model(r) for r in cur.fetchall()]
+            rows = [_normalize_degen_model(r) for r in cur.fetchall()]
+    _cache_set("active_degen_models", rows)
+    return rows
 
 
 def insert_degen_model(model: dict) -> None:
@@ -1290,6 +1366,7 @@ def set_degen_model_status(model_id: str, status: str) -> None:
         with conn.cursor() as cur:
             cur.execute("UPDATE degen_models SET status=%s WHERE id=%s", (status, model_id))
         conn.commit()
+    _cache_clear("active_degen_models")
 
 
 def delete_degen_model(model_id: str) -> None:
@@ -1534,15 +1611,23 @@ def add_tracked_wallet(wallet: dict) -> int:
             """, {**wallet, "notes": wallet.get("notes"), "last_tx_hash": wallet.get("last_tx_hash")})
             wid = int(cur.fetchone()["id"])
         conn.commit()
+    _cache_clear("tracked_wallets")
+    _cache_clear("tracked_wallets:all")
     return wid
 
 
 def get_tracked_wallets(active_only: bool = True) -> list:
+    key = "tracked_wallets" if active_only else "tracked_wallets:all"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
     with get_conn() as conn:
         with conn.cursor() as cur:
             sql = "SELECT * FROM tracked_wallets" + (" WHERE active=TRUE" if active_only else "") + " ORDER BY added_at DESC"
             cur.execute(sql)
-            return [dict(r) for r in cur.fetchall()]
+            rows = [dict(r) for r in cur.fetchall()]
+    _cache_set(key, rows)
+    return rows
 
 
 def get_tracked_wallet(wallet_id: int) -> dict:
@@ -1584,6 +1669,8 @@ def set_wallet_active(wallet_id: int, active: bool) -> None:
         with conn.cursor() as cur:
             cur.execute("UPDATE tracked_wallets SET active=%s WHERE id=%s", (active, wallet_id))
         conn.commit()
+    _cache_clear("tracked_wallets")
+    _cache_clear("tracked_wallets:all")
 
 
 def delete_tracked_wallet(wallet_id: int) -> None:
@@ -1829,11 +1916,18 @@ def log_demo_transaction(section: str, type: str, amount: float, description: st
 
 
 def get_demo_account(section: str) -> dict | None:
+    key = "demo_accounts"
+    cached = _cache_get(key) or {}
+    if section in cached:
+        return cached[section]
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM demo_accounts WHERE section=%s", (section,))
             r = cur.fetchone()
-            return dict(r) if r else None
+            out = dict(r) if r else None
+    cached[section] = out
+    _cache_set(key, cached)
+    return out
 
 
 def create_demo_account(section: str, initial_deposit: float) -> dict:

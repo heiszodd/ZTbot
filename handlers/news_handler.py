@@ -41,7 +41,7 @@ async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _send_news_screen(sender):
-    events = news.get_upcoming_events(_active_pairs(), hours_ahead=24)
+    events = await news.get_upcoming_events(_active_pairs(), hours_ahead=24)
     lines = ["📰 News Trading", "━━━━━━━━━━━━━━━━━━━━━━━━", "Upcoming high-impact events for your active pairs:"]
     if not events:
         lines.append("\n📭 No high-impact events in the next 24 hours.")
@@ -64,7 +64,7 @@ async def _send_news_screen(sender):
 async def news_briefing_job(context: ContextTypes.DEFAULT_TYPE):
     try:
         pairs = _active_pairs()
-        for ev in news.get_upcoming_events(pairs, hours_ahead=8):
+        for ev in await news.get_upcoming_events(pairs, hours_ahead=8):
             try:
                 db.save_news_event(ev)
             except Exception as exc:
