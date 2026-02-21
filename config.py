@@ -1,3 +1,4 @@
+from datetime import timezone, timedelta
 import os
 import sys
 from dotenv import load_dotenv
@@ -16,6 +17,9 @@ def _required_env(name: str) -> str:
         _fatal_env(f"{name} is not set")
     return value.strip()
 
+
+
+WAT = timezone(timedelta(hours=1), name="WAT")
 
 TOKEN = _required_env("BOT_TOKEN")
 DB_URL = _required_env("DB_URL")
