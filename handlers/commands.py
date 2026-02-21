@@ -60,9 +60,7 @@ async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _render_home(reply_fn):
     active   = db.get_active_models()
     setups   = db.get_recent_alerts(hours=2, limit=5)
-    all_pairs = list({m["pair"] for m in active}) + SUPPORTED_PAIRS[:5]
-    live_px  = px.fetch_prices(list(set(all_pairs)))
-    text     = formatters.fmt_home(active, setups, live_px)
+    text     = formatters.fmt_home(active, setups)
     await reply_fn(text, reply_markup=main_kb(), parse_mode="Markdown")
 
 
@@ -74,9 +72,7 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if dest == "home":
         active   = db.get_active_models()
         setups   = db.get_recent_alerts(hours=2, limit=5)
-        all_pairs = list({m["pair"] for m in active}) + SUPPORTED_PAIRS[:5]
-        live_px  = px.fetch_prices(list(set(all_pairs)))
-        text     = formatters.fmt_home(active, setups, live_px)
+        text     = formatters.fmt_home(active, setups)
         await query.message.reply_text(text, reply_markup=main_kb(), parse_mode="Markdown")
 
     elif dest == "models":
@@ -153,7 +149,7 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.get_conn().close(); db_ok = True
         except Exception:
             db_ok = False
-        prices_ok = bool(px.fetch_prices(["BTCUSDT"]))
+        prices_ok = not bool(px.get_api_health().get("last_api_error"))
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="nav:home")]])
         await query.message.reply_text(
             formatters.fmt_status(session, db_ok, active, prices_ok),
@@ -163,9 +159,7 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _render_models(query):
     models  = db.get_all_models()
-    pairs   = [m["pair"] for m in models]
-    live_px = px.fetch_prices(pairs)
-    text    = formatters.fmt_models(models, live_px)
+    text    = formatters.fmt_models(models)
 
     rows = []
     for m in models:
@@ -277,10 +271,8 @@ async def handle_scan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             found += 1
 
     if found == 0:
-        price = px.get_price(pair)
         await query.message.reply_text(
-            f"📭 *No setup found for `{pair}`*\n"
-            f"💹 Price: {px.fmt_price(price)}\n\n"
+            f"📭 *No setup found for `{pair}`*\n\n"
             f"Rules not met or score below Tier C threshold.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([

@@ -46,7 +46,7 @@ def fmt_welcome(active_count: int, alert_count: int) -> str:
 
 
 # ── Dashboard ─────────────────────────────────────────
-def fmt_dashboard(active_models: list, live_alerts: list, prices: dict) -> str:
+def fmt_dashboard(active_models: list, live_alerts: list) -> str:
     updated_at = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
     lines = [
         "📊  *Mission Control Dashboard*",
@@ -54,13 +54,6 @@ def fmt_dashboard(active_models: list, live_alerts: list, prices: dict) -> str:
         f"_Updated: {updated_at}_",
         "",
     ]
-
-    # Live prices
-    if prices:
-        lines.append("💰  *Live Prices*")
-        for pair, price in prices.items():
-            lines.append(f"  {pair:<12}  {fmt_price(price)}")
-        lines.append("")
 
     # Active models
     lines.append(f"⚙️  *Active Models*  ({len(active_models)})")
@@ -403,12 +396,11 @@ def fmt_help() -> str:
 
 
 # ── Backward-compatible aliases used by handlers ─────
-def fmt_home(active_models: list, live_alerts: list, prices: dict) -> str:
-    return fmt_dashboard(active_models, live_alerts, prices)
+def fmt_home(active_models: list, live_alerts: list) -> str:
+    return fmt_dashboard(active_models, live_alerts)
 
 
-def fmt_models(models: list, prices: dict) -> str:
-    _ = prices
+def fmt_models(models: list) -> str:
     return fmt_models_list(models)
 
 
