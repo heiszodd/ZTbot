@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import time
+import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
@@ -101,6 +104,7 @@ async def handle_demo_risk_input(update: Update, context: ContextTypes.DEFAULT_T
 
     if entry <= 0 or sl <= 0:
         context.user_data.pop("demo_alert_trade", None)
+        context.user_data.pop("in_conversation", None)
         await update.message.reply_text("Could not open demo trade: invalid alert entry/SL values.")
         return
 
@@ -129,6 +133,7 @@ async def handle_demo_risk_input(update: Update, context: ContextTypes.DEFAULT_T
         "notes": "Demo entry from alert with user-defined risk",
     })
     context.user_data.pop("demo_alert_trade", None)
+    context.user_data.pop("in_conversation", None)
     await update.message.reply_text(msg)
 
 
@@ -173,20 +178,78 @@ async def handle_demo_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await _render_dashboard(q.message.reply_text, section)
 
 
+async def _fetch_dex_price(address: str) -> float:
+    if not address:
+        return 0.0
+    try:
+        async with httpx.AsyncClient(timeout=6) as client:
+            r = await client.get(f"https://api.dexscreener.com/latest/dex/tokens/{address}")
+            pairs = (r.json() or {}).get("pairs") or []
+            if not pairs:
+                return 0.0
+            best = max(pairs, key=lambda p: float(((p or {}).get("liquidity") or {}).get("usd") or 0))
+            return float(best.get("priceUsd") or 0)
+    except Exception:
+        return 0.0
+
+
 async def demo_monitor_job(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.job.chat_id or context.application.bot_data.get("chat_id")
     for section in ("perps", "degen"):
         for t in db.get_open_demo_trades(section):
             pair = t.get("pair") or t.get("token_symbol")
-            price = prices.get_price(t.get("pair")) if section == "perps" and t.get("pair") else float(t.get("current_price") or 0)
+            source = str(t.get("source") or "")
+            if source == "ca_report":
+                note = json.loads(t.get("notes") or "{}")
+                price = await _fetch_dex_price(note.get("address")) or float(t.get("current_price") or 0)
+            else:
+                price = prices.get_price(t.get("pair")) if section == "perps" and t.get("pair") else float(t.get("current_price") or 0)
             if not price:
                 continue
             db.update_demo_trade_pnl(t["id"], price)
-            direction = (t.get("direction") or "LONG").upper()
-            hit_sl = (price <= t.get("sl", 0)) if direction in {"LONG", "BUY"} else (price >= t.get("sl", 10**18))
-            hit_tp3 = (price >= t.get("tp3", 10**18)) if direction in {"LONG", "BUY"} else (price <= t.get("tp3", 0))
+            tr = db.get_demo_trade_by_id(t["id"]) or t
+            direction = (tr.get("direction") or "LONG").upper()
+            hit_sl = (price <= tr.get("sl", 0)) if direction in {"LONG", "BUY"} else (price >= tr.get("sl", 10**18))
+            hit_tp1 = (price >= tr.get("tp1", 10**18)) if direction in {"LONG", "BUY"} else (price <= tr.get("tp1", 0))
+            hit_tp2 = (price >= tr.get("tp2", 10**18)) if direction in {"LONG", "BUY"} else (price <= tr.get("tp2", 0))
+            hit_tp3 = (price >= tr.get("tp3", 10**18)) if direction in {"LONG", "BUY"} else (price <= tr.get("tp3", 0))
             if hit_sl:
-                closed = db.close_demo_trade(t["id"], price, "SL")
-                await context.application.bot.send_message(chat_id=context.job.chat_id or context.application.bot_data.get("chat_id"), text=f"🎮 DEMO — Demo Trade Closed — SL\n{pair}\nPnL: [PAPER] ${closed.get('final_pnl_usd',0):+.2f}")
-            elif hit_tp3:
-                closed = db.close_demo_trade(t["id"], price, "TP3")
-                await context.application.bot.send_message(chat_id=context.job.chat_id or context.application.bot_data.get("chat_id"), text=f"🎮 DEMO — Demo Trade Closed — TP3\n{pair}\nPnL: [PAPER] ${closed.get('final_pnl_usd',0):+.2f}")
+                closed = db.close_demo_trade(tr["id"], price, "SL")
+                msg = (
+                    f"🛑 *Stop Loss Hit — {tr.get('token_symbol')}*\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🎮 Demo Position #{tr['id']} closed\n"
+                    f"📉 SL at {prices.fmt_price(tr.get('sl') or 0)}\n"
+                    f"💸 Loss: ${closed.get('final_pnl_usd',0):+.2f}\n"
+                    f"💰 New Demo Balance: ${closed.get('balance',0):,.2f}"
+                )
+                await context.application.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                continue
+            if source == "ca_report" and (hit_tp1 or hit_tp2 or hit_tp3):
+                lvl = "TP3" if hit_tp3 else "TP2" if hit_tp2 else "TP1"
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("💸 Sell All Now", callback_data=f"ca:sell_confirm:{tr['id']}"), InlineKeyboardButton("💸 Sell 50%", callback_data=f"ca:sell50:{tr['id']}")], [InlineKeyboardButton("🚀 Keep Riding", callback_data=f"ca:ride:{tr['id']}"), InlineKeyboardButton("📊 View Report", callback_data=f"ca:position:{tr['id']}")]])
+                msg = (
+                    f"🎯 *TP Level Hit — {tr.get('token_symbol')}*\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🎮 Demo Position #{tr['id']}\n"
+                    f"📈 {lvl} reached at {prices.fmt_price(price)}\n"
+                    f"💰 Current PnL: ${float(tr.get('current_pnl_usd') or 0):+.2f} ({float(tr.get('current_x') or 1):.2f}x)\n\n"
+                    "Take profit or keep riding?"
+                )
+                await context.application.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown", reply_markup=kb)
+            if hit_tp3 and source != "ca_report":
+                closed = db.close_demo_trade(tr["id"], price, "TP3")
+                await context.application.bot.send_message(chat_id=chat_id, text=f"🎮 DEMO — Demo Trade Closed — TP3\n{pair}\nPnL: [PAPER] ${closed.get('final_pnl_usd',0):+.2f}")
+            if source == "ca_report":
+                opened = tr.get("opened_at")
+                if opened:
+                    mins = (time.time() - opened.timestamp()) / 60
+                    if mins > int(tr.get("time_stop_minutes") or 30) and abs(float(tr.get("current_pnl_pct") or 0)) < 2:
+                        kb = InlineKeyboardMarkup([[InlineKeyboardButton("💸 Exit Now", callback_data=f"ca:sell:{tr['id']}"), InlineKeyboardButton("⏳ Give More Time", callback_data=f"ca:time_extend:{tr['id']}")]])
+                        msg = (
+                            f"⏰ *Time Stop — {tr.get('token_symbol')}*\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🎮 No significant move after {int(tr.get('time_stop_minutes') or 30)} minutes\n"
+                            f"📊 Current PnL: ${float(tr.get('current_pnl_usd') or 0):+.2f}"
+                        )
+                        await context.application.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown", reply_markup=kb)

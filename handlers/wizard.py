@@ -63,15 +63,19 @@ def _progress(step, total=6):
 # ── Step 0: Entry ─────────────────────────────────────
 async def wiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry point — works from both /create_model and wiz:start callback."""
+    context.user_data["in_conversation"] = True
     if hasattr(update, "callback_query") and update.callback_query:
         q = update.callback_query
         await q.answer()
         reply = q.message.reply_text
     else:
-        if not _guard(update): return ConversationHandler.END
+        if not _guard(update):
+            context.user_data.pop("in_conversation", None)
+            return ConversationHandler.END
         reply = update.message.reply_text
 
     context.user_data.clear()
+    context.user_data["in_conversation"] = True
     context.user_data["rules"] = []
 
     await reply(
@@ -408,7 +412,8 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("🏠 Home", callback_data="nav:home")
             ]])
         )
-        return ConversationHandler.END
+        context.user_data.pop("in_conversation", None)
+    return ConversationHandler.END
 
     d = context.user_data
     model_id = str(uuid.uuid4())[:8]
@@ -428,7 +433,8 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.insert_model(model)
     except Exception as e:
         await q.message.reply_text(f"❌ Error saving model: `{e}`", parse_mode="Markdown")
-        return ConversationHandler.END
+        context.user_data.pop("in_conversation", None)
+    return ConversationHandler.END
 
     context.user_data.clear()
     await q.message.reply_text(
@@ -447,6 +453,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏠 Home", callback_data="nav:home")]
         ])
     )
+    context.user_data.pop("in_conversation", None)
     return ConversationHandler.END
 
 
@@ -465,6 +472,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🏠 Home", callback_data="nav:home")
         ]])
     )
+    context.user_data.pop("in_conversation", None)
     return ConversationHandler.END
 
 

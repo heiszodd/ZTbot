@@ -13,7 +13,7 @@ from telegram.ext import (
 
 import prices as px
 from config import SCANNER_INTERVAL, WAT
-from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler
+from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler
 from degen import wallet_tracker
 from engine import run_backtest
 
@@ -474,8 +474,10 @@ def main():
     app.add_handler(CallbackQueryHandler(wallet_handler.handle_wallet_cb, pattern="^wallet:"))
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_cb, pattern="^degen:"))
     app.add_handler(CallbackQueryHandler(demo_handler.handle_demo_cb, pattern="^demo:"))
+    app.add_handler(CallbackQueryHandler(ca_handler.handle_ca_cb, pattern="^ca:"))
     app.add_handler(wallet_handler.build_add_wallet_handler())
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, demo_handler.handle_demo_risk_input))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ca_handler.handle_ca_message), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, stats.handle_journal_text))
 
     # ── Scanner job ───────────────────────────────────
@@ -525,7 +527,8 @@ def main():
     app.job_queue.run_repeating(news_handler.news_briefing_job, interval=60, first=10, name="news_briefing")
     app.job_queue.run_repeating(news_handler.news_signal_job, interval=15, first=5, name="news_signal")
     app.job_queue.run_repeating(wallet_tracker.wallet_monitor_job, interval=120, first=30, name="wallet_monitor")
-    app.job_queue.run_repeating(demo_handler.demo_monitor_job, interval=60, first=20, name="demo_monitor")
+    app.job_queue.run_repeating(demo_handler.demo_monitor_job, interval=30, first=20, name="demo_monitor")
+    app.job_queue.run_repeating(ca_handler.ca_monitor_job, interval=120, first=30, name="ca_monitor")
 
     log.info("🤖 Bot started — polling")
     app.run_polling(drop_pending_updates=True)
