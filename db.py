@@ -137,6 +137,40 @@ def setup_db():
         note TEXT,
         created_at TIMESTAMP DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS news_events (
+        id              SERIAL PRIMARY KEY,
+        event_name      VARCHAR(200),
+        pair            VARCHAR(20),
+        event_time_utc  TIMESTAMP,
+        impact          VARCHAR(10),
+        forecast        VARCHAR(50),
+        previous        VARCHAR(50),
+        actual          VARCHAR(50),
+        direction       VARCHAR(10),
+        confidence      VARCHAR(10),
+        reasoning       TEXT,
+        signal_sent     BOOLEAN DEFAULT FALSE,
+        briefing_sent   BOOLEAN DEFAULT FALSE,
+        suppressed      BOOLEAN DEFAULT FALSE,
+        source          VARCHAR(50),
+        created_at      TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS news_trades (
+        id              SERIAL PRIMARY KEY,
+        news_event_id   INT REFERENCES news_events(id),
+        pair            VARCHAR(20),
+        direction       VARCHAR(5),
+        entry_price     FLOAT,
+        sl              FLOAT,
+        tp1             FLOAT,
+        tp2             FLOAT,
+        tp3             FLOAT,
+        rr              FLOAT,
+        pre_news_price  FLOAT,
+        signal_sent_at  TIMESTAMP DEFAULT NOW(),
+        result          VARCHAR(5),
+        closed_at       TIMESTAMP
+    );
 
     ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS notes TEXT;
     ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS screenshot_reminded BOOLEAN DEFAULT FALSE;
@@ -151,6 +185,7 @@ def setup_db():
     ALTER TABLE models ADD COLUMN IF NOT EXISTS key_levels JSONB NOT NULL DEFAULT '[]';
 
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
+    ALTER TABLE news_events ADD COLUMN IF NOT EXISTS suppressed BOOLEAN DEFAULT FALSE;
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -747,3 +782,147 @@ def get_monthly_goal():
     except Exception as e:
         log.error(f"get_monthly_goal error: {e}")
         return None
+
+
+def save_news_event(event: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id FROM news_events
+                WHERE event_name=%s AND pair=%s AND event_time_utc=%s
+                LIMIT 1
+                """,
+                (event.get("name"), event.get("pair"), event.get("time_utc")),
+            )
+            exists = cur.fetchone()
+            if exists:
+                return int(exists["id"])
+            cur.execute(
+                """
+                INSERT INTO news_events
+                (event_name, pair, event_time_utc, impact, forecast, previous, actual, source)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    event.get("name"),
+                    event.get("pair"),
+                    event.get("time_utc"),
+                    event.get("impact"),
+                    event.get("forecast"),
+                    event.get("previous"),
+                    event.get("actual"),
+                    event.get("source"),
+                ),
+            )
+            row_id = int(cur.fetchone()["id"])
+        conn.commit()
+    return row_id
+
+
+def get_unsent_briefings(minutes_ahead: int) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM news_events
+                WHERE briefing_sent=FALSE
+                  AND suppressed=FALSE
+                  AND event_time_utc BETWEEN NOW() + (%s || ' minutes')::interval AND NOW() + (%s || ' minutes')::interval
+                ORDER BY event_time_utc ASC
+                """,
+                (minutes_ahead - 2, minutes_ahead),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_unsent_signals() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM news_events
+                WHERE signal_sent=FALSE
+                  AND suppressed=FALSE
+                  AND event_time_utc BETWEEN NOW() - INTERVAL '60 seconds' AND NOW() + INTERVAL '60 seconds'
+                ORDER BY event_time_utc ASC
+                """
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def mark_briefing_sent(event_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE news_events SET briefing_sent=TRUE WHERE id=%s", (event_id,))
+        conn.commit()
+
+
+def mark_signal_sent(event_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE news_events SET signal_sent=TRUE WHERE id=%s", (event_id,))
+        conn.commit()
+
+
+def log_news_trade(trade: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO news_trades
+                (news_event_id, pair, direction, entry_price, sl, tp1, tp2, tp3, rr, pre_news_price)
+                VALUES (%(news_event_id)s,%(pair)s,%(direction)s,%(entry_price)s,%(sl)s,%(tp1)s,%(tp2)s,%(tp3)s,%(rr)s,%(pre_news_price)s)
+                RETURNING id
+                """,
+                trade,
+            )
+            tid = int(cur.fetchone()["id"])
+        conn.commit()
+    return tid
+
+
+def suppress_news_event(event_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE news_events SET suppressed=TRUE WHERE id=%s", (event_id,))
+        conn.commit()
+
+
+def get_news_event(event_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM news_events WHERE id=%s", (event_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_news_trade(trade_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM news_trades WHERE id=%s", (trade_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_news_history(limit: int = 10):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ne.event_name, ne.pair, ne.direction, nt.result,
+                       CASE
+                         WHEN ne.direction='bullish' AND nt.direction='BUY' AND nt.result='TP' THEN TRUE
+                         WHEN ne.direction='bearish' AND nt.direction='SELL' AND nt.result='TP' THEN TRUE
+                         WHEN nt.result IS NULL THEN NULL
+                         ELSE FALSE
+                       END AS correct
+                FROM news_events ne
+                LEFT JOIN news_trades nt ON nt.news_event_id = ne.id
+                ORDER BY ne.created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]

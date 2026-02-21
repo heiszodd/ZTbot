@@ -13,7 +13,7 @@ from telegram.ext import (
 
 import prices as px
 from config import SCANNER_INTERVAL, WAT
-from handlers import commands, alerts, wizard, stats, scheduler
+from handlers import commands, alerts, wizard, stats, scheduler, news_handler
 from engine import run_backtest
 
 logging.basicConfig(
@@ -437,6 +437,7 @@ def main():
     app.add_handler(CommandHandler("create_model",wizard.wiz_start))
     app.add_handler(CommandHandler("backtest",    commands.backtest))
     app.add_handler(CommandHandler("journal",     commands.journal_cmd))
+    app.add_handler(CommandHandler("news",        news_handler.news_cmd))
 
     # ── Conversations (must be before generic callback routers) ──
     app.add_handler(wizard.build_wizard_handler())
@@ -450,6 +451,7 @@ def main():
     app.add_handler(CallbackQueryHandler(commands.handle_backtest_cb, pattern="^backtest:"))
     app.add_handler(CallbackQueryHandler(alerts.handle_alert_response, pattern="^alert:"))
     app.add_handler(CallbackQueryHandler(stats.handle_journal_cb, pattern="^journal:"))
+    app.add_handler(CallbackQueryHandler(news_handler.handle_news_cb, pattern="^news:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, stats.handle_journal_text))
 
     # ── Scanner job ───────────────────────────────────
@@ -489,6 +491,8 @@ def main():
     )
     app.job_queue.run_daily(scheduler.send_end_of_day_summary, time=datetime.time(hour=21, minute=0, tzinfo=datetime.timezone.utc), name="eod_summary")
     app.job_queue.run_daily(scheduler.send_news_pre_warning, time=datetime.time(hour=0, minute=50, tzinfo=datetime.timezone.utc), name="news_50")
+    app.job_queue.run_repeating(news_handler.news_briefing_job, interval=60, first=10, name="news_briefing")
+    app.job_queue.run_repeating(news_handler.news_signal_job, interval=15, first=5, name="news_signal")
 
     log.info("🤖 Bot started — polling")
     app.run_polling(drop_pending_updates=True)
