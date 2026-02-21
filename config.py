@@ -1,11 +1,31 @@
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
 
-TOKEN   = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID", "0"))
-DB_URL  = os.getenv("DB_URL", "")
+
+def _fatal_env(message: str) -> None:
+    print(f"FATAL: {message}", flush=True)
+    sys.exit(1)
+
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name, "")
+    if not value or not value.strip():
+        _fatal_env(f"{name} is not set")
+    return value.strip()
+
+
+TOKEN = _required_env("BOT_TOKEN")
+DB_URL = _required_env("DB_URL")
+
+_chat_id_raw = _required_env("CHAT_ID")
+try:
+    CHAT_ID = int(_chat_id_raw)
+except ValueError:
+    _fatal_env("CHAT_ID must be a plain integer (no quotes)")
+
 CRYPTOCOMPARE_API_KEY = os.getenv("CRYPTOCOMPARE_API_KEY", "")
 CRYPTOCOMPARE_BASE_URL = os.getenv("CRYPTOCOMPARE_BASE_URL", "https://min-api.cryptocompare.com")
 CRYPTOCOMPARE_EXTRA_PARAMS = os.getenv("CRYPTOCOMPARE_EXTRA_PARAMS", "ztbot")
