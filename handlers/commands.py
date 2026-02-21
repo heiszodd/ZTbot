@@ -29,12 +29,12 @@ def landing_keyboard():
 def perps_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="nav:models")],
-        [InlineKeyboardButton("📊 Stats", callback_data="nav:stats"), InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline")],
-        [InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts"), InlineKeyboardButton("🔍 Scan", callback_data="nav:scan")],
-        [InlineKeyboardButton("🎯 Goal", callback_data="nav:goal"), InlineKeyboardButton("💰 Budget", callback_data="nav:budget")],
-        [InlineKeyboardButton("📓 Journal", callback_data="nav:journal"), InlineKeyboardButton("📰 News", callback_data="nav:news")],
-        [InlineKeyboardButton("➕ New Model", callback_data="wiz:start"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
-        [InlineKeyboardButton("🎰 Go to Degen", callback_data="nav:degen_home")],
+        [InlineKeyboardButton("🧪 Backtest", callback_data="backtest:start"), InlineKeyboardButton("📊 Stats", callback_data="nav:stats")],
+        [InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline"), InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts")],
+        [InlineKeyboardButton("🔍 Scan", callback_data="nav:scan"), InlineKeyboardButton("🎯 Goal", callback_data="nav:goal")],
+        [InlineKeyboardButton("💰 Budget", callback_data="nav:budget"), InlineKeyboardButton("📓 Journal", callback_data="nav:journal")],
+        [InlineKeyboardButton("📰 News", callback_data="nav:news"), InlineKeyboardButton("➕ New Model", callback_data="wiz:start")],
+        [InlineKeyboardButton("⚡ Status", callback_data="nav:status"), InlineKeyboardButton("🎰 Go to Degen", callback_data="nav:degen_home")],
     ])
 
 
@@ -182,14 +182,33 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_backtest_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text("Backtest unchanged.", parse_mode="Markdown")
+    q = update.callback_query
+    await q.answer()
+    action = q.data.split(":")[1] if ":" in q.data else "start"
+
+    if action == "start" or action == "again":
+        await _send_backtest_entry(q.message.reply_text)
 
 
 async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
-    await update.message.reply_text("Use `/backtest <model_id> [days]`", parse_mode="Markdown")
+    await _send_backtest_entry(update.message.reply_text)
+
+
+def _backtest_screen_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Run Again", callback_data="backtest:again"), InlineKeyboardButton("⚙️ Models", callback_data="nav:models")],
+        [InlineKeyboardButton("« Back to Perps", callback_data="nav:perps_home")],
+    ])
+
+
+async def _send_backtest_entry(reply):
+    await reply(
+        "🧪 *Backtest*\nChoose a model and range using `/backtest <model_id> [days]`.",
+        parse_mode="Markdown",
+        reply_markup=_backtest_screen_kb(),
+    )
 
 
 def _cancel_kb(scope: str) -> InlineKeyboardMarkup:
