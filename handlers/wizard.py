@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
     ASK_BIAS, ASK_RULES, ASK_RULE_WEIGHT,
     ASK_RULE_MANDATORY, ASK_MORE_RULES, ASK_TIERS,
     ASK_TIER_B, ASK_TIER_C, CONFIRM
-) = range(13)
+, CONFLICT_WARN) = range(14)
 
 
 def _guard(update: Update) -> bool:
@@ -46,6 +46,14 @@ def _rule_kb():
     rows.append([InlineKeyboardButton("❌ Cancel", callback_data="wiz:cancel")])
     return InlineKeyboardMarkup(rows)
 
+
+def _find_rule_conflict(rules):
+    names=[r["name"].lower() for r in rules]
+    for i,a in enumerate(names):
+        for b in names[i+1:]:
+            if (("bullish" in a and "bearish" in b) or ("bearish" in a and "bullish" in b) or ("buy" in a and "sell" in b) or ("sell" in a and "buy" in b)):
+                return a,b
+    return None
 
 def _progress(step, total=6):
     filled = "●" * step + "○" * (total - step)
@@ -269,7 +277,11 @@ async def got_rule_mandatory(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def got_more_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    want_more = q.data.split(":")[1] == "yes"
+    val = q.data.split(":")[1]
+    if q.data.startswith("wiz_conflict:"):
+        want_more = (val == "edit")
+    else:
+        want_more = val == "yes"
 
     if want_more:
         await q.message.reply_text(
@@ -278,6 +290,12 @@ async def got_more_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_rule_kb()
         )
         return ASK_RULES
+
+    c = _find_rule_conflict(context.user_data["rules"])
+    if c:
+        context.user_data["_conflict"]=c
+        await q.message.reply_text(f"⚠️ Rule Conflict Detected\nThese rules may contradict each other:\n• {c[0]}\n• {c[1]}\nContinue anyway or go back to edit?", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Continue", callback_data="wiz_conflict:continue"), InlineKeyboardButton("Edit Rules", callback_data="wiz_conflict:edit")]]))
+        return CONFLICT_WARN
 
     # Move to tiers step
     await q.message.reply_text(
@@ -468,6 +486,7 @@ def build_wizard_handler() -> ConversationHandler:
             ASK_RULE_MANDATORY:[CallbackQueryHandler(got_rule_mandatory,pattern="^wiz_mand:")],
             ASK_MORE_RULES:    [CallbackQueryHandler(got_more_rules,    pattern="^wiz_more:")],
             ASK_TIERS:         [CallbackQueryHandler(got_tier_a,        pattern="^wiz_tierA:")],
+            CONFLICT_WARN:     [CallbackQueryHandler(got_more_rules,     pattern="^wiz_conflict:")],
             ASK_TIER_B:        [CallbackQueryHandler(got_tier_b,        pattern="^wiz_tierB:")],
             ASK_TIER_C:        [CallbackQueryHandler(got_tier_c,        pattern="^wiz_tierC:")],
             CONFIRM:           [CallbackQueryHandler(confirm,           pattern="^wiz_confirm:")],

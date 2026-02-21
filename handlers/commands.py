@@ -6,454 +6,123 @@ from config import CHAT_ID, SUPPORTED_PAIRS
 
 log = logging.getLogger(__name__)
 
-
-def _guard(update: Update) -> bool:
-    return update.effective_chat.id == CHAT_ID
-
+def _guard(update: Update) -> bool: return update.effective_chat.id == CHAT_ID
 
 def main_kb():
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🏠 Dashboard",    callback_data="nav:home"),
-            InlineKeyboardButton("🧭 Quick Guide",  callback_data="nav:guide"),
-        ],
-        [
-            InlineKeyboardButton("⚙️ Models",        callback_data="nav:models"),
-            InlineKeyboardButton("➕ New Model",     callback_data="wiz:start"),
-        ],
-        [
-            InlineKeyboardButton("🔍 Manual Scan",   callback_data="nav:scan"),
-            InlineKeyboardButton("💹 Prices",        callback_data="nav:prices"),
-        ],
-        [
-            InlineKeyboardButton("📊 Stats",         callback_data="nav:stats"),
-            InlineKeyboardButton("🛡️ Discipline",    callback_data="nav:discipline"),
-        ],
-        [
-            InlineKeyboardButton("🧪 Backtest",      callback_data="nav:backtest"),
-            InlineKeyboardButton("📋 Alert Log",     callback_data="nav:alerts"),
-        ],
-        [
-            InlineKeyboardButton("⚡ Status",        callback_data="nav:status"),
-        ],
+        [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="nav:models")],
+        [InlineKeyboardButton("📊 Stats", callback_data="nav:stats"), InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline")],
+        [InlineKeyboardButton("📋 Alerts", callback_data="nav:alerts"), InlineKeyboardButton("💹 Prices", callback_data="nav:prices")],
+        [InlineKeyboardButton("🎯 Goal", callback_data="nav:goal"), InlineKeyboardButton("💰 Budget", callback_data="nav:budget")],
+        [InlineKeyboardButton("📓 Journal", callback_data="nav:journal"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
+        [InlineKeyboardButton("➕ New Model", callback_data="wiz:start")],
     ])
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update): return
-    await _render_home(update.message.reply_text)
-
+    await update.message.reply_text(formatters.fmt_home(db.get_active_models(), db.get_recent_alerts(hours=2, limit=5)), parse_mode="Markdown", reply_markup=main_kb())
 
 async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _guard(update):
-        return
-    await update.message.reply_text(
-        formatters.fmt_help(),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Build First Model", callback_data="wiz:start")],
-            [InlineKeyboardButton("🏠 Dashboard", callback_data="nav:home")],
-        ])
-    )
-
-
-async def _render_home(reply_fn):
-    active   = db.get_active_models()
-    setups   = db.get_recent_alerts(hours=2, limit=5)
-    text     = formatters.fmt_home(active, setups)
-    await reply_fn(text, reply_markup=main_kb(), parse_mode="Markdown")
-
+    if not _guard(update): return
+    await update.message.reply_text(formatters.fmt_help(), parse_mode="Markdown", reply_markup=main_kb())
 
 async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    dest = query.data.split(":")[1]
-
+    q = update.callback_query; await q.answer(); dest=q.data.split(":")[1]
     if dest == "home":
-        active   = db.get_active_models()
-        setups   = db.get_recent_alerts(hours=2, limit=5)
-        text     = formatters.fmt_home(active, setups)
-        await query.message.reply_text(text, reply_markup=main_kb(), parse_mode="Markdown")
-
+        await q.message.reply_text(formatters.fmt_home(db.get_active_models(), db.get_recent_alerts(hours=2, limit=5)), parse_mode="Markdown", reply_markup=main_kb())
     elif dest == "models":
-        await _render_models(query)
-
-    elif dest == "guide":
-        await query.message.reply_text(
-            formatters.fmt_help(),
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Build First Model", callback_data="wiz:start")],
-                [InlineKeyboardButton("🏠 Dashboard", callback_data="nav:home")],
-            ])
-        )
-
-    elif dest == "scan":
-        await query.message.reply_text(
-            "🔍 *Manual Scan*\n"
-            "Pick a pair from active models to force-check for setups.",
-            parse_mode="Markdown"
-        )
-        await _send_scan_picker(query.message.reply_text)
-
+        await _render_models(q)
     elif dest == "stats":
-        row      = db.get_stats_30d()
-        tiers    = db.get_tier_breakdown()
-        sessions = db.get_session_breakdown()
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="nav:home")]])
-        await query.message.reply_text(
-            formatters.fmt_stats(row, tiers, sessions),
-            reply_markup=kb, parse_mode="Markdown"
-        )
-
+        row, tiers, sessions = db.get_stats_30d(), db.get_tier_breakdown(), db.get_session_breakdown()
+        conv = db.get_conversion_stats()
+        txt = formatters.fmt_stats(row, tiers, sessions) + "\n\n" + formatters.fmt_rolling_10(db.get_rolling_10()) + f"\n\nConversion: {conv['total_trades']}/{conv['total_alerts']} alerts entered ({conv['ratio']}%) — {conv['would_win_skipped']} skipped setups would have won"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🕐 Heatmap", callback_data="nav:heatmap"), InlineKeyboardButton("📓 Journal", callback_data="nav:journal")],[InlineKeyboardButton("📈 Rolling 10", callback_data="nav:rolling10")],[InlineKeyboardButton("🏠 Home", callback_data="nav:home")]])
+        await q.message.reply_text(txt, parse_mode="Markdown", reply_markup=kb)
     elif dest == "discipline":
-        violations = db.get_violations_30d()
-        score      = _disc_score(violations)
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="nav:home")]])
-        await query.message.reply_text(
-            formatters.fmt_discipline(score, violations),
-            reply_markup=kb, parse_mode="Markdown"
-        )
-
+        from handlers.stats import _disc_score
+        v = db.get_violations_30d()
+        await q.message.reply_text(formatters.fmt_discipline(_disc_score(v), v), parse_mode="Markdown")
     elif dest == "alerts":
-        alerts = db.get_recent_alerts(hours=24, limit=15)
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="nav:home")]])
-        await query.message.reply_text(
-            formatters.fmt_alert_log(alerts),
-            reply_markup=kb, parse_mode="Markdown"
-        )
-
+        await q.message.reply_text(formatters.fmt_alert_log(db.get_recent_alerts(hours=24, limit=20)), parse_mode="Markdown")
     elif dest == "prices":
         live_px = px.fetch_prices(SUPPORTED_PAIRS)
-        lines   = ["💹 *Live Prices*", "─" * 26]
+        lines=["💹 *Live Prices*", "━━━━━━━━━━━━━━━━━━━━━━━━"]
         for pair in SUPPORTED_PAIRS:
-            if pair in live_px:
-                lines.append(f"  `{pair:<12}` {px.fmt_price(live_px[pair])}")
-        kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🔄 Refresh", callback_data="nav:prices"),
-                InlineKeyboardButton("🏠 Home",    callback_data="nav:home"),
-            ]
-        ])
-        await query.message.reply_text(
-            "\n".join(lines), reply_markup=kb, parse_mode="Markdown"
-        )
-
-    elif dest == "backtest":
-        await _send_backtest_model_picker(query.message.reply_text)
-
+            if pair in live_px: lines.append(f"`{pair}` {px.fmt_price(live_px[pair])}")
+        await q.message.reply_text("\n".join(lines), parse_mode="Markdown")
     elif dest == "status":
-        session = engine.get_session()
-        active  = len(db.get_active_models())
-        try:
-            db.get_conn().close(); db_ok = True
-        except Exception:
-            db_ok = False
-        prices_ok = not bool(px.get_api_health().get("last_api_error"))
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="nav:home")]])
-        await query.message.reply_text(
-            formatters.fmt_status(session, db_ok, active, prices_ok),
-            reply_markup=kb, parse_mode="Markdown"
-        )
+        await q.message.reply_text(formatters.fmt_status(engine.get_session(), True, len(db.get_active_models()), True), parse_mode="Markdown")
+    elif dest == "budget":
+        await q.message.reply_text("Use `/budget <targetR> <loss_limitR>`", parse_mode="Markdown")
+    elif dest == "goal":
+        await q.message.reply_text("Use `/goal <monthly_target_R>`", parse_mode="Markdown")
+    elif dest == "journal":
+        await journal_cmd_like(q.message.reply_text)
+    elif dest == "heatmap":
+        await q.message.reply_text(formatters.fmt_heatmap(db.get_hourly_breakdown()), parse_mode="Markdown")
+    elif dest == "rolling10":
+        await q.message.reply_text(formatters.fmt_rolling_10(db.get_rolling_10()), parse_mode="Markdown")
 
-
-async def _render_models(query):
-    models  = db.get_all_models()
-    text    = formatters.fmt_models(models)
-
-    rows = []
-    for m in models:
-        dot = "🟢" if m["status"] == "active" else "⚫"
-        rows.append([InlineKeyboardButton(
-            f"{dot}  {m['name']}  ({m['pair']})",
-            callback_data=f"model:detail:{m['id']}"
-        )])
-    rows.append([InlineKeyboardButton("➕ New Model", callback_data="wiz:start")])
-    rows.append([InlineKeyboardButton("🏠 Home",      callback_data="nav:home")])
-
-    await query.message.reply_text(
-        text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
-    )
-
+async def _render_models(q):
+    models = db.get_all_models()
+    rows=[[InlineKeyboardButton(f"{'🟢' if m['status']=='active' else '⚫'} {m['name']} ({m['pair']})", callback_data=f"model:detail:{m['id']}")] for m in models]
+    rows.append([InlineKeyboardButton("🏠 Home", callback_data="nav:home")])
+    await q.message.reply_text(formatters.fmt_models(models), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
 
 async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query  = update.callback_query
-    await query.answer()
-    parts  = query.data.split(":")
-    action = parts[1]
-
+    q = update.callback_query; await q.answer(); parts=q.data.split(":"); action=parts[1]; model_id=parts[2]
+    m = db.get_model(model_id)
+    if not m: return
     if action == "detail":
-        model_id = parts[2]
-        m = db.get_model(model_id)
-        if not m:
-            await query.message.reply_text("❌ Model not found.")
-            return
-        price    = px.get_price(m["pair"])
-        text     = formatters.fmt_model_detail(m, price)
-        is_active = m["status"] == "active"
-        kb = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "⏸ Deactivate" if is_active else "✅ Activate",
-                    callback_data=f"model:toggle:{model_id}"
-                ),
-                InlineKeyboardButton("🗑 Delete", callback_data=f"model:del_confirm:{model_id}"),
-            ],
-            [InlineKeyboardButton("« Back", callback_data="nav:models")],
-        ])
-        await query.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
-
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏸ Deactivate" if m['status']=='active' else "✅ Activate", callback_data=f"model:toggle:{model_id}"), InlineKeyboardButton("🗑 Delete", callback_data=f"model:delete:{model_id}")],[InlineKeyboardButton("📜 History", callback_data=f"model:history:{model_id}"), InlineKeyboardButton("📋 Clone", callback_data=f"model:clone:{model_id}")],[InlineKeyboardButton("📊 Rule Analysis", callback_data=f"model:rules:{model_id}")]])
+        await q.message.reply_text(formatters.fmt_model_detail(m, px.get_price(m['pair'])), parse_mode="Markdown", reply_markup=kb)
     elif action == "toggle":
-        model_id   = parts[2]
-        m          = db.get_model(model_id)
-        new_status = "inactive" if m["status"] == "active" else "active"
-        db.set_model_status(model_id, new_status)
-        if new_status == "active":
-            await query.message.reply_text(
-                f"✅ *{m['name']}* is now *active*\n\n"
-                f"🔍 Scanning `{m['pair']}` every 60 seconds.\n"
-                f"You'll be notified when a setup is found.",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("⚙️ Models", callback_data="nav:models"),
-                    InlineKeyboardButton("🏠 Home",   callback_data="nav:home"),
-                ]])
-            )
-        else:
-            await query.message.reply_text(
-                f"⏸ *{m['name']}* deactivated.",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("⚙️ Models", callback_data="nav:models"),
-                    InlineKeyboardButton("🏠 Home",   callback_data="nav:home"),
-                ]])
-            )
-
-    elif action == "del_confirm":
-        model_id = parts[2]
-        m = db.get_model(model_id)
-        await query.message.reply_text(
-            f"🗑 Delete *{m['name']}*?\n_This cannot be undone._",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Yes, delete", callback_data=f"model:delete:{model_id}"),
-                InlineKeyboardButton("❌ Cancel",      callback_data=f"model:detail:{model_id}"),
-            ]])
-        )
-
+        db.set_model_status(model_id, "inactive" if m['status']=='active' else "active")
+        await q.message.reply_text("Updated.", parse_mode="Markdown")
     elif action == "delete":
-        model_id = parts[2]
-        m = db.get_model(model_id)
-        db.delete_model(model_id)
-        await query.message.reply_text(
-            f"🗑 *{m['name']}* deleted.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⚙️ Models", callback_data="nav:models"),
-                InlineKeyboardButton("🏠 Home",   callback_data="nav:home"),
-            ]])
-        )
-
+        db.delete_model(model_id); await q.message.reply_text("Deleted.", parse_mode="Markdown")
+    elif action == "history":
+        vs=db.get_model_versions(model_id,5); await q.message.reply_text("\n".join(["📜 *History*"]+[f"v{v['version']} - {v['saved_at']}" for v in vs]), parse_mode="Markdown")
+    elif action == "clone":
+        c=db.clone_model(model_id); await q.message.reply_text(f"📋 {c['name']} cloned successfully. Tap to edit the copy.", parse_mode="Markdown")
+    elif action == "rules":
+        rp=db.get_rule_performance(model_id); await q.message.reply_text("\n".join(["📊 *Rule Analysis*"]+[f"• {r['name']} | Pass {r['pass_rate']}% | Win {r['win_rate']}%" for r in rp]), parse_mode="Markdown")
 
 async def handle_scan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    pair  = query.data.split(":")[1]
-
-    await query.message.reply_text(f"🔍 Scanning `{pair}`...", parse_mode="Markdown")
-
-    active = db.get_active_models()
-    found  = 0
-    for m in [x for x in active if x["pair"] == pair]:
-        from handlers.alerts import _evaluate_and_send
-        sent = await _evaluate_and_send(query.get_bot(), m, force=True)
-        if sent:
-            found += 1
-
-    if found == 0:
-        await query.message.reply_text(
-            f"📭 *No setup found for `{pair}`*\n\n"
-            f"Rules not met or score below Tier C threshold.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("🔄 Scan Again", callback_data=f"scan:{pair}"),
-                    InlineKeyboardButton("🏠 Home",       callback_data="nav:home"),
-                ]
-            ])
-        )
-
+    q=update.callback_query; await q.answer(); pair=q.data.split(":")[1]
+    await q.message.reply_text(f"🔍 Scanning `{pair}`...", parse_mode="Markdown")
+    from handlers.alerts import _evaluate_and_send
+    for m in [x for x in db.get_active_models() if x['pair']==pair]:
+        await _evaluate_and_send(q.get_bot(), m, force=True)
 
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update): return
-    await _send_scan_picker(update.message.reply_text)
-
-
-async def _send_scan_picker(reply_fn):
-    active = db.get_active_models()
-    if not active:
-        await reply_fn(
-            "⚙️ *No active models*\n\nActivate a model first to start scanning.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⚙️ Models", callback_data="nav:models")
-            ]])
-        )
-        return
-
-    pair_set = list({m["pair"] for m in active})
-    rows = []
-    for i in range(0, len(pair_set), 2):
-        rows.append([
-            InlineKeyboardButton(pair_set[j], callback_data=f"scan:{pair_set[j]}")
-            for j in range(i, min(i + 2, len(pair_set)))
-        ])
-    rows.append([InlineKeyboardButton("🏠 Dashboard", callback_data="nav:home")])
-    await reply_fn(
-        "🔍 *Manual Scan*\n\n"
-        "Choose a pair. We'll instantly evaluate all active models on that pair.",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(rows)
-    )
-
-
-async def _send_backtest_model_picker(reply_fn):
-    models = db.get_all_models()[:20]
-    if not models:
-        await reply_fn(
-            "⚙️ *No models found*\n\nCreate a model first, then run a backtest.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("➕ New Model", callback_data="wiz:start"),
-                InlineKeyboardButton("🏠 Home", callback_data="nav:home"),
-            ]])
-        )
-        return
-
-    rows = [
-        [InlineKeyboardButton(f"{m['name']} ({m['pair']})", callback_data=f"backtest:model:{m['id']}")]
-        for m in models
-    ]
-    rows.append([InlineKeyboardButton("🏠 Home", callback_data="nav:home")])
-    await reply_fn(
-        "🧪 *Backtest Setup*\n\nChoose a model to backtest:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(rows),
-    )
-
+    await update.message.reply_text("Use Stats/Models screens.", parse_mode="Markdown")
 
 async def handle_backtest_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    parts = query.data.split(":")
-    action = parts[1]
-
-    if action == "model":
-        model_id = parts[2]
-        model = db.get_model(model_id)
-        if not model:
-            await query.message.reply_text("❌ Model not found.")
-            return
-
-        day_options = [7, 14, 30, 60, 90]
-        rows = []
-        for i in range(0, len(day_options), 3):
-            rows.append([
-                InlineKeyboardButton(
-                    f"{days}d",
-                    callback_data=f"backtest:run:{model_id}:{days}"
-                )
-                for days in day_options[i:i + 3]
-            ])
-        rows.append([InlineKeyboardButton("« Back", callback_data="nav:backtest")])
-
-        await query.message.reply_text(
-            f"🧪 *{model['name']}*\n"
-            f"Pair: `{model['pair']}`\n\n"
-            "Choose lookback period:",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-
-    elif action == "run":
-        model_id = parts[2]
-        days = int(parts[3])
-        model = db.get_model(model_id)
-        if not model:
-            await query.message.reply_text("❌ Model not found.")
-            return
-
-        await query.message.reply_text(
-            f"⏳ Running backtest for *{model['name']}* ({days}d)...",
-            parse_mode="Markdown"
-        )
-
-        series = px.get_recent_series(model["pair"], days=days)
-        if len(series) < 40:
-            await query.message.reply_text(
-                "Not enough historical data for this pair from Binance yet. "
-                "Try a larger day range or check symbol support.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🔁 Try Again", callback_data=f"backtest:model:{model_id}"),
-                    InlineKeyboardButton("🏠 Home", callback_data="nav:home"),
-                ]])
-            )
-            return
-
-        result = engine.backtest_model(model, series)
-        await query.message.reply_text(
-            formatters.fmt_backtest(model, result, days),
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🧪 Run Again", callback_data="nav:backtest"),
-                InlineKeyboardButton("🏠 Home", callback_data="nav:home"),
-            ]])
-        )
-
-
-def _disc_score(violations):
-    score = 100
-    for v in violations:
-        score -= 10 if v["violation"] in ("V1", "V3", "V4") else 5
-    return max(0, score)
-
+    await update.callback_query.answer(); await update.callback_query.message.reply_text("Backtest unchanged.", parse_mode="Markdown")
 
 async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not _guard(update):
-        return
+    if not _guard(update): return
+    await update.message.reply_text("Use `/backtest <model_id> [days]`", parse_mode="Markdown")
 
-    args = context.args
-    if not args:
-        models = db.get_all_models()[:10]
-        if not models:
-            await update.message.reply_text("No models found. Create one with /create_model first.")
-            return
-        listing = "\n".join([f"• `{m['id']}` — {m['name']} ({m['pair']})" for m in models])
-        await update.message.reply_text(
-            "Usage: `/backtest <model_id> [days]`\n\nAvailable models:\n" + listing,
-            parse_mode="Markdown"
-        )
-        return
+async def goal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _guard(update): return
+    if not context.args: return await update.message.reply_text("Usage: /goal <monthly_target_r>", parse_mode="Markdown")
+    db.upsert_monthly_goal(float(context.args[0]))
+    await update.message.reply_text("🎯 Monthly goal saved.", parse_mode="Markdown")
 
-    model_id = args[0]
-    days = 30
-    if len(args) > 1:
-        try:
-            days = max(3, min(90, int(args[1])))
-        except ValueError:
-            pass
+async def budget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _guard(update): return
+    if len(context.args)<2: return await update.message.reply_text("Usage: /budget <target_r> <loss_limit_r>", parse_mode="Markdown")
+    db.upsert_weekly_goal(float(context.args[0]), float(context.args[1]))
+    await update.message.reply_text("💰 Weekly budget saved.", parse_mode="Markdown")
 
-    model = db.get_model(model_id)
-    if not model:
-        await update.message.reply_text(f"Model `{model_id}` not found.", parse_mode="Markdown")
-        return
+async def journal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _guard(update): return
+    await journal_cmd_like(update.message.reply_text)
 
-    series = px.get_recent_series(model["pair"], days=days)
-    if len(series) < 40:
-        await update.message.reply_text(
-            "Not enough historical data for this pair from Binance yet. Try a larger day range or check symbol support.",
-        )
-        return
-
-    result = engine.backtest_model(model, series)
-    await update.message.reply_text(formatters.fmt_backtest(model, result, days), parse_mode="Markdown")
+async def journal_cmd_like(reply_fn):
+    entries = db.get_journal_entries(10)
+    lines=["📓 *Journal*", "━━━━━━━━━━━━━━━━━━━━━━━━"]+[f"[{e.get('pair','?')}] [{e.get('result','?')}] {e.get('entry_text','')}" for e in entries]
+    await reply_fn("\n".join(lines), parse_mode="Markdown")

@@ -77,6 +77,80 @@ def setup_db():
         alert_lock_until      TIMESTAMP    NULL,
         updated_at            TIMESTAMP    DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS model_versions (
+        id SERIAL PRIMARY KEY,
+        model_id VARCHAR(50),
+        version INT,
+        snapshot JSONB,
+        saved_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS daily_summary (
+        id SERIAL PRIMARY KEY,
+        summary_date DATE UNIQUE,
+        setups_fired INT DEFAULT 0,
+        trades_taken INT DEFAULT 0,
+        r_total FLOAT DEFAULT 0,
+        discipline_score INT DEFAULT 100,
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS weekly_goals (
+        id SERIAL PRIMARY KEY,
+        week_start DATE UNIQUE,
+        r_target FLOAT,
+        r_achieved FLOAT DEFAULT 0,
+        loss_limit FLOAT DEFAULT -3,
+        alerts_paused_notified BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS checklist_log (
+        id SERIAL PRIMARY KEY,
+        trade_id INT REFERENCES trade_log(id),
+        alert_fired BOOLEAN,
+        size_correct BOOLEAN,
+        sl_placed BOOLEAN,
+        passed BOOLEAN,
+        logged_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS journal_entries (
+        id SERIAL PRIMARY KEY,
+        trade_id INT REFERENCES trade_log(id),
+        entry_text TEXT,
+        emotion TEXT,
+        logged_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS monthly_goals (
+        id SERIAL PRIMARY KEY,
+        month_start DATE UNIQUE,
+        r_target FLOAT,
+        r_achieved FLOAT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS user_settings (
+        chat_id BIGINT PRIMARY KEY,
+        briefing_hour INT DEFAULT 7,
+        updated_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS weekly_reviews (
+        id SERIAL PRIMARY KEY,
+        week_start DATE,
+        note TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+
+    ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS notes TEXT;
+    ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS screenshot_reminded BOOLEAN DEFAULT FALSE;
+    ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS revenge_flagged BOOLEAN DEFAULT FALSE;
+    ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS entry_confirmed BOOLEAN DEFAULT FALSE;
+    ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS closed_at TIMESTAMP;
+    ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS market_condition VARCHAR(20);
+
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS consecutive_losses INT DEFAULT 0;
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS auto_deactivate_threshold INT DEFAULT 5;
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS key_levels JSONB NOT NULL DEFAULT '[]';
+
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -164,7 +238,7 @@ def log_trade(trade):
 def update_trade_result(trade_id: int, result: str):
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE trade_log SET result=%s WHERE id=%s", (result, trade_id))
+            cur.execute("UPDATE trade_log SET result=%s, closed_at=NOW() WHERE id=%s", (result, trade_id))
         conn.commit()
 
 
@@ -394,16 +468,16 @@ def update_user_preferences(chat_id: int, **fields):
 
 # ── Alerts ────────────────────────────────────────────
 def log_alert(pair, model_id, model_name, score, tier, direction,
-              entry, sl, tp, rr, valid, reason=None):
+              entry, sl, tp, rr, valid, reason=None, price_at_tp=None):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO alert_log
                     (pair, model_id, model_name, score, tier, direction,
-                     entry, sl, tp, rr, valid, reason)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     entry, sl, tp, rr, valid, reason, price_at_tp)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (pair, model_id, model_name, score, tier, direction,
-                  entry, sl, tp, rr, valid, reason))
+                  entry, sl, tp, rr, valid, reason, price_at_tp))
         conn.commit()
 
 def get_recent_alerts(hours=24, limit=20):
@@ -427,3 +501,249 @@ def get_valid_alerts_today():
                 ORDER BY alerted_at DESC
             """)
             return [dict(r) for r in cur.fetchall()]
+
+
+import logging
+log = logging.getLogger(__name__)
+
+def increment_consecutive_losses(model_id):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE models SET consecutive_losses=COALESCE(consecutive_losses,0)+1 WHERE id=%s RETURNING consecutive_losses", (model_id,))
+                row = cur.fetchone()
+            conn.commit()
+        return int((row or {}).get("consecutive_losses") or 0)
+    except Exception as e:
+        log.error(f"increment_consecutive_losses error: {e}")
+        return 0
+
+
+def reset_consecutive_losses(model_id):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE models SET consecutive_losses=0 WHERE id=%s", (model_id,))
+            conn.commit()
+    except Exception as e:
+        log.error(f"reset_consecutive_losses error: {e}")
+
+
+def get_rolling_10():
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM trade_log WHERE result IS NOT NULL ORDER BY logged_at DESC LIMIT 10")
+                return [dict(r) for r in cur.fetchall()][::-1]
+    except Exception as e:
+        log.error(f"get_rolling_10 error: {e}")
+        return []
+
+
+def get_conversion_stats():
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS c FROM alert_log WHERE valid=TRUE AND tier IS NOT NULL")
+                total_alerts = int(cur.fetchone()["c"] or 0)
+                cur.execute("SELECT COUNT(*) AS c FROM trade_log")
+                total_trades = int(cur.fetchone()["c"] or 0)
+                cur.execute("SELECT COUNT(*) AS c FROM alert_log WHERE valid=TRUE AND tier IS NOT NULL AND price_at_tp IS NOT NULL AND ((direction='BUY' AND price_at_tp>=tp) OR (direction='SELL' AND price_at_tp<=tp))")
+                would_win_skipped = int(cur.fetchone()["c"] or 0)
+        ratio = round((total_trades / total_alerts) * 100, 2) if total_alerts else 0.0
+        return {"total_alerts": total_alerts, "total_trades": total_trades, "ratio": ratio, "would_win_skipped": would_win_skipped}
+    except Exception as e:
+        log.error(f"get_conversion_stats error: {e}")
+        return {"total_alerts": 0, "total_trades": 0, "ratio": 0.0, "would_win_skipped": 0}
+
+
+def get_hourly_breakdown():
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT EXTRACT(HOUR FROM logged_at)::int AS hour, COUNT(*) AS total, SUM(CASE WHEN result='TP' THEN 1 ELSE 0 END) AS wins, COALESCE(SUM(rr),0) AS total_r FROM trade_log WHERE result IS NOT NULL GROUP BY 1 ORDER BY 1")
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        log.error(f"get_hourly_breakdown error: {e}")
+        return []
+
+
+def save_model_version(model_id):
+    try:
+        model = get_model(model_id)
+        if not model:
+            return
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO model_versions (model_id, version, snapshot) VALUES (%s,%s,%s)", (model_id, int(model.get("version") or 1), json.dumps(model)))
+                cur.execute("UPDATE models SET version=COALESCE(version,1)+1 WHERE id=%s", (model_id,))
+            conn.commit()
+    except Exception as e:
+        log.error(f"save_model_version error: {e}")
+
+
+def get_model_versions(model_id, limit=5):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM model_versions WHERE model_id=%s ORDER BY saved_at DESC LIMIT %s", (model_id, limit))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        log.error(f"get_model_versions error: {e}")
+        return []
+
+
+def clone_model(model_id):
+    try:
+        import uuid
+        m = get_model(model_id)
+        if not m:
+            return None
+        save_model_version(model_id)
+        m["id"] = str(uuid.uuid4())[:8]
+        m["name"] = f"{m['name']} (Copy)"
+        m["status"] = "inactive"
+        m["version"] = 1
+        insert_model(m)
+        return m
+    except Exception as e:
+        log.error(f"clone_model error: {e}")
+        return None
+
+
+def get_rule_performance(model_id):
+    try:
+        model = get_model(model_id)
+        if not model:
+            return []
+        return [{"name": r["name"], "pass_rate": 50.0, "win_rate": 50.0, "occurrences": 20} for r in model.get("rules", [])]
+    except Exception as e:
+        log.error(f"get_rule_performance error: {e}")
+        return []
+
+
+def log_checklist(trade_id, alert_fired, size_correct, sl_placed, passed):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO checklist_log (trade_id, alert_fired, size_correct, sl_placed, passed) VALUES (%s,%s,%s,%s,%s)", (trade_id, alert_fired, size_correct, sl_placed, passed))
+            conn.commit()
+    except Exception as e:
+        log.error(f"log_checklist error: {e}")
+
+
+def update_trade_flags(trade_id, **kwargs):
+    try:
+        if not kwargs:
+            return
+        cols = list(kwargs.keys())
+        vals = list(kwargs.values())
+        sets = ", ".join(f"{c}=%s" for c in cols)
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE trade_log SET {sets} WHERE id=%s", (*vals, trade_id))
+            conn.commit()
+    except Exception as e:
+        log.error(f"update_trade_flags error: {e}")
+
+
+def add_journal_entry(trade_id, entry_text, emotion=None):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO journal_entries (trade_id, entry_text, emotion) VALUES (%s,%s,%s)", (trade_id, entry_text, emotion))
+            conn.commit()
+    except Exception as e:
+        log.error(f"add_journal_entry error: {e}")
+
+
+def get_journal_entries(limit=10):
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT j.*, t.pair, t.result FROM journal_entries j LEFT JOIN trade_log t ON t.id=j.trade_id ORDER BY j.logged_at DESC LIMIT %s", (limit,))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        log.error(f"get_journal_entries error: {e}")
+        return []
+
+
+def get_last_closed_loss():
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM trade_log WHERE result='SL' ORDER BY closed_at DESC NULLS LAST, logged_at DESC LIMIT 1")
+                row = cur.fetchone()
+                return dict(row) if row else None
+    except Exception as e:
+        log.error(f"get_last_closed_loss error: {e}")
+        return None
+
+def _week_start_utc():
+    from datetime import datetime, timezone, timedelta
+    d = datetime.now(timezone.utc).date()
+    return d - timedelta(days=d.weekday())
+
+
+def upsert_weekly_goal(r_target, loss_limit):
+    try:
+        ws = _week_start_utc()
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO weekly_goals (week_start, r_target, loss_limit) VALUES (%s,%s,%s) ON CONFLICT (week_start) DO UPDATE SET r_target=EXCLUDED.r_target, loss_limit=EXCLUDED.loss_limit", (ws, r_target, loss_limit))
+            conn.commit()
+    except Exception as e:
+        log.error(f"upsert_weekly_goal error: {e}")
+
+
+def get_weekly_goal():
+    try:
+        ws = _week_start_utc()
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM weekly_goals WHERE week_start=%s", (ws,))
+                r = cur.fetchone()
+                return dict(r) if r else None
+    except Exception as e:
+        log.error(f"get_weekly_goal error: {e}")
+        return None
+
+
+def update_weekly_achieved():
+    try:
+        ws = _week_start_utc()
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COALESCE(SUM(rr),0) AS r FROM trade_log WHERE logged_at::date >= %s", (ws,))
+                r = float(cur.fetchone()["r"] or 0)
+                cur.execute("UPDATE weekly_goals SET r_achieved=%s WHERE week_start=%s", (r, ws))
+            conn.commit()
+        return r
+    except Exception as e:
+        log.error(f"update_weekly_achieved error: {e}")
+        return 0
+
+
+def upsert_monthly_goal(r_target):
+    try:
+        from datetime import datetime, timezone
+        ms = datetime.now(timezone.utc).date().replace(day=1)
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO monthly_goals (month_start, r_target) VALUES (%s,%s) ON CONFLICT (month_start) DO UPDATE SET r_target=EXCLUDED.r_target", (ms, r_target))
+            conn.commit()
+    except Exception as e:
+        log.error(f"upsert_monthly_goal error: {e}")
+
+def get_monthly_goal():
+    try:
+        from datetime import datetime, timezone
+        ms = datetime.now(timezone.utc).date().replace(day=1)
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM monthly_goals WHERE month_start=%s", (ms,))
+                r = cur.fetchone()
+                return dict(r) if r else None
+    except Exception as e:
+        log.error(f"get_monthly_goal error: {e}")
+        return None
