@@ -137,47 +137,48 @@ def fmt_model_detail(m: dict, price=None) -> str:
 
 
 # ── Alert message ─────────────────────────────────────
-def fmt_alert(setup: dict, model: dict, scored: dict) -> str:
-    tier    = scored["tier"]
+def fmt_alert(
+    setup: dict,
+    model: dict,
+    scored: dict,
+    risk_pct: float,
+    risk_usd: float,
+    at_capacity: bool = False,
+    max_concurrent: int = 3,
+    correlation_warning: str | None = None,
+    reentry: bool = False,
+) -> str:
+    tier = scored["tier"]
     rules_str = "\n".join(
         f"  {'✅' if r['id'] in {x['id'] for x in scored['passed_rules']} else '❌'}  "
         f"{r['name']}{'  🔒' if r.get('mandatory') else ''}  +{r['weight']}"
         for r in model["rules"]
     )
-    mod_str = ""
-    for mod in scored["modifiers"]:
-        sign = "+" if mod["value"] > 0 else ""
-        mod_str += f"\n  {sign}{mod['value']}  {mod['label']}"
-    if not mod_str:
-        mod_str = "\n  None"
-
-    price = setup.get("entry", 0)
-    tier_line = {
-        "A": "🏆  *TIER A*  —  Full size  (2.0% risk)",
-        "B": "🥈  *TIER B*  —  Standard   (1.0% risk)",
-        "C": "🥉  *TIER C*  ⚠️  Low conviction  (0.5% risk)",
-    }.get(tier, "")
-    low_conviction = "\n⚠️  _Reduced conviction — consider skipping if unclear_" if tier == "C" else ""
+    confluence = setup.get("confluence_count", len(scored.get("passed_rules") or []))
+    low_conf_warn = "\n⚠️ Low confluence (<3 rules passing)." if confluence < 3 else ""
+    reentry_line = "\n✅ Re-entry: price returned to previously skipped setup zone." if reentry else ""
+    corr_line = f"\n{correlation_warning}" if correlation_warning else ""
+    capacity_line = f"\n⚠️ Concurrent trade capacity reached ({max_concurrent})." if at_capacity else ""
 
     return (
-        f"🚨  *NEW SETUP ALERT*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📌  *{model['name']}*\n"
-        f"🪙  {setup['pair']}  ·  {model['timeframe']}  ·  {scored['session']}\n"
+        f"🚨 *SETUP ALERT*\n"
+        f"{model['name']} | {setup['pair']} | {model['timeframe']}\n"
         f"{_direction_icon(setup.get('direction','BUY'))}\n\n"
-        f"{tier_line}{low_conviction}\n\n"
-        f"📊  *Score Breakdown*\n"
-        f"  Raw:       {scored['raw_score']:.1f}\n"
-        f"  Modifiers: {scored['modifier_total']:+.1f}\n"
-        f"  Final:     *{scored['final_score']}*  (min {model.get('tier_c', 5.5)})\n\n"
-        f"📋  *Rules*\n{rules_str}\n\n"
-        f"⚡  *Modifiers*{mod_str}\n\n"
-        f"💹  *Trade Levels*\n"
-        f"  Entry:  {fmt_price(price)}\n"
-        f"  SL:     {fmt_price(setup.get('sl', 0))}\n"
-        f"  TP:     {fmt_price(setup.get('tp', 0))}\n"
-        f"  RR:     1:{setup.get('rr', 2)}\n\n"
-        f"Did you take this trade?"
+        f"Entry: {fmt_price(setup.get('entry', 0))}\n"
+        f"SL: {fmt_price(setup.get('sl', 0))}\n"
+        f"TP: {fmt_price(setup.get('tp', 0))}\n"
+        f"TP1 (1:1): {fmt_price(setup.get('tp1', 0))}\n"
+        f"TP2 (1:2): {fmt_price(setup.get('tp2', 0))}\n"
+        f"TP3 (1:3): {fmt_price(setup.get('tp3', 0))}\n"
+        f"RR: 1:{setup.get('rr', 2)}\n"
+        f"Tier: {tier}\n"
+        f"Risk: {risk_pct:.2f}% (${risk_usd:.2f})\n"
+        f"Session: {scored['session']}\n"
+        f"Confluence: {confluence} rules{low_conf_warn}\n"
+        f"Score: {scored['final_score']} (raw {scored['raw_score']:.1f}, mod {scored['modifier_total']:+.1f})"
+        f"{corr_line}{capacity_line}{reentry_line}\n\n"
+        f"📋 *Rules*\n{rules_str}\n\n"
+        "Data only. Not financial advice."
     )
 
 
@@ -409,12 +410,46 @@ def fmt_models(models: list, prices: dict) -> str:
     return fmt_models_list(models)
 
 
-def fmt_stats(row: dict, tiers: list, sessions: list) -> str:
-    return "\n\n".join([
-        fmt_stats_overview(row),
-        fmt_stats_tiers(tiers),
-        fmt_stats_sessions(sessions),
+
+
+def fmt_performance_advanced(summary: dict, expectancy_leader: dict | None, underperforming: list, consecutive_losses: int) -> str:
+    total = int(summary.get("total") or 0)
+    wins = int(summary.get("wins") or 0)
+    win_rate = round((wins / total) * 100, 2) if total else 0.0
+    avg_win = float(summary.get("avg_win_r") or 0.0)
+    avg_loss = float(summary.get("avg_loss_r") or 0.0)
+    loss_rate = 100 - win_rate
+    expectancy = round((win_rate / 100 * avg_win) - (loss_rate / 100 * avg_loss), 3)
+
+    leader_line = "n/a"
+    if expectancy_leader:
+        leader_line = f"{expectancy_leader.get('pair','n/a')} · {expectancy_leader.get('session','n/a')} · {expectancy_leader.get('model_id','n/a')} ({expectancy_leader.get('expectancy',0)}R)"
+
+    under = "None"
+    if underperforming:
+        under = ", ".join(f"{x['bucket']} ({x['trades']} trades, {x['expectancy']}R)" for x in underperforming)
+
+    return "\n".join([
+        "📊 *Advanced Performance*",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        f"Win rate: {win_rate}%",
+        f"Total R: {summary.get('total_r') or 0}R",
+        f"Average R: {summary.get('avg_r') or 0}R",
+        f"Expectancy: {expectancy}R",
+        f"Max drawdown: {summary.get('max_drawdown_r') or 0}R",
+        f"Consecutive losses: {consecutive_losses}",
+        "",
+        f"Top model/session/pair expectancy: {leader_line}",
+        f"Underperforming models (20+ trades, neg expectancy): {under}",
     ])
+
+
+def fmt_stats(row: dict, tiers: list, sessions: list, summary: dict | None = None, expectancy_leader: dict | None = None, underperforming: list | None = None, consecutive_losses: int = 0) -> str:
+    chunks = [fmt_stats_overview(row), fmt_stats_tiers(tiers), fmt_stats_sessions(sessions)]
+    if summary is not None:
+        chunks.append(fmt_performance_advanced(summary, expectancy_leader, underperforming or [], consecutive_losses))
+    return "\n\n".join(chunks)
 
 
 def fmt_alert_log(alerts: list) -> str:
