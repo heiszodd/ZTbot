@@ -519,7 +519,16 @@ def update_model_fields(model_id, fields: dict):
 def delete_model(model_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
+            cur.execute("DELETE FROM model_versions WHERE model_id=%s", (model_id,))
             cur.execute("DELETE FROM models WHERE id=%s", (model_id,))
+        conn.commit()
+
+
+def delete_all_models():
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM model_versions")
+            cur.execute("DELETE FROM models")
         conn.commit()
 
 
@@ -1288,6 +1297,15 @@ def delete_degen_model(model_id: str) -> None:
             cur.execute("DELETE FROM degen_model_alerts WHERE model_id=%s", (model_id,))
             cur.execute("DELETE FROM degen_model_versions WHERE model_id=%s", (model_id,))
             cur.execute("DELETE FROM degen_models WHERE id=%s", (model_id,))
+        conn.commit()
+
+
+def delete_all_degen_models() -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM degen_model_alerts")
+            cur.execute("DELETE FROM degen_model_versions")
+            cur.execute("DELETE FROM degen_models")
         conn.commit()
 
 

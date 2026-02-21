@@ -146,6 +146,7 @@ def _model_edit_value_kb(model_id: str, field: str, options: list[str]) -> Inlin
 async def _render_models(q):
     models = db.get_all_models()
     rows = [[InlineKeyboardButton(f"{'🟢' if m['status'] == 'active' else '⚫'} {m['name']} ({m['pair']})", callback_data=f"model:detail:{m['id']}")] for m in models]
+    rows.append([InlineKeyboardButton("🗑 Delete All Models", callback_data="model:delete_all_confirm")])
     rows.append([InlineKeyboardButton("🏠 Home", callback_data="nav:home")])
     await q.message.reply_text(formatters.fmt_models(models), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
 
@@ -155,6 +156,23 @@ async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     parts = q.data.split(":")
     action = parts[1]
+
+    if action == "delete_all_confirm":
+        await q.message.reply_text(
+            "⚠️ Delete *all* perps models? This cannot be undone.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑 Yes, Delete All", callback_data="model:delete_all")],
+                [InlineKeyboardButton("Cancel", callback_data="nav:models")],
+            ]),
+        )
+        return
+    if action == "delete_all":
+        db.delete_all_models()
+        await q.message.reply_text("✅ All perps models deleted.", parse_mode="Markdown")
+        await _render_models(q)
+        return
+
     model_id = parts[2]
     m = db.get_model(model_id)
     if not m:
@@ -255,6 +273,8 @@ async def handle_backtest_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _send_backtest_entry(q.message.reply_text)
     elif action == "model" and len(parts) > 2:
         await _send_backtest_days(q.message.reply_text, parts[2])
+    elif action == "days" and len(parts) > 3:
+        await _run_backtest_selection(q.message.reply_text, parts[2], parts[3])
 
 
 async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -355,7 +375,7 @@ async def _send_backtest_days(reply, model_id: str):
     day_buttons = [
         InlineKeyboardButton(
             f"{days}d",
-            switch_inline_query_current_chat=f"/backtest {model_id} {days}",
+            callback_data=f"backtest:days:{model_id}:{days}",
         )
         for days in day_options
     ]
@@ -364,10 +384,19 @@ async def _send_backtest_days(reply, model_id: str):
     keyboard.append([InlineKeyboardButton("« Back to Perps", callback_data="nav:perps_home")])
 
     await reply(
-        f"🧪 *Backtest*\nModel: *{model['name']}* (`{model_id}`)\nPick a range to prefill the command.",
+        f"🧪 *Backtest*\nModel: *{model['name']}* (`{model_id}`)\nPick a range to run now.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+
+
+async def _run_backtest_selection(reply, model_id: str, days_raw: str):
+    try:
+        days = int(days_raw)
+    except Exception:
+        await reply("❌ Invalid day range selected.", reply_markup=_backtest_screen_kb())
+        return
+    await _run_backtest_command(reply, [model_id, str(days)])
 
 
 def _cancel_kb(scope: str) -> InlineKeyboardMarkup:
