@@ -501,26 +501,31 @@ def main():
 
 
 if __name__ == "__main__":
-    print("ZTbot main.py starting")
-
-    if len(sys.argv) > 1 and sys.argv[1].lower() in {"backtest", "--backtest", "-b"}:
-        run_backtest()
-    elif len(sys.argv) > 1 and sys.argv[1].lower() in {"bot", "--bot"}:
-        main()
-    else:
-        # Default entrypoint supports local interactive CLI and Railway background mode.
-        interactive = sys.stdin.isatty()
-        print("Env: Local interactive" if interactive else "Env: Railway background")
-
-        if interactive:
-            show_dashboard()
+    print("ZTbot main.py starting", flush=True)
+    try:
+        if len(sys.argv) > 1 and sys.argv[1].lower() in {"backtest", "--backtest", "-b"}:
+            run_backtest()
+        elif len(sys.argv) > 1 and sys.argv[1].lower() in {"bot", "--bot"}:
+            main()
         else:
-            # RAILWAY FIX: non-interactive mode should print once, then block forever.
-            try:
+            # Default entrypoint supports local interactive CLI and Railway background mode.
+            interactive = sys.stdin.isatty()
+            print("Env: Local interactive" if interactive else "Env: Railway background", flush=True)
+
+            if interactive:
                 show_dashboard()
-                print("Background mode - keeping container alive")
-                print("Dashboard printed - now keeping alive forever")
-            except Exception as exc:
-                # RAILWAY FIX: keep process alive even if dashboard rendering fails.
-                print(f"Dashboard failed before keep-alive: {exc}")
-            _keep_alive_loop(heartbeat_seconds=1800)
+            else:
+                # RAILWAY FIX: non-interactive mode should print once, then block forever.
+                try:
+                    show_dashboard()
+                    print("Background mode - keeping container alive", flush=True)
+                    print("Dashboard printed - now keeping alive forever", flush=True)
+                except Exception as exc:
+                    # RAILWAY FIX: keep process alive even if dashboard rendering fails.
+                    print(f"Dashboard failed before keep-alive: {exc}", flush=True)
+                _keep_alive_loop(heartbeat_seconds=1800)
+    except Exception:
+        print("FATAL: Bot crashed — full traceback below", flush=True)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
