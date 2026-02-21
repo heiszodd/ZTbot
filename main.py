@@ -13,7 +13,7 @@ from telegram.ext import (
 
 import prices as px
 from config import SCANNER_INTERVAL, WAT
-from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler
+from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler
 from degen import wallet_tracker
 from engine import run_backtest
 
