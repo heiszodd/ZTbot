@@ -57,6 +57,10 @@ FALLBACK_PRICES = {
 }
 
 _SESSION = requests.Session()
+LAST_API_CALL_TS: float | None = None
+LAST_API_ERROR: str | None = None
+API_CALL_COUNT = 0
+_LIVE_PRICE_CACHE: dict[str, tuple[float, float]] = {}
 
 
 @dataclass(slots=True)
@@ -107,6 +111,7 @@ def _load_cache(path: Path):
 
 
 def _request(path: str, params: dict, retries: int = 5, timeout: float = 10.0):
+    global LAST_API_CALL_TS, LAST_API_ERROR, API_CALL_COUNT
     if CRYPTOCOMPARE_API_KEY:
         params["api_key"] = CRYPTOCOMPARE_API_KEY
     if CRYPTOCOMPARE_EXTRA_PARAMS:
@@ -122,8 +127,12 @@ def _request(path: str, params: dict, retries: int = 5, timeout: float = 10.0):
             payload = resp.json()
             if isinstance(payload, dict) and payload.get("Response") == "Error":
                 raise RuntimeError(payload.get("Message", "CryptoCompare API error"))
+            LAST_API_CALL_TS = time.time()
+            LAST_API_ERROR = None
+            API_CALL_COUNT += 1
             return payload
         except Exception as exc:
+            LAST_API_ERROR = str(exc)
             if attempt == retries:
                 raise
             sleep_for = min(backoff * (2 ** (attempt - 1)), 10.0)
@@ -392,19 +401,40 @@ def get_crypto_prices(pairs: list[str]) -> dict[str, float]:
     if len(quotes) > 1:
         return {pair: FALLBACK_PRICES[pair] for pair in pairs if pair in FALLBACK_PRICES}
 
-    fsyms = ",".join(fsym for _, fsym, _ in parsed)
     tsym = quotes[0]
+    cache_ttl_sec = 20
+    now = time.time()
+    cache_hits: dict[str, float] = {}
+    missing_pairs: list[str] = []
+    for pair in pairs:
+        cached = _LIVE_PRICE_CACHE.get(pair)
+        if cached and (now - cached[1]) <= cache_ttl_sec:
+            cache_hits[pair] = cached[0]
+        else:
+            missing_pairs.append(pair)
+
+    if not missing_pairs:
+        return cache_hits
+
+    missing_parsed = [p for p in parsed if p[0] in set(missing_pairs)]
+    fsyms = ",".join(fsym for _, fsym, _ in missing_parsed)
+
     try:
         payload = _request(CRYPTOCOMPARE_PRICE_MULTI_PATH, {"fsyms": fsyms, "tsyms": tsym}, timeout=8.0)
         out: dict[str, float] = {}
-        for pair, fsym, _ in parsed:
+        for pair, fsym, _ in missing_parsed:
             price = payload.get(fsym, {}).get(tsym)
             if price is not None:
-                out[pair] = float(price)
-        return {pair: out[pair] for pair in pairs if pair in out}
+                price_value = float(price)
+                out[pair] = price_value
+                _LIVE_PRICE_CACHE[pair] = (price_value, now)
+        merged = {**cache_hits, **out}
+        return {pair: merged[pair] for pair in pairs if pair in merged}
     except Exception as exc:
         log.error("CryptoCompare live price error: %s", exc)
-        return {pair: FALLBACK_PRICES[pair] for pair in pairs if pair in FALLBACK_PRICES}
+        fallback = {pair: FALLBACK_PRICES[pair] for pair in missing_pairs if pair in FALLBACK_PRICES}
+        merged = {**cache_hits, **fallback}
+        return {pair: merged[pair] for pair in pairs if pair in merged}
 
 
 def fetch_prices(pairs: list[str]) -> dict[str, float]:
@@ -461,3 +491,14 @@ def fmt_price(price: float | None) -> str:
 
 def get_all_prices() -> dict[str, float]:
     return fetch_prices(CRYPTO_PAIRS)
+
+
+def get_api_health() -> dict[str, str | int | float | None]:
+    cache_files = list(CACHE_DIR.glob("*.json"))
+    return {
+        "last_api_call_ts": LAST_API_CALL_TS,
+        "last_api_error": LAST_API_ERROR,
+        "api_call_count": API_CALL_COUNT,
+        "cache_dir": str(CACHE_DIR),
+        "cache_files": len(cache_files),
+    }

@@ -371,7 +371,7 @@ def _available_models() -> list[str]:
     return MODELS
 
 
-def run_backtest() -> None:
+def run_backtest() -> dict | None:
     print("\n=== Interactive Backtest ===")
     print("Pair examples: BTCUSDT, ETHUSDT (or enter fsym/tsym separately)")
 
@@ -524,3 +524,22 @@ def run_backtest() -> None:
     print("\nFirst 5 trades:")
     for t in trade_logs[:5]:
         print(f"- {t['day']} | {t['side']} | {t['status']} | RR {t['rr']} | {t['reason']}")
+
+
+    return {
+        "pair": symbol,
+        "model": selected_model,
+        "timeframe": timeframe,
+        "range": f"{start_date} to {end_date}",
+        "total_setups": total_setups,
+        "wins": wins,
+        "losses": losses,
+        "winrate": round(winrate, 2),
+        "avg_rr": round(avg_rr, 2),
+        "net_pnl_pct": round(rr_total, 2),
+        "profit_factor": round(profit_factor, 2) if profit_factor != float("inf") else float("inf"),
+        "best_day": best_win_day[0],
+        "worst_day": worst_loss_day[0],
+        "max_win_streak": max_win_streak,
+        "max_loss_streak": max_loss_streak,
+    }
