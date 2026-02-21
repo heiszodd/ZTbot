@@ -409,13 +409,40 @@ def run_backtest() -> dict | None:
 
     symbol = f"{fsym}{tsym}"
     print(f"\nFetching 1m candles for {symbol} from {start_date} to {end_date}...")
-    try:
-        raw = px.fetch_cryptocompare_ohlcv(symbol, "1m", start_unix * 1000, end_time_ms=end_unix * 1000, use_cache=True)
-    except Exception as exc:
-        print(f"Data fetch failed: {exc}")
-        return
+    print("Checking cache...")
+    candles_1m = []
 
-    candles_1m = [_to_candle_dict(c) for c in raw]
+    try:
+        frame = px.fetch_historical_1m(
+            fsym=fsym,
+            tsym=tsym,
+            start_unix_sec=start_unix,
+            end_unix_sec=end_unix,
+        )
+        if hasattr(frame, "empty") and not frame.empty:
+            print("Skipping fetch — using cache when available via fetch_historical_1m().")
+            candles_1m = [
+                {
+                    "timestamp": int(row["timestamp_ms"] // 1000),
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row["volume_from"]),
+                }
+                for _, row in frame.iterrows()
+            ]
+    except Exception as exc:
+        print(f"fetch_historical_1m unavailable or failed ({exc}); using cached candle fetch fallback.")
+
+    if not candles_1m:
+        try:
+            raw = px.fetch_cryptocompare_ohlcv(symbol, "1m", start_unix * 1000, end_time_ms=end_unix * 1000, use_cache=True)
+            candles_1m = [_to_candle_dict(c) for c in raw]
+        except Exception as exc:
+            print(f"Data fetch failed: {exc}")
+            return
+
     if len(candles_1m) < 30:
         print("Insufficient data returned for the selected period.")
         return

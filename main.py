@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import time
+from datetime import timedelta, timezone
 from pathlib import Path
 
 import db
@@ -12,18 +13,23 @@ from telegram.ext import (
 )
 
 import prices as px
-from config import TOKEN, SCANNER_INTERVAL, CRYPTO_PAIRS
+from config import TOKEN, SCANNER_INTERVAL
 from handlers import commands, alerts, wizard, stats, scheduler
 from engine import run_backtest
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("bot.log", encoding="utf-8"),
+    ],
 )
 log = logging.getLogger(__name__)
 
 DASHBOARD_STATE_FILE = Path(".cache/dashboard_state.json")
 DASHBOARD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+BACKTEST_SUMMARY_FILE = Path("backtest_summary.json")
 
 
 MODEL_DESCRIPTIONS = {
@@ -35,20 +41,31 @@ MODEL_DESCRIPTIONS = {
 }
 
 
-BOT_STATE = {
+WAT_TZ = timezone(timedelta(hours=1), name="WAT")
+
+# NOTE: Dashboard globals are intentionally simple and JSON-serializable.
+bot_status = {
     "started_at": time.time(),
     "status": "Running",
-    "active_strategy": "Auto Scanner",
-    "last_run_time": None,
+    "last_activity": None,
+    "active_models": [],
     "last_warning": None,
-    "last_price_refresh_ts": 0.0,
+}
+recent_trades = []
+open_positions = []
+last_backtest = {}
+system_health = {
+    "api_calls_today": 0,
+    "warnings": "No proxy issues",
 }
 
-PRICE_REFRESH_COOLDOWN_SEC = 12
+
+def _wat_now() -> datetime.datetime:
+    return datetime.datetime.now(WAT_TZ)
 
 
-def _utc_now_str() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+def _wat_now_str() -> str:
+    return _wat_now().strftime("%Y-%m-%d %H:%M:%S WAT")
 
 
 def _fmt_datetime(dt_value) -> str:
@@ -75,34 +92,39 @@ def _safe_db_call(func, default, *args, **kwargs):
     try:
         return func(*args, **kwargs)
     except Exception as exc:
-        BOT_STATE["last_warning"] = f"DB: {exc}"
+        bot_status["last_warning"] = f"DB: {exc}"
         return default
 
 
 def _load_dashboard_state() -> dict:
     if not DASHBOARD_STATE_FILE.exists():
         return {
+            "bot_status": bot_status,
             "recent_trades": [],
+            "open_positions": [],
             "backtest_summary": {},
             "model_detection_counts": {},
-            "price_snapshot": {},
-            "last_dashboard_opened": _utc_now_str(),
+            "system_health": system_health,
+            "last_dashboard_opened": _wat_now_str(),
         }
     try:
         return json.loads(DASHBOARD_STATE_FILE.read_text(encoding="utf-8"))
     except Exception:
         return {
+            "bot_status": bot_status,
             "recent_trades": [],
+            "open_positions": [],
             "backtest_summary": {},
             "model_detection_counts": {},
-            "price_snapshot": {},
-            "last_dashboard_opened": _utc_now_str(),
+            "system_health": system_health,
+            "last_dashboard_opened": _wat_now_str(),
         }
 
 
 def _save_dashboard_state(state: dict) -> None:
-    state["last_dashboard_opened"] = _utc_now_str()
+    state["last_dashboard_opened"] = _wat_now_str()
     DASHBOARD_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    BACKTEST_SUMMARY_FILE.write_text(json.dumps(state.get("backtest_summary", {}), indent=2), encoding="utf-8")
 
 
 def _compute_performance(recent_trades: list[dict]) -> dict:
@@ -161,7 +183,8 @@ def _render_section(title: str) -> None:
 def _render_dashboard(state: dict) -> None:
     _clear_screen()
     now = time.time()
-    uptime = _fmt_duration(now - BOT_STATE["started_at"])
+    status = state.get("bot_status", bot_status)
+    uptime = _fmt_duration(now - float(status.get("started_at", now)))
 
     open_trades = _safe_db_call(db.get_open_trades, [], limit=10)
     all_models = _safe_db_call(db.get_all_models, [])
@@ -170,17 +193,20 @@ def _render_dashboard(state: dict) -> None:
     trade_log = state.get("recent_trades") or recent_closed or []
     perf = _compute_performance(trade_log)
 
-    print("🚀 ZTbot Command Dashboard (Low-API Mode)")
+    print("🚀 ZTbot Interactive Dashboard (No default live prices)")
     print("-" * 64)
-    print(f"🕒 { _utc_now_str() }")
+    print(f"🕒 {_wat_now_str()}")
 
-    _render_section("Bot / Engine Status")
-    print(f"Status            : {BOT_STATE['status']}")
-    print(f"Active Strategy   : {BOT_STATE['active_strategy']}")
-    print(f"Last Run Time     : {BOT_STATE['last_run_time'] or 'N/A'}")
-    print(f"Uptime            : {uptime}")
+    _render_section("🤖 Bot Status")
+    active_model_names = status.get("active_models") or [m.get("name") for m in all_models if m.get("status") == "active"]
+    active_txt = ", ".join(active_model_names) if active_model_names else "None"
+    started_wat = datetime.datetime.fromtimestamp(float(status.get("started_at", now)), tz=WAT_TZ).strftime("%I:%M %p WAT")
+    print(f"Status            : {status.get('status', 'Running')}")
+    print(f"Active model(s)   : {active_txt}")
+    print(f"Last activity     : {status.get('last_activity') or 'N/A'}")
+    print(f"Uptime            : {uptime} (Running since {started_wat})")
 
-    _render_section("Performance Overview")
+    _render_section("📈 Performance Overview")
     pf = "∞" if perf["profit_factor"] == float("inf") else f"{perf['profit_factor']:.2f}"
     print(f"Total Trades      : {perf['total']} (W {perf['wins']} | L {perf['losses']} | BE {perf['breakeven']})")
     print(f"Winrate           : {perf['winrate']:.2f}%")
@@ -189,18 +215,18 @@ def _render_dashboard(state: dict) -> None:
     print(f"Net PnL % (R~%)   : {perf['net_pnl_pct']:.2f}%")
     print(f"Streaks           : Max Win {perf['max_win_streak']} | Max Loss {perf['max_loss_streak']}")
 
-    _render_section("Open Trades / Positions")
+    _render_section("📌 Open Positions")
     if not open_trades:
-        print("No open trades.")
+        print("No open positions.")
     else:
         for t in open_trades[:8]:
-            status = t.get("result") or "OPEN"
+            position_status = "pending" if str(t.get("status", "")).lower() == "pending" else "open"
             print(
-                f"• {t.get('pair','N/A'):<8} | Entry {px.fmt_price(float(t.get('entry_price', 0) or 0)):<12} "
-                f"| Time {_fmt_datetime(t.get('logged_at')):<16} | Status {status:<6} | Model {t.get('model_id','N/A')}"
+                f"• {t.get('pair','N/A'):<8} | Entry Time {_fmt_datetime(t.get('logged_at')):<16} "
+                f"| Model {t.get('model_id','N/A'):<12} | Status {position_status}"
             )
 
-    _render_section("Recent Activity")
+    _render_section("🕘 Recent Activity")
     if not trade_log:
         print("No recent trades or setups in cache yet.")
     else:
@@ -213,7 +239,7 @@ def _render_dashboard(state: dict) -> None:
                 f"| {result:<10} | RR {rr:.2f}"
             )
 
-    _render_section("Active Models / Strategies")
+    _render_section("🧠 Active Models")
     if not all_models:
         fallback_models = [
             {"name": "FVG Basic", "status": "active"},
@@ -222,14 +248,13 @@ def _render_dashboard(state: dict) -> None:
         ]
         all_models = fallback_models
     model_counts = state.get("model_detection_counts", {})
-    for model in all_models[:10]:
+    for idx, model in enumerate(all_models[:10], start=1):
         name = model.get("name", "Unknown")
-        status = model.get("status", "inactive")
-        desc = MODEL_DESCRIPTIONS.get(name, "Custom strategy model.")
+        model_status = model.get("status", "inactive")
         detections = model_counts.get(name, 0)
-        print(f"• {name:<18} | {status:<8} | detections:{detections:<4} | {desc}")
+        print(f"{idx}. {name:<18} - {model_status.title():<8} | last setups: {detections}")
 
-    _render_section("Backtest Summary (latest cached)")
+    _render_section("🧪 Backtest Summary")
     bt = state.get("backtest_summary") or {}
     if not bt:
         print("No backtest summary cached yet. Run one via quick action #1.")
@@ -237,80 +262,53 @@ def _render_dashboard(state: dict) -> None:
         print(f"Pair/TF/Range     : {bt.get('pair','N/A')} {bt.get('timeframe','N/A')} {bt.get('range','N/A')}")
         print(f"Setups/W/L        : {bt.get('total_setups',0)} / {bt.get('wins',0)} / {bt.get('losses',0)}")
         print(f"Winrate / Avg RR  : {bt.get('winrate',0):.2f}% / {bt.get('avg_rr',0):.2f}")
-        print(f"Most Win/Loss Day : {bt.get('best_day','N/A')} / {bt.get('worst_day','N/A')}")
+        print(f"Most Win Session  : {bt.get('best_day','N/A')} ({bt.get('wins', 0)} wins tracked)")
+        print(f"Most Loss Session : {bt.get('worst_day','N/A')} ({bt.get('losses', 0)} losses tracked)")
 
-    _render_section("System Health / Alerts")
+    _render_section("🛡️ System Health")
     health = px.get_api_health()
+    system = state.get("system_health", system_health)
+    cache_marker = "Yes" if health.get("cache_files", 0) else "No"
+    cache_update = "Never"
+    cache_files = sorted(Path(health.get("cache_dir", ".")).glob("*.json"))
+    if cache_files:
+        cache_update = datetime.datetime.fromtimestamp(cache_files[-1].stat().st_mtime, tz=WAT_TZ).strftime("%Y-%m-%d %H:%M WAT")
     last_call = health.get("last_api_call_ts")
-    last_call_fmt = _fmt_datetime(datetime.datetime.fromtimestamp(last_call, tz=datetime.timezone.utc)) if last_call else "Never"
-    print(f"API Calls (session): {health.get('api_call_count', 0)}")
+    last_call_fmt = _fmt_datetime(datetime.datetime.fromtimestamp(last_call, tz=WAT_TZ)) if last_call else "Never"
+    print(f"Cache status       : BTCUSDT cached: {cache_marker}, last update: {cache_update}")
+    print(f"API calls today    : {system.get('api_calls_today', health.get('api_call_count', 0))}")
     print(f"Last API fetch     : {last_call_fmt}")
-    print(f"Cache status       : {health.get('cache_files', 0)} files @ {health.get('cache_dir')}")
-    print(f"Last API error     : {health.get('last_api_error') or BOT_STATE.get('last_warning') or 'None'}")
+    print(f"Errors/Warnings    : {health.get('last_api_error') or status.get('last_warning') or system.get('warnings')}")
 
-    _render_section("Quick Actions")
+    _render_section("📋 Menu Options")
     print("1) Run Backtest")
-    print("2) Refresh specific pair price (one-shot)")
-    print("3) Toggle model on/off")
-    print("4) View recent logs (trade + alert snapshots)")
-    print("5) Refresh watched pairs (top 3) once")
-    print("6) Pause/Resume bot state")
-    print("0) Exit dashboard")
+    print("2) Refresh Specific Pair Price")
+    print("3) Toggle Model")
+    print("4) View Logs")
+    print("5) Exit")
 
 
 def _refresh_specific_pair_price(state: dict) -> None:
-    now = time.time()
-    if now - BOT_STATE["last_price_refresh_ts"] < PRICE_REFRESH_COOLDOWN_SEC:
-        wait_for = int(PRICE_REFRESH_COOLDOWN_SEC - (now - BOT_STATE["last_price_refresh_ts"]))
-        print(f"Please wait {wait_for}s before another manual price refresh (API cooldown).")
-        input("Press Enter to continue...")
-        return
-
+    # CRITICAL RULE: no live price fetch on dashboard render.
+    # This path is the ONLY explicit one-shot live fetch entrypoint.
     pair = input("Pair (e.g., BTCUSDT): ").strip().upper()
     if not pair:
         return
+    print("Checking cache before one-time fetch...")
+    log.info("Checking cache for manual pair refresh: %s", pair)
     fetched = px.fetch_prices([pair])
-    BOT_STATE["last_price_refresh_ts"] = now
     if not fetched:
         print("No price data available.")
+        log.warning("Manual pair refresh failed for %s", pair)
     else:
         value = fetched.get(pair)
-        state.setdefault("price_snapshot", {})[pair] = {
-            "price": value,
-            "refreshed_at": _utc_now_str(),
-        }
+        system = state.setdefault("system_health", system_health.copy())
+        system["api_calls_today"] = int(px.get_api_health().get("api_call_count", 0))
         print(f"{pair} => {px.fmt_price(value)}")
-    input("Press Enter to continue...")
-
-
-def _refresh_watched_pairs(state: dict) -> None:
-    now = time.time()
-    if now - BOT_STATE["last_price_refresh_ts"] < PRICE_REFRESH_COOLDOWN_SEC:
-        wait_for = int(PRICE_REFRESH_COOLDOWN_SEC - (now - BOT_STATE["last_price_refresh_ts"]))
-        print(f"Please wait {wait_for}s before another manual price refresh (API cooldown).")
-        input("Press Enter to continue...")
-        return
-
-    watched = CRYPTO_PAIRS[:3]
-    print(f"Refreshing watched pairs once: {', '.join(watched)}")
-    fetched = px.fetch_prices(watched)
-    BOT_STATE["last_price_refresh_ts"] = now
-    if not fetched:
-        print("No watched pair prices returned.")
-    else:
-        snap = state.setdefault("price_snapshot", {})
-        for pair in watched:
-            price = fetched.get(pair)
-            if price is None:
-                continue
-            previous_vol_proxy = (snap.get(pair) or {}).get("approx_volume_proxy")
-            snap[pair] = {
-                "price": price,
-                "approx_volume_proxy": previous_vol_proxy,
-                "refreshed_at": _utc_now_str(),
-            }
-            vol_text = f"{previous_vol_proxy:.2f}" if isinstance(previous_vol_proxy, (int, float)) else "N/A"
-            print(f"• {pair:<8} | close {px.fmt_price(price):<12} | vol-proxy {vol_text}")
+        log.info("One-time manual price refresh: %s => %s", pair, value)
+        # Brief display, then clear so prices never persist on dashboard by default.
+        time.sleep(2)
+        _clear_screen()
     input("Press Enter to continue...")
 
 
@@ -333,31 +331,46 @@ def _toggle_model() -> None:
 
 
 def _show_recent_logs(state: dict) -> None:
+    print("\nLast log lines from bot.log:\n")
+    log_file = Path("bot.log")
+    if not log_file.exists():
+        print("bot.log not found yet.")
+        input("Press Enter to continue...")
+        return
+    lines = log_file.read_text(encoding="utf-8").splitlines()
+    for line in lines[-20:]:
+        print(line)
+
     alerts_log = _safe_db_call(db.get_recent_alerts, [], hours=72, limit=10)
-    open_trades = _safe_db_call(db.get_open_trades, [], limit=10)
-    print("\nRecent alerts:")
-    for a in alerts_log[:10]:
-        print(f"• {_fmt_datetime(a.get('alerted_at'))} | {a.get('pair')} | {a.get('model_name')} | tier {a.get('tier')} | valid {a.get('valid')}")
-    print("\nOpen trades:")
-    for t in open_trades[:10]:
-        print(f"• {_fmt_datetime(t.get('logged_at'))} | {t.get('pair')} | {t.get('model_id')} | entry {t.get('entry_price')}")
-    state["recent_trades"] = alerts_log
+    state["recent_trades"] = alerts_log[:10]
     input("Press Enter to continue...")
 
 
 def show_dashboard() -> None:
-    """Interactive CLI dashboard prioritizing bot health and performance over live price polling."""
+    """
+    Interactive CLI dashboard.
+
+    IMPORTANT: This dashboard does NOT fetch or display live prices by default.
+    The only permitted live price call is explicit menu option #2.
+    """
     state = _load_dashboard_state()
+    state.setdefault("bot_status", bot_status)
+    state.setdefault("system_health", system_health)
     while True:
+        state["system_health"]["api_calls_today"] = int(px.get_api_health().get("api_call_count", 0))
+        state["bot_status"]["last_activity"] = _wat_now_str()
         _render_dashboard(state)
         choice = input("\nChoose action: ").strip()
-        BOT_STATE["last_run_time"] = _utc_now_str()
 
         if choice == "1":
-            print("Launching interactive backtest...")
+            print("Checking cache before backtest fetch...")
+            print("Skipping fetch — using cache when available (engine uses use_cache=True).")
+            log.info("Backtest requested from dashboard")
             summary = run_backtest()
             if summary:
                 state["backtest_summary"] = summary
+                state["recent_trades"] = state.get("recent_trades", [])
+                log.info("Backtest summary updated: %s", summary)
             input("Backtest finished. Press Enter to continue...")
         elif choice == "2":
             _refresh_specific_pair_price(state)
@@ -366,10 +379,6 @@ def show_dashboard() -> None:
         elif choice == "4":
             _show_recent_logs(state)
         elif choice == "5":
-            _refresh_watched_pairs(state)
-        elif choice == "6":
-            BOT_STATE["status"] = "Paused" if BOT_STATE["status"] == "Running" else "Running"
-        elif choice == "0":
             _save_dashboard_state(state)
             print("Exiting dashboard.")
             return
@@ -454,7 +463,8 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1].lower() in {"backtest", "--backtest", "-b"}:
         run_backtest()
-    elif len(sys.argv) > 1 and sys.argv[1].lower() in {"dashboard", "--dashboard", "-d"}:
-        show_dashboard()
-    else:
+    elif len(sys.argv) > 1 and sys.argv[1].lower() in {"bot", "--bot"}:
         main()
+    else:
+        # Default entrypoint for local interactive usage.
+        show_dashboard()
