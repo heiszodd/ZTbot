@@ -190,3 +190,91 @@ CREATE TABLE IF NOT EXISTS news_trades (
 );
 
 ALTER TABLE news_events ADD COLUMN IF NOT EXISTS suppressed BOOLEAN DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS degen_tokens (
+    id SERIAL PRIMARY KEY,
+    address VARCHAR(100) UNIQUE,
+    symbol VARCHAR(20),
+    chain VARCHAR(20) DEFAULT 'SOL',
+    token_data JSONB DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS degen_trades (
+    id SERIAL PRIMARY KEY,
+    token_id INT REFERENCES degen_tokens(id),
+    token_symbol VARCHAR(20),
+    result VARCHAR(10),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS degen_models (
+    id                    VARCHAR(50)  PRIMARY KEY,
+    name                  VARCHAR(100) NOT NULL,
+    description           TEXT,
+    status                VARCHAR(20)  DEFAULT 'inactive',
+    chains                JSONB        DEFAULT '["SOL"]',
+    rules                 JSONB        NOT NULL DEFAULT '[]',
+    min_score             FLOAT        DEFAULT 50,
+    max_risk_level        VARCHAR(20)  DEFAULT 'HIGH',
+    min_moon_score        INT          DEFAULT 40,
+    max_risk_score        INT          DEFAULT 60,
+    min_liquidity         FLOAT        DEFAULT 5000,
+    max_token_age_minutes INT          DEFAULT 120,
+    min_token_age_minutes INT          DEFAULT 2,
+    require_lp_locked     BOOLEAN      DEFAULT FALSE,
+    require_mint_revoked  BOOLEAN      DEFAULT FALSE,
+    require_verified      BOOLEAN      DEFAULT FALSE,
+    block_serial_ruggers  BOOLEAN      DEFAULT TRUE,
+    max_dev_rug_count     INT          DEFAULT 0,
+    max_top1_holder_pct   FLOAT        DEFAULT 20,
+    min_holder_count      INT          DEFAULT 10,
+    alert_count           INT          DEFAULT 0,
+    last_alert_at         TIMESTAMP,
+    created_at            TIMESTAMP    DEFAULT NOW(),
+    version               INT          DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS degen_model_alerts (
+    id              SERIAL PRIMARY KEY,
+    model_id        VARCHAR(50) REFERENCES degen_models(id),
+    token_id        INT REFERENCES degen_tokens(id),
+    token_address   VARCHAR(100),
+    token_symbol    VARCHAR(20),
+    score           FLOAT,
+    risk_score      INT,
+    moon_score      INT,
+    triggered_rules JSONB,
+    alerted_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS degen_model_versions (
+    id         SERIAL PRIMARY KEY,
+    model_id   VARCHAR(50),
+    version    INT,
+    snapshot   JSONB,
+    saved_at   TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'inactive';
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS chains JSONB DEFAULT '["SOL"]';
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS rules JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_score FLOAT DEFAULT 50;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_risk_level VARCHAR(20) DEFAULT 'HIGH';
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_moon_score INT DEFAULT 40;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_risk_score INT DEFAULT 60;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_liquidity FLOAT DEFAULT 5000;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_token_age_minutes INT DEFAULT 120;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_token_age_minutes INT DEFAULT 2;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS require_lp_locked BOOLEAN DEFAULT FALSE;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS require_mint_revoked BOOLEAN DEFAULT FALSE;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS require_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS block_serial_ruggers BOOLEAN DEFAULT TRUE;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_dev_rug_count INT DEFAULT 0;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_top1_holder_pct FLOAT DEFAULT 20;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_holder_count INT DEFAULT 10;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS alert_count INT DEFAULT 0;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS last_alert_at TIMESTAMP;
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;

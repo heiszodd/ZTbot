@@ -13,7 +13,7 @@ from telegram.ext import (
 
 import prices as px
 from config import SCANNER_INTERVAL, WAT
-from handlers import commands, alerts, wizard, stats, scheduler, news_handler
+from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard
 from engine import run_backtest
 
 logging.basicConfig(
@@ -436,11 +436,13 @@ def main():
     app.add_handler(CommandHandler("result",      stats.result_cmd))
     app.add_handler(CommandHandler("create_model",wizard.wiz_start))
     app.add_handler(CommandHandler("backtest",    commands.backtest))
+    app.add_handler(CommandHandler("create_degen_model", degen_wizard.start_wizard))
     app.add_handler(CommandHandler("journal",     commands.journal_cmd))
     app.add_handler(CommandHandler("news",        news_handler.news_cmd))
 
     # ── Conversations (must be before generic callback routers) ──
     app.add_handler(wizard.build_wizard_handler())
+    app.add_handler(degen_wizard.build_degen_wizard_handler())
     app.add_handler(commands.build_goal_handler())
     app.add_handler(commands.build_budget_handler())
 
@@ -452,6 +454,7 @@ def main():
     app.add_handler(CallbackQueryHandler(alerts.handle_alert_response, pattern="^alert:"))
     app.add_handler(CallbackQueryHandler(stats.handle_journal_cb, pattern="^journal:"))
     app.add_handler(CallbackQueryHandler(news_handler.handle_news_cb, pattern="^news:"))
+    app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_model_cb, pattern="^degen_model:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, stats.handle_journal_text))
 
     # ── Scanner job ───────────────────────────────────

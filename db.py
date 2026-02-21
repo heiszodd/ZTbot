@@ -187,9 +187,94 @@ def setup_db():
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
     ALTER TABLE news_events ADD COLUMN IF NOT EXISTS suppressed BOOLEAN DEFAULT FALSE;
     """
+    degen_sql = """
+    CREATE TABLE IF NOT EXISTS degen_tokens (
+        id SERIAL PRIMARY KEY,
+        address VARCHAR(100) UNIQUE,
+        symbol VARCHAR(20),
+        chain VARCHAR(20) DEFAULT 'SOL',
+        token_data JSONB DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS degen_trades (
+        id SERIAL PRIMARY KEY,
+        token_id INT REFERENCES degen_tokens(id),
+        token_symbol VARCHAR(20),
+        result VARCHAR(10),
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS degen_models (
+        id                    VARCHAR(50)  PRIMARY KEY,
+        name                  VARCHAR(100) NOT NULL,
+        description           TEXT,
+        status                VARCHAR(20)  DEFAULT 'inactive',
+        chains                JSONB        DEFAULT '["SOL"]',
+        rules                 JSONB        NOT NULL DEFAULT '[]',
+        min_score             FLOAT        DEFAULT 50,
+        max_risk_level        VARCHAR(20)  DEFAULT 'HIGH',
+        min_moon_score        INT          DEFAULT 40,
+        max_risk_score        INT          DEFAULT 60,
+        min_liquidity         FLOAT        DEFAULT 5000,
+        max_token_age_minutes INT          DEFAULT 120,
+        min_token_age_minutes INT          DEFAULT 2,
+        require_lp_locked     BOOLEAN      DEFAULT FALSE,
+        require_mint_revoked  BOOLEAN      DEFAULT FALSE,
+        require_verified      BOOLEAN      DEFAULT FALSE,
+        block_serial_ruggers  BOOLEAN      DEFAULT TRUE,
+        max_dev_rug_count     INT          DEFAULT 0,
+        max_top1_holder_pct   FLOAT        DEFAULT 20,
+        min_holder_count      INT          DEFAULT 10,
+        alert_count           INT          DEFAULT 0,
+        last_alert_at         TIMESTAMP,
+        created_at            TIMESTAMP    DEFAULT NOW(),
+        version               INT          DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS degen_model_alerts (
+        id              SERIAL PRIMARY KEY,
+        model_id        VARCHAR(50) REFERENCES degen_models(id),
+        token_id        INT REFERENCES degen_tokens(id),
+        token_address   VARCHAR(100),
+        token_symbol    VARCHAR(20),
+        score           FLOAT,
+        risk_score      INT,
+        moon_score      INT,
+        triggered_rules JSONB,
+        alerted_at      TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS degen_model_versions (
+        id         SERIAL PRIMARY KEY,
+        model_id   VARCHAR(50),
+        version    INT,
+        snapshot   JSONB,
+        saved_at   TIMESTAMP DEFAULT NOW()
+    );
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS description TEXT;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'inactive';
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS chains JSONB DEFAULT '["SOL"]';
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS rules JSONB NOT NULL DEFAULT '[]';
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_score FLOAT DEFAULT 50;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_risk_level VARCHAR(20) DEFAULT 'HIGH';
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_moon_score INT DEFAULT 40;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_risk_score INT DEFAULT 60;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_liquidity FLOAT DEFAULT 5000;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_token_age_minutes INT DEFAULT 120;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_token_age_minutes INT DEFAULT 2;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS require_lp_locked BOOLEAN DEFAULT FALSE;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS require_mint_revoked BOOLEAN DEFAULT FALSE;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS require_verified BOOLEAN DEFAULT FALSE;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS block_serial_ruggers BOOLEAN DEFAULT TRUE;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_dev_rug_count INT DEFAULT 0;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_top1_holder_pct FLOAT DEFAULT 20;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_holder_count INT DEFAULT 10;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS alert_count INT DEFAULT 0;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS last_alert_at TIMESTAMP;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;
+    """
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql)
+            cur.execute(degen_sql)
         conn.commit()
 
 
@@ -926,3 +1011,302 @@ def get_news_history(limit: int = 10):
                 (limit,),
             )
             return [dict(r) for r in cur.fetchall()]
+
+
+# ── Degen Models ────────────────────────────────────────────
+def _decode_json_field(v, default):
+    if isinstance(v, (list, dict)):
+        return v
+    try:
+        return json.loads(v) if v else default
+    except Exception:
+        return default
+
+
+def _normalize_degen_model(row):
+    if not row:
+        return None
+    d = dict(row)
+    d["chains"] = _decode_json_field(d.get("chains"), ["SOL"])
+    d["rules"] = _decode_json_field(d.get("rules"), [])
+    return d
+
+
+def get_all_degen_models() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM degen_models ORDER BY created_at DESC")
+            return [_normalize_degen_model(r) for r in cur.fetchall()]
+
+
+def get_degen_model(model_id: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM degen_models WHERE id=%s", (model_id,))
+            return _normalize_degen_model(cur.fetchone())
+
+
+def get_active_degen_models() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM degen_models WHERE status='active' ORDER BY created_at DESC")
+            return [_normalize_degen_model(r) for r in cur.fetchall()]
+
+
+def insert_degen_model(model: dict) -> None:
+    payload = dict(model)
+    payload["chains"] = json.dumps(payload.get("chains", ["SOL"]))
+    payload["rules"] = json.dumps(payload.get("rules", []))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO degen_models (
+                    id,name,description,status,chains,rules,min_score,max_risk_level,min_moon_score,max_risk_score,
+                    min_liquidity,max_token_age_minutes,min_token_age_minutes,require_lp_locked,require_mint_revoked,
+                    require_verified,block_serial_ruggers,max_dev_rug_count,max_top1_holder_pct,min_holder_count,
+                    alert_count,last_alert_at,version
+                ) VALUES (
+                    %(id)s,%(name)s,%(description)s,%(status)s,%(chains)s,%(rules)s,%(min_score)s,%(max_risk_level)s,%(min_moon_score)s,%(max_risk_score)s,
+                    %(min_liquidity)s,%(max_token_age_minutes)s,%(min_token_age_minutes)s,%(require_lp_locked)s,%(require_mint_revoked)s,
+                    %(require_verified)s,%(block_serial_ruggers)s,%(max_dev_rug_count)s,%(max_top1_holder_pct)s,%(min_holder_count)s,
+                    %(alert_count)s,%(last_alert_at)s,%(version)s
+                )
+                """,
+                {
+                    "id": payload["id"], "name": payload["name"], "description": payload.get("description"), "status": payload.get("status", "inactive"),
+                    "chains": payload["chains"], "rules": payload["rules"], "min_score": payload.get("min_score", 50),
+                    "max_risk_level": payload.get("max_risk_level", "HIGH"), "min_moon_score": payload.get("min_moon_score", 40),
+                    "max_risk_score": payload.get("max_risk_score", 60), "min_liquidity": payload.get("min_liquidity", 5000),
+                    "max_token_age_minutes": payload.get("max_token_age_minutes", 120), "min_token_age_minutes": payload.get("min_token_age_minutes", 2),
+                    "require_lp_locked": payload.get("require_lp_locked", False), "require_mint_revoked": payload.get("require_mint_revoked", False),
+                    "require_verified": payload.get("require_verified", False), "block_serial_ruggers": payload.get("block_serial_ruggers", True),
+                    "max_dev_rug_count": payload.get("max_dev_rug_count", 0), "max_top1_holder_pct": payload.get("max_top1_holder_pct", 20),
+                    "min_holder_count": payload.get("min_holder_count", 10), "alert_count": payload.get("alert_count", 0),
+                    "last_alert_at": payload.get("last_alert_at"), "version": payload.get("version", 1),
+                },
+            )
+        conn.commit()
+
+
+def set_degen_model_status(model_id: str, status: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE degen_models SET status=%s WHERE id=%s", (status, model_id))
+        conn.commit()
+
+
+def delete_degen_model(model_id: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM degen_model_alerts WHERE model_id=%s", (model_id,))
+            cur.execute("DELETE FROM degen_model_versions WHERE model_id=%s", (model_id,))
+            cur.execute("DELETE FROM degen_models WHERE id=%s", (model_id,))
+        conn.commit()
+
+
+def update_degen_model(model_id: str, fields: dict) -> None:
+    if not fields:
+        return
+    allowed = {
+        "name", "description", "status", "chains", "rules", "min_score", "max_risk_level", "min_moon_score", "max_risk_score",
+        "min_liquidity", "max_token_age_minutes", "min_token_age_minutes", "require_lp_locked", "require_mint_revoked", "require_verified",
+        "block_serial_ruggers", "max_dev_rug_count", "max_top1_holder_pct", "min_holder_count", "alert_count", "last_alert_at", "version"
+    }
+    keys = [k for k in fields if k in allowed]
+    if not keys:
+        return
+    params = []
+    values = []
+    for k in keys:
+        params.append(f"{k}=%s")
+        v = fields[k]
+        if k in {"chains", "rules"}:
+            v = json.dumps(v)
+        values.append(v)
+    values.append(model_id)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE degen_models SET {', '.join(params)} WHERE id=%s", values)
+        conn.commit()
+
+
+def log_degen_model_alert(model_id, token_id, address, symbol, score, risk_score, moon_score, triggered_rules) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO degen_model_alerts (model_id, token_id, token_address, token_symbol, score, risk_score, moon_score, triggered_rules)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (model_id, token_id, address, symbol, score, risk_score, moon_score, json.dumps(triggered_rules or [])),
+            )
+            cur.execute("UPDATE degen_models SET alert_count=alert_count+1,last_alert_at=NOW() WHERE id=%s", (model_id,))
+        conn.commit()
+
+
+def get_degen_model_stats(model_id: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS total_alerts FROM degen_model_alerts WHERE model_id=%s", (model_id,))
+            total = int(cur.fetchone()["total_alerts"])
+            cur.execute(
+                """
+                SELECT token_symbol, token_address FROM degen_model_alerts
+                WHERE model_id=%s ORDER BY alerted_at DESC LIMIT 5
+                """,
+                (model_id,),
+            )
+            last = [f"{r['token_symbol']}" for r in cur.fetchall()]
+            cur.execute(
+                """
+                SELECT token_symbol, moon_score FROM degen_model_alerts
+                WHERE model_id=%s ORDER BY moon_score DESC NULLS LAST LIMIT 1
+                """,
+                (model_id,),
+            )
+            best = cur.fetchone()
+            return {
+                "total_alerts": total,
+                "last_tokens": last,
+                "best_find": f"{best['token_symbol']} ({best['moon_score']})" if best else None,
+            }
+
+
+def save_degen_model_version(model_id: str) -> None:
+    model = get_degen_model(model_id)
+    if not model:
+        return
+    version = int(model.get("version") or 1)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO degen_model_versions (model_id, version, snapshot) VALUES (%s,%s,%s)",
+                (model_id, version, json.dumps(model)),
+            )
+            cur.execute("UPDATE degen_models SET version=version+1 WHERE id=%s", (model_id,))
+        conn.commit()
+
+
+def clone_degen_model(model_id: str) -> str:
+    model = get_degen_model(model_id)
+    if not model:
+        return ""
+    new_id = str(__import__("uuid").uuid4())[:12]
+    model["id"] = new_id
+    model["name"] = f"{model['name']} (Copy)"
+    model["status"] = "inactive"
+    model["version"] = 1
+    model["alert_count"] = 0
+    model["last_alert_at"] = None
+    insert_degen_model(model)
+    return new_id
+
+
+def get_degen_model_versions(model_id: str) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM degen_model_versions WHERE model_id=%s ORDER BY version DESC", (model_id,))
+            rows = cur.fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["snapshot"] = _decode_json_field(d.get("snapshot"), {})
+                out.append(d)
+            return out
+
+
+def has_recent_degen_model_alert(model_id: str, token_address: str, hours: int = 2) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1 FROM degen_model_alerts
+                WHERE model_id=%s AND token_address=%s AND alerted_at >= NOW() - (%s || ' hours')::interval
+                LIMIT 1
+                """,
+                (model_id, token_address, hours),
+            )
+            return cur.fetchone() is not None
+
+
+def increment_degen_model_alert_count(model_id: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE degen_models SET alert_count=alert_count+1,last_alert_at=NOW() WHERE id=%s", (model_id,))
+        conn.commit()
+
+
+def get_recent_degen_tokens(limit: int = 100) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id,address,symbol,chain,token_data
+                FROM degen_tokens
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = []
+            for r in cur.fetchall():
+                d = dict(r)
+                extra = _decode_json_field(d.get("token_data"), {})
+                extra.update({"id": d.get("id"), "address": d.get("address"), "symbol": d.get("symbol"), "chain": d.get("chain")})
+                rows.append(extra)
+            return rows
+
+
+def get_degen_rule_performance(model_id: str) -> list:
+    model = get_degen_model(model_id)
+    if not model:
+        return []
+    rule_ids = [r.get("id") for r in model.get("rules", [])]
+    if not rule_ids:
+        return []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT triggered_rules FROM degen_model_alerts WHERE model_id=%s", (model_id,))
+            alerts = cur.fetchall()
+            cur.execute(
+                """
+                SELECT dma.triggered_rules, dt.result
+                FROM degen_model_alerts dma
+                LEFT JOIN degen_trades dt ON dt.token_id = dma.token_id
+                WHERE dma.model_id=%s
+                """,
+                (model_id,),
+            )
+            joined = cur.fetchall()
+
+    total_alerts = max(len(alerts), 1)
+    results = []
+    for rid in rule_ids:
+        rule_name = rid
+        passed = 0
+        entry = 0
+        wins = 0
+        for row in joined:
+            triggered = _decode_json_field(row.get("triggered_rules"), [])
+            triggered_ids = {x.get("id") if isinstance(x, dict) else x for x in triggered}
+            if rid in triggered_ids:
+                passed += 1
+                if row.get("result") is not None:
+                    entry += 1
+                    if str(row.get("result")).upper() == "WIN":
+                        wins += 1
+        pass_rate = round((passed / total_alerts) * 100, 2)
+        entry_rate = round((entry / passed) * 100, 2) if passed else 0.0
+        win_rate = round((wins / entry) * 100, 2) if entry else 0.0
+        contribution = round((pass_rate * win_rate) / 100, 2)
+        results.append({
+            "rule_id": rid,
+            "rule_name": rule_name,
+            "samples": passed,
+            "pass_rate": pass_rate,
+            "entry_rate": entry_rate,
+            "win_rate": win_rate,
+            "contribution_score": contribution,
+        })
+    return results

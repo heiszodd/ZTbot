@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 import db, engine, formatters, prices as px
+from degen.scanner import degen_scan_job
 from config import CHAT_ID, TIER_RISK, CORRELATED_PAIRS
 
 log = logging.getLogger(__name__)
@@ -110,6 +111,10 @@ async def run_scanner(context: ContextTypes.DEFAULT_TYPE):
             await _evaluate_and_send(bot, m)
         except Exception as e:
             log.error(f"scanner error {e}")
+    try:
+        await degen_scan_job(context)
+    except Exception as e:
+        log.error(f"degen scanner error {e}")
 
 
 async def _render_checklist(message, context):
