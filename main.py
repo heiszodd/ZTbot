@@ -9,7 +9,7 @@ from pathlib import Path
 
 import db
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler
+    Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 )
 
 import prices as px
@@ -439,6 +439,9 @@ def main():
     app.add_handler(CommandHandler("result",      stats.result_cmd))
     app.add_handler(CommandHandler("create_model",wizard.wiz_start))
     app.add_handler(CommandHandler("backtest",    commands.backtest))
+    app.add_handler(CommandHandler("goal",        commands.goal_cmd))
+    app.add_handler(CommandHandler("budget",      commands.budget_cmd))
+    app.add_handler(CommandHandler("journal",     commands.journal_cmd))
 
     # ── Model wizard (ConversationHandler — must be first) ──
     app.add_handler(wizard.build_wizard_handler())
@@ -449,6 +452,8 @@ def main():
     app.add_handler(CallbackQueryHandler(commands.handle_scan_cb,   pattern="^scan:"))
     app.add_handler(CallbackQueryHandler(commands.handle_backtest_cb, pattern="^backtest:"))
     app.add_handler(CallbackQueryHandler(alerts.handle_alert_response, pattern="^alert:"))
+    app.add_handler(CallbackQueryHandler(stats.handle_journal_cb, pattern="^journal:"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, stats.handle_journal_text))
 
     # ── Scanner job ───────────────────────────────────
     app.job_queue.run_repeating(
@@ -481,10 +486,12 @@ def main():
     )
     app.job_queue.run_monthly(
         scheduler.send_monthly_report,
-        when=datetime.time(hour=0, minute=5, tzinfo=datetime.timezone.utc),
+        when=datetime.time(hour=0, minute=1, tzinfo=datetime.timezone.utc),
         day=1,
         name="monthly_report",
     )
+    app.job_queue.run_daily(scheduler.send_end_of_day_summary, time=datetime.time(hour=21, minute=0, tzinfo=datetime.timezone.utc), name="eod_summary")
+    app.job_queue.run_daily(scheduler.send_news_pre_warning, time=datetime.time(hour=0, minute=50, tzinfo=datetime.timezone.utc), name="news_50")
 
     log.info("🤖 Bot started — polling")
     app.run_polling(drop_pending_updates=True)

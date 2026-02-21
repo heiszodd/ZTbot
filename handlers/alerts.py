@@ -1,94 +1,78 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 import db, engine, formatters, prices as px
-from config import CHAT_ID, TIER_RISK
+from config import CHAT_ID, TIER_RISK, CORRELATED_PAIRS
 
 log = logging.getLogger(__name__)
-
-_recent: dict = {}
-_pending: dict = {}
-_watching: dict = {}
-_skipped_zones: list[dict] = []
-_circuit_warned_at: datetime | None = None
+_recent, _pending, _watching = {}, {}, {}
+_skipped_zones = []
+_aging_jobs, _last_proximity = {}, {}
+_circuit_warned_at = None
 _DEDUP_SEC = 900
 
 
-CORRELATED = {
-    "BTCUSDT": {"ETHUSDT"},
-    "ETHUSDT": {"BTCUSDT"},
-}
+def _dedup_key(pair, model_id, tier): return f"{pair}_{model_id}_{tier}"
+def _is_dup(pair, model_id, tier): return (datetime.utcnow().timestamp() - _recent.get(_dedup_key(pair, model_id, tier), 0)) < _DEDUP_SEC
+def _mark(pair, model_id, tier): _recent[_dedup_key(pair, model_id, tier)] = datetime.utcnow().timestamp()
 
 
-def _dedup_key(pair, model_id, tier):
-    return f"{pair}_{model_id}_{tier}"
-
-
-def _is_dup(pair, model_id, tier) -> bool:
-    key = _dedup_key(pair, model_id, tier)
-    last = _recent.get(key, 0)
-    return (datetime.utcnow().timestamp() - last) < _DEDUP_SEC
-
-
-def _mark(pair, model_id, tier):
-    _recent[_dedup_key(pair, model_id, tier)] = datetime.utcnow().timestamp()
-
-
-def _calc_tp_levels(entry: float, sl: float, direction: str) -> tuple[float, float, float]:
-    risk = abs(entry - sl)
-    if direction == "BUY":
-        return entry + risk, entry + risk * 2, entry + risk * 3
-    return entry - risk, entry - risk * 2, entry - risk * 3
-
-
-def _correlation_warning(pair: str) -> str | None:
-    open_trades = db.get_open_trades()
-    open_pairs = {t["pair"] for t in open_trades if t.get("pair")}
-    correlated_open = CORRELATED.get(pair, set()) & open_pairs
-    if correlated_open:
-        cp = ", ".join(sorted(correlated_open))
-        return f"⚠️ Correlation risk: open trade detected in {cp}."
+def _correlation_warning(pair: str):
+    open_pairs = set(db.get_open_trades_pairs())
+    corr = set(CORRELATED_PAIRS.get(pair, [])) & open_pairs
+    if corr:
+        cp = sorted(corr)[0]
+        return f"⚠️ Correlation Warning — you have an open {cp} position. Entering this increases correlated exposure."
     return None
 
 
-async def _evaluate_and_send(bot, model: dict, force: bool = False) -> bool:
+async def _setup_aging_follow_up(context: ContextTypes.DEFAULT_TYPE):
+    d = context.job.data
+    pair, entry = d["pair"], float(d["entry"])
+    cur = px.get_price(pair)
+    if not cur:
+        return
+    diff = ((cur - entry) / entry) * 100 if entry else 0
+    if abs(diff) > 0.5:
+        msg = f"⏰ Setup Update — [{pair}] price has moved [{diff:+.2f}]% from your entry level. Review before entering."
+    else:
+        msg = f"⏰ Still valid — [{pair}] is near entry. Setup remains active."
+    msg += f"\nOriginal entry: `{px.fmt_price(entry)}`\nCurrent price: `{px.fmt_price(cur)}`\nDifference: `{diff:+.2f}%`"
+    await context.application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+
+
+def check_proximity_alerts(bot, model, price):
+    levels = model.get("key_levels") or []
+    for lv in levels:
+        try:
+            lv = float(lv)
+        except Exception:
+            continue
+        if lv and abs((price - lv) / lv) * 100 <= 0.3:
+            key = f"{model['pair']}:{lv}"
+            now = datetime.utcnow()
+            if key not in _last_proximity or (now - _last_proximity[key]).total_seconds() > 1800:
+                _last_proximity[key] = now
+                asyncio.create_task(bot.send_message(chat_id=CHAT_ID, text=f"📍 Price approaching key level [{lv}] on [{model['pair']}] — [{model['name']}] — prepare your checklist", parse_mode="Markdown"))
+
+
+async def _evaluate_and_send(bot, model: dict, force=False):
     global _circuit_warned_at
-
     prefs = db.get_user_preferences(CHAT_ID)
-    now_utc = datetime.now(timezone.utc)
-
     if prefs.get("risk_off_mode"):
         return False
-
-    lock_until = prefs.get("alert_lock_until")
-    if lock_until and lock_until > now_utc.replace(tzinfo=None):
-        return False
-
-    daily_loss_pct = db.get_daily_realized_loss_pct()
-    loss_limit = float(prefs.get("daily_loss_limit_pct") or 3.0)
-    if daily_loss_pct >= loss_limit:
-        if _circuit_warned_at is None or (now_utc - _circuit_warned_at) > timedelta(hours=1):
-            await bot.send_message(
-                chat_id=CHAT_ID,
-                text=(
-                    f"⚠️ *Circuit Breaker Active*\n"
-                    f"Daily realized loss: *{daily_loss_pct:.2f}%* (limit {loss_limit:.2f}%).\n"
-                    "New alerts are suppressed for the rest of the day."
-                ),
-                parse_mode="Markdown",
-            )
-            _circuit_warned_at = now_utc
-        return False
-
-    open_trades = db.get_open_trades()
-    max_concurrent = int(prefs.get("max_concurrent_trades") or 3)
-    at_capacity = len(open_trades) >= max_concurrent
-
     pair = model["pair"]
     price = px.get_price(pair)
     if not price:
-        log.warning(f"No price for {pair}")
+        return False
+    check_proximity_alerts(bot, model, price)
+
+    weekly = db.get_weekly_goal() if hasattr(db, "get_weekly_goal") else None
+    if weekly and db.update_weekly_achieved() <= float(weekly.get("loss_limit", -3)):
+        if not weekly.get("alerts_paused_notified"):
+            await bot.send_message(chat_id=CHAT_ID, text=f"🛑 Weekly loss limit reached ({weekly.get('loss_limit')}R). Alerts paused until Monday.", parse_mode="Markdown")
         return False
 
     series = px.get_recent_series(pair, days=2)
@@ -97,184 +81,141 @@ async def _evaluate_and_send(bot, model: dict, force: bool = False) -> bool:
         return False
 
     scored = engine.score_setup(setup, model)
-    if not scored["valid"] or not scored["tier"]:
+    if not scored.get("tier"):
         return False
-
     if not force and _is_dup(pair, model["id"], scored["tier"]):
         return False
 
     atr = px.estimate_atr(series[-30:]) if series else None
     sl, tp, rr = px.calc_sl_tp(price, setup["direction"], atr=atr)
-    setup["entry"] = price
-    setup["sl"] = sl
-    setup["tp"] = tp
-    setup["rr"] = rr
-    tp1, tp2, tp3 = _calc_tp_levels(price, sl, setup["direction"])
-    setup["tp1"], setup["tp2"], setup["tp3"] = tp1, tp2, tp3
+    setup.update({"entry": price, "sl": sl, "tp": tp, "rr": rr})
 
-    confluence_count = len(scored.get("passed_rules") or [])
-    setup["confluence_count"] = confluence_count
-
-    risk_pct = float(TIER_RISK.get(scored["tier"], scored.get("risk_pct") or 0.0))
-    risk_usd = (float(prefs.get("account_balance") or 0.0) * risk_pct) / 100.0
-    setup["risk_usd"] = risk_usd
-
-    correlation_warning = _correlation_warning(pair)
-    reentry = False
-    tolerance = max(price * 0.0015, 0.01)
-    for z in list(_skipped_zones):
-        if z["pair"] == pair and z["model_id"] == model["id"] and abs(price - z["entry"]) <= tolerance:
-            reentry = True
-            _skipped_zones.remove(z)
-            break
-
-    db.log_alert(
-        pair,
-        model["id"],
-        model["name"],
-        scored["final_score"],
-        scored["tier"],
-        setup["direction"],
-        price,
-        sl,
-        tp,
-        rr,
-        True,
-    )
+    db.log_alert(pair, model["id"], model["name"], scored["final_score"], scored["tier"], setup["direction"], price, sl, tp, rr, True)
     _mark(pair, model["id"], scored["tier"])
-
-    ts = datetime.utcnow().strftime("%H%M%S")
-    key = f"{pair}_{model['id']}_{ts}"
+    key = f"{pair}_{model['id']}_{datetime.utcnow().strftime('%H%M%S')}"
     _pending[key] = (setup, model, scored)
 
-    text = formatters.fmt_alert(
-        setup,
-        model,
-        scored,
-        risk_pct=risk_pct,
-        risk_usd=risk_usd,
-        at_capacity=at_capacity,
-        max_concurrent=max_concurrent,
-        correlation_warning=correlation_warning,
-        reentry=reentry,
-    )
-
-    if db.get_losing_streak() >= 3:
-        text += "\n\n⚠️ Losing streak detected (3+). Follow your rules."
-
-    kb = InlineKeyboardMarkup(
-        [[
-            InlineKeyboardButton("✅ Entered", callback_data=f"alert:entered:{key}"),
-            InlineKeyboardButton("❌ Skipped", callback_data=f"alert:skipped:{key}"),
-            InlineKeyboardButton("👀 Watching", callback_data=f"alert:watching:{key}"),
-        ]]
-    )
+    text = formatters.fmt_alert(setup, model, scored, risk_pct=float(TIER_RISK.get(scored["tier"], 0)), risk_usd=0.0, correlation_warning=_correlation_warning(pair))
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Entered", callback_data=f"alert:entered:{key}"), InlineKeyboardButton("❌ Skipped", callback_data=f"alert:skipped:{key}"), InlineKeyboardButton("👀 Watching", callback_data=f"alert:watching:{key}")]])
     await bot.send_message(chat_id=CHAT_ID, text=text, reply_markup=kb, parse_mode="Markdown")
-
-    if at_capacity:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text=f"⚠️ Max concurrent trades reached ({len(open_trades)}/{max_concurrent}).",
-            parse_mode="Markdown",
-        )
-    log.info(f"Alert sent: {pair} Tier {scored['tier']} score={scored['final_score']}")
+    job = bot._application.job_queue.run_once(_setup_aging_follow_up, when=900, data={"pair": pair, "entry": price}, name=f"aging:{key}")
+    _aging_jobs[key] = job
     return True
 
 
 async def run_scanner(context: ContextTypes.DEFAULT_TYPE):
-    log.info("Scanner tick")
     bot = context.application.bot
-    try:
-        active = db.get_active_models()
-    except Exception as e:
-        log.error(f"Scanner DB error: {e}")
-        return
-
-    for watch_key, state in list(_watching.items()):
-        m = db.get_model(state["model_id"])
-        if not m:
-            _watching.pop(watch_key, None)
-            continue
-        series = px.get_recent_series(state["pair"], days=1)
-        setup = engine.build_live_setup(m, series)
-        scored = engine.score_setup(setup, m)
-        if (not scored["valid"]) or (len(scored.get("passed_rules") or []) < 3):
-            await bot.send_message(
-                chat_id=CHAT_ID,
-                text=formatters.fmt_invalidation("Structure broke or key confluence lost", state["pair"], m["name"]),
-                parse_mode="Markdown",
-            )
-            _watching.pop(watch_key, None)
-
-    for m in active:
+    for m in db.get_active_models():
         try:
             await _evaluate_and_send(bot, m)
         except Exception as e:
-            log.error(f"Scanner error {m['id']}: {e}")
+            log.error(f"scanner error {e}")
+
+
+async def _render_checklist(message, context):
+    st = context.user_data.get("checklist")
+    if not st:
+        return
+    icon = lambda x: "✅" if x else "❌"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{icon(st['alert_fired'])} Alert fired", callback_data="alert:chk:alert_fired")],
+        [InlineKeyboardButton(f"{icon(st['size_correct'])} Size correct", callback_data="alert:chk:size_correct")],
+        [InlineKeyboardButton(f"{icon(st['sl_placed'])} SL placed", callback_data="alert:chk:sl_placed")],
+        [InlineKeyboardButton("📈 Trending", callback_data="alert:mc:trending"), InlineKeyboardButton("↔️ Ranging", callback_data="alert:mc:ranging")],
+        [InlineKeyboardButton("Confirm Entry", callback_data="alert:confirm_entry"), InlineKeyboardButton("Confirm anyway", callback_data="alert:confirm_anyway")],
+    ])
+    await message.reply_text("Before logging this trade, confirm:\n✅ An alert fired for this setup\n✅ Position size matches the tier risk %\n✅ Stop loss is placed at the correct level", parse_mode="Markdown", reply_markup=kb)
 
 
 async def handle_alert_response(update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    parts = query.data.split(":")
+    q = update.callback_query
+    await q.answer()
+    parts = q.data.split(":")
     action = parts[1]
+
+    if action in ("chk", "mc", "confirm_entry", "confirm_anyway", "revenge_yes", "revenge_no"):
+        return await handle_alert_extras(update, context)
+
     key = parts[2]
     pending = _pending.get(key)
-    await query.edit_message_reply_markup(reply_markup=None)
+    await q.edit_message_reply_markup(reply_markup=None)
 
     if action == "entered":
-        if pending:
-            setup, model, scored = pending
-            try:
-                prefs = db.get_user_preferences(CHAT_ID)
-                risk_pct = float(TIER_RISK.get(scored["tier"], scored.get("risk_pct") or 0.0))
-                risk_usd = (float(prefs.get("account_balance") or 0.0) * risk_pct) / 100.0
-                trade_id = db.log_trade(
-                    {
-                        "pair": setup["pair"],
-                        "model_id": model["id"],
-                        "tier": scored["tier"],
-                        "direction": setup.get("direction", "BUY"),
-                        "entry_price": setup.get("entry", 0),
-                        "sl": setup.get("sl", 0),
-                        "tp": setup.get("tp", 0),
-                        "rr": setup.get("rr", 0),
-                        "session": scored["session"],
-                        "score": scored["final_score"],
-                        "risk_pct": risk_pct,
-                        "result": None,
-                        "violation": None,
-                    }
-                )
-                db.update_user_preferences(CHAT_ID, discipline_score=min(100, int(prefs.get("discipline_score", 100)) + 2))
-                _pending.pop(key, None)
-                await query.message.reply_text(
-                    f"✅ *Trade Logged*\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🪙 {setup['pair']}   {formatters._tier_badge(scored['tier'])}\n"
-                    f"💹 Entry  `{px.fmt_price(setup.get('entry'))}`\n"
-                    f"🛑 SL     `{px.fmt_price(setup.get('sl'))}`\n"
-                    f"🎯 TP     `{px.fmt_price(setup.get('tp'))}`\n"
-                    f"⚖️ Risk    `{risk_pct}%` (${risk_usd:.2f})\n"
-                    f"🆔 ID: `{trade_id}`\n\n"
-                    f"_Mark result when closed:_\n"
-                    f"`/result {trade_id} TP`  or  `/result {trade_id} SL`",
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                await query.message.reply_text(f"❌ Error logging trade: {e}")
-        else:
-            await query.message.reply_text("✅ *Entered* — noted _(context expired)_", parse_mode="Markdown")
+        if key in _aging_jobs:
+            _aging_jobs.pop(key).schedule_removal()
+        last = db.get_last_closed_loss()
+        if last and last.get("closed_at"):
+            mins = int((datetime.utcnow() - last["closed_at"]).total_seconds() / 60)
+            if mins <= 10:
+                context.user_data["revenge_pending"] = {"key": key, "mins": mins}
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Yes, proceed", callback_data="alert:revenge_yes"), InlineKeyboardButton("No, skip this one", callback_data="alert:revenge_no")]])
+                await q.message.reply_text(f"⚠️ Revenge Trade Warning\nYour last trade was a loss [{mins}] minutes ago.\nAre you sure you want to enter now?", parse_mode="Markdown", reply_markup=kb)
+                return
+        context.user_data["checklist"] = {"key": key, "alert_fired": False, "size_correct": False, "sl_placed": False, "market_condition": None, "revenge": False}
+        await _render_checklist(q.message, context)
 
     elif action == "skipped":
-        if pending:
-            setup, model, scored = pending
-            _skipped_zones.append({"pair": setup["pair"], "model_id": model["id"], "entry": setup.get("entry", 0), "tier": scored["tier"]})
+        if key in _aging_jobs:
+            _aging_jobs.pop(key).schedule_removal()
         _pending.pop(key, None)
-        await query.message.reply_text("❌ *Skipped* — setup dismissed.", parse_mode="Markdown")
+        await q.message.reply_text("❌ *Skipped* — setup dismissed.", parse_mode="Markdown")
 
     elif action == "watching":
         if pending:
             setup, model, _ = pending
             _watching[key] = {"pair": setup["pair"], "model_id": model["id"]}
-        await query.message.reply_text("👀 *Watching* — you will get invalidation updates.", parse_mode="Markdown")
+        await q.message.reply_text("👀 *Watching* — you will get invalidation updates.", parse_mode="Markdown")
+
+
+async def handle_alert_extras(update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    d = q.data
+    st = context.user_data.get("checklist")
+    if d == "alert:revenge_no":
+        rv = context.user_data.get("revenge_pending")
+        if rv:
+            _pending.pop(rv["key"], None)
+        await q.message.reply_text("❌ *Skipped* — noted.", parse_mode="Markdown")
+        return
+    if d == "alert:revenge_yes":
+        rv = context.user_data.get("revenge_pending")
+        if rv:
+            context.user_data["checklist"] = {"key": rv["key"], "alert_fired": False, "size_correct": False, "sl_placed": False, "market_condition": None, "revenge": True}
+            await _render_checklist(q.message, context)
+        return
+    if not st:
+        return
+    if d.startswith("alert:chk:"):
+        k = d.split(":")[-1]
+        st[k] = not st[k]
+        await _render_checklist(q.message, context)
+        return
+    if d.startswith("alert:mc:"):
+        st["market_condition"] = d.split(":")[-1]
+        await _render_checklist(q.message, context)
+        return
+    if d in ("alert:confirm_entry", "alert:confirm_anyway"):
+        all_ok = st["alert_fired"] and st["size_correct"] and st["sl_placed"]
+        if d == "alert:confirm_entry" and not all_ok:
+            await q.answer("Complete all checklist items", show_alert=True)
+            return
+        setup, model, scored = _pending.get(st["key"])
+        prefs = db.get_user_preferences(CHAT_ID)
+        risk_pct = float(TIER_RISK.get(scored["tier"], 0))
+        risk_usd = (float(prefs.get("account_balance") or 0) * risk_pct) / 100
+        tid = db.log_trade({"pair": setup["pair"], "model_id": model["id"], "tier": scored["tier"], "direction": setup.get("direction", "BUY"), "entry_price": setup.get("entry", 0), "sl": setup.get("sl", 0), "tp": setup.get("tp", 0), "rr": setup.get("rr", 0), "session": scored["session"], "score": scored["final_score"], "risk_pct": risk_pct, "result": None, "violation": None})
+        db.log_checklist(tid, st["alert_fired"], st["size_correct"], st["sl_placed"], all_ok)
+        db.update_trade_flags(tid, entry_confirmed=all_ok, revenge_flagged=bool(st.get("revenge")), market_condition=st.get("market_condition"))
+        await q.message.reply_text(f"✅ *Trade Logged*\n🆔 ID: `{tid}`\n⚖️ Risk: `{risk_pct}%` (${risk_usd:.2f})", parse_mode="Markdown")
+        if not all_ok:
+            await q.message.reply_text("⚠️ Trade logged with incomplete checklist. Review your process.", parse_mode="Markdown")
+        if st.get("revenge"):
+            db.update_trade_flags(tid, revenge_flagged=True)
+        _pending.pop(st["key"], None)
+
+        async def reminder():
+            await asyncio.sleep(5)
+            await q.message.reply_text(f"📸 Screenshot reminder — capture your entry on the chart now.\n Pair: [{setup['pair']}] | Entry: [{setup['entry']}] | TF: [{model['timeframe']}]", parse_mode="Markdown")
+            db.update_trade_flags(tid, screenshot_reminded=True)
+
+        asyncio.create_task(reminder())

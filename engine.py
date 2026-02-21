@@ -23,7 +23,7 @@ def calc_htf_modifier(htf_1h: str, htf_4h: str, bias: str) -> dict:
     conflict = (htf_1h != bias and htf_1h != "Neutral") or \
                (htf_4h != bias and htf_4h != "Neutral")
     if aligned:  return {"modifier":  0.5, "label": "Both 1H+4H aligned ✅"}
-    if conflict: return {"modifier": -1.0, "label": "HTF conflict ❌"}
+    if conflict: return {"modifier": -1.5, "label": "HTF conflict ❌"}
     return               {"modifier":  0.0, "label": "HTF neutral"}
 
 
@@ -43,7 +43,7 @@ def score_setup(setup: dict, model: dict) -> dict:
         "mandatory_failed": [], "passed_rules": [], "failed_rules": [],
         "raw_score": 0.0, "modifiers": [], "modifier_total": 0.0,
         "final_score": 0.0, "tier": None, "risk_pct": None,
-        "vol_label": "Normal", "htf_label": "Neutral",
+        "vol_label": "Normal", "htf_label": "Neutral", "htf_confirmed": False, "htf_partial": False, "htf_conflict": False,
         "session": get_session(),
     }
     passed_ids = set(setup.get("passed_rule_ids", []))
@@ -78,6 +78,13 @@ def score_setup(setup: dict, model: dict) -> dict:
     if vol["modifier"] != 0:
         result["modifiers"].append({"label": f"Volatility ({vol['label']})", "value": vol["modifier"]})
 
+
+    htf1 = setup.get("htf_1h", "Neutral")
+    htf4 = setup.get("htf_4h", "Neutral")
+    bias = model.get("bias", "Bullish")
+    result["htf_confirmed"] = (htf1 == bias and htf4 == bias and htf1 != "Neutral" and htf4 != "Neutral")
+    result["htf_partial"] = ((htf1 == bias) ^ (htf4 == bias))
+    result["htf_conflict"] = (htf1 != bias and htf4 != bias and htf1 != "Neutral" and htf4 != "Neutral")
     htf = calc_htf_modifier(
         setup.get("htf_1h", "Neutral"),
         setup.get("htf_4h", "Neutral"),
@@ -570,3 +577,24 @@ def run_backtest() -> dict | None:
         "max_win_streak": max_win_streak,
         "max_loss_streak": max_loss_streak,
     }
+
+
+def check_false_breakout(candles, direction):
+    if len(candles) < 3:
+        return False
+    c3, c2 = candles[-3], candles[-2]
+    if direction == "BUY":
+        return c2.get("low", 0) < c3.get("low", 0) and c2.get("close", 0) > c3.get("low", 0)
+    return c2.get("high", 0) > c3.get("high", 0) and c2.get("close", 0) < c3.get("high", 0)
+
+
+def check_volume_spike(candles, threshold=2.0):
+    if len(candles) < 21:
+        return False, 0.0
+    vols = [float(c.get("volume", 0)) for c in candles[-21:-1]]
+    avg = sum(vols) / len(vols) if vols else 0.0
+    cur = float(candles[-1].get("volume", 0))
+    if avg <= 0:
+        return False, 0.0
+    mult = cur / avg
+    return mult >= threshold, round(mult, 2)

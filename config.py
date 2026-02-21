@@ -78,6 +78,7 @@ SESSIONS_LIST = ["London", "NY", "Asia", "Overlap", "Any"]
 BIASES = ["Bullish", "Bearish"]
 
 SCANNER_INTERVAL = 60
+CRYPTOPANIC_API_TOKEN = os.getenv("CRYPTOPANIC_API_TOKEN", "")
 SUPPORTED_PAIRS = ALL_PAIRS
 SUPPORTED_TIMEFRAMES = TIMEFRAMES
 SUPPORTED_SESSIONS = SESSIONS_LIST
@@ -96,3 +97,12 @@ SUPPORTED_MODEL_RULES = [
     "Volume Expansion Confirmation",
     "News Risk Cleared",
 ]
+
+CORRELATED_PAIRS = {
+    "BTCUSDT": ["ETHUSDT", "SOLUSDT", "BNBUSDT"],
+    "ETHUSDT": ["BTCUSDT", "SOLUSDT"],
+    "SOLUSDT": ["BTCUSDT", "ETHUSDT"],
+    "EURUSD": ["GBPUSD", "AUDUSD"],
+    "GBPUSD": ["EURUSD"],
+    "XAUUSD": ["XAGUSD"],
+}
