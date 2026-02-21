@@ -7,7 +7,7 @@ import db
 import engine
 import formatters
 import prices as px
-from config import CHAT_ID, SUPPORTED_PAIRS
+from config import CHAT_ID, SUPPORTED_PAIRS, SUPPORTED_TIMEFRAMES, SUPPORTED_SESSIONS, SUPPORTED_BIASES
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +126,23 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("Choose pair to scan", reply_markup=InlineKeyboardMarkup(pairs))
 
 
+
+
+def _model_edit_kb(model_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🪙 Pair", callback_data=f"model:edit_field:{model_id}:pair"), InlineKeyboardButton("⏱ Timeframe", callback_data=f"model:edit_field:{model_id}:timeframe")],
+        [InlineKeyboardButton("🧭 Session", callback_data=f"model:edit_field:{model_id}:session"), InlineKeyboardButton("📈 Bias", callback_data=f"model:edit_field:{model_id}:bias")],
+        [InlineKeyboardButton("« Back", callback_data=f"model:detail:{model_id}")],
+    ])
+
+
+def _model_edit_value_kb(model_id: str, field: str, options: list[str]) -> InlineKeyboardMarkup:
+    rows=[]
+    for i in range(0, len(options), 3):
+        rows.append([InlineKeyboardButton(v, callback_data=f"model:set:{model_id}:{field}:{v}") for v in options[i:i+3]])
+    rows.append([InlineKeyboardButton("« Back", callback_data=f"model:edit:{model_id}")])
+    return InlineKeyboardMarkup(rows)
+
 async def _render_models(q):
     models = db.get_all_models()
     rows = [[InlineKeyboardButton(f"{'🟢' if m['status'] == 'active' else '⚫'} {m['name']} ({m['pair']})", callback_data=f"model:detail:{m['id']}")] for m in models]
@@ -145,10 +162,37 @@ async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "detail":
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⏸ Deactivate" if m['status'] == 'active' else "✅ Activate", callback_data=f"model:toggle:{model_id}"), InlineKeyboardButton("🗑 Delete", callback_data=f"model:delete:{model_id}")],
-            [InlineKeyboardButton("📜 History", callback_data=f"model:history:{model_id}"), InlineKeyboardButton("📋 Clone", callback_data=f"model:clone:{model_id}")],
-            [InlineKeyboardButton("📊 Rule Analysis", callback_data=f"model:rules:{model_id}")],
+            [InlineKeyboardButton("✏️ Edit", callback_data=f"model:edit:{model_id}"), InlineKeyboardButton("📋 Clone", callback_data=f"model:clone:{model_id}")],
+            [InlineKeyboardButton("📜 History", callback_data=f"model:history:{model_id}"), InlineKeyboardButton("📊 Rule Analysis", callback_data=f"model:rules:{model_id}")],
         ])
         await q.message.reply_text(formatters.fmt_model_detail(m, px.get_price(m['pair'])), parse_mode="Markdown", reply_markup=kb)
+    elif action == "edit":
+        await q.message.reply_text("✏️ *Edit Model*\nSelect what to change.", parse_mode="Markdown", reply_markup=_model_edit_kb(model_id))
+    elif action == "edit_field" and len(parts) > 3:
+        field = parts[3]
+        if field == "pair":
+            opts = SUPPORTED_PAIRS
+        elif field == "timeframe":
+            opts = SUPPORTED_TIMEFRAMES
+        elif field == "session":
+            opts = SUPPORTED_SESSIONS
+        elif field == "bias":
+            opts = SUPPORTED_BIASES
+        else:
+            await q.message.reply_text("Unsupported field.")
+            return
+        await q.message.reply_text(f"Choose new {field}:", reply_markup=_model_edit_value_kb(model_id, field, opts))
+    elif action == "set" and len(parts) > 4:
+        field = parts[3]
+        value = parts[4]
+        db.save_model_version(model_id)
+        ok = db.update_model_fields(model_id, {field: value})
+        if ok:
+            await q.message.reply_text(f"✅ Updated *{field}* to `{value}`.", parse_mode="Markdown")
+            m = db.get_model(model_id)
+            await q.message.reply_text(formatters.fmt_model_detail(m, px.get_price(m['pair'])), parse_mode="Markdown", reply_markup=_model_edit_kb(model_id))
+        else:
+            await q.message.reply_text("❌ Update failed.")
     elif action == "toggle":
         db.set_model_status(model_id, "inactive" if m['status'] == 'active' else "active")
         await q.message.reply_text("Updated.", parse_mode="Markdown")
