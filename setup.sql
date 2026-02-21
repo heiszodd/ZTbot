@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS trade_log (
     score       FLOAT,
     risk_pct    FLOAT,
     violation   VARCHAR(5),
+    source      VARCHAR(30) DEFAULT 'signal',
     logged_at   TIMESTAMP DEFAULT NOW()
 );
 
@@ -44,6 +45,7 @@ ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS revenge_flagged BOOLEAN DEFAULT F
 ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS entry_confirmed BOOLEAN DEFAULT FALSE;
 ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS closed_at TIMESTAMP;
 ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS market_condition VARCHAR(20);
+ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'signal';
 
 CREATE TABLE IF NOT EXISTS discipline_log (
     id          SERIAL PRIMARY KEY,
@@ -278,3 +280,67 @@ ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS alert_count INT DEFAULT 0;
 ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS last_alert_at TIMESTAMP;
 ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
 ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;
+
+
+CREATE TABLE IF NOT EXISTS tracked_wallets (
+    id                SERIAL PRIMARY KEY,
+    address           VARCHAR(100) NOT NULL,
+    chain             VARCHAR(20)  NOT NULL,
+    label             VARCHAR(100),
+    tier              VARCHAR(20),
+    tier_label        VARCHAR(50),
+    credibility       VARCHAR(20),
+    wallet_age_days   INT,
+    tx_count          INT,
+    estimated_win_rate FLOAT,
+    total_value_usd   FLOAT,
+    portfolio_size_label VARCHAR(20),
+    last_tx_hash      VARCHAR(200),
+    last_checked_at   TIMESTAMP,
+    alert_on_buy      BOOLEAN DEFAULT TRUE,
+    alert_on_sell     BOOLEAN DEFAULT TRUE,
+    alert_min_usd     FLOAT   DEFAULT 100,
+    active            BOOLEAN DEFAULT TRUE,
+    added_at          TIMESTAMP DEFAULT NOW(),
+    notes             TEXT,
+    UNIQUE(address, chain)
+);
+
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+    id               SERIAL PRIMARY KEY,
+    wallet_id        INT REFERENCES tracked_wallets(id),
+    wallet_address   VARCHAR(100),
+    tx_hash          VARCHAR(200) UNIQUE,
+    chain            VARCHAR(20),
+    tx_type          VARCHAR(20),
+    token_address    VARCHAR(100),
+    token_name       VARCHAR(100),
+    token_symbol     VARCHAR(20),
+    amount_token     FLOAT,
+    amount_usd       FLOAT,
+    price_per_token  FLOAT,
+    token_risk_score INT,
+    token_moon_score INT,
+    token_risk_level VARCHAR(20),
+    alert_sent       BOOLEAN DEFAULT FALSE,
+    tx_timestamp     TIMESTAMP,
+    detected_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS wallet_copy_trades (
+    id               SERIAL PRIMARY KEY,
+    wallet_tx_id     INT REFERENCES wallet_transactions(id),
+    token_address    VARCHAR(100),
+    token_symbol     VARCHAR(20),
+    entry_price      FLOAT,
+    entry_usd        FLOAT,
+    tp1              FLOAT,
+    tp2              FLOAT,
+    tp3              FLOAT,
+    sl               FLOAT,
+    result           VARCHAR(10),
+    exit_price       FLOAT,
+    pnl_x            FLOAT,
+    logged_at        TIMESTAMP DEFAULT NOW(),
+    closed_at        TIMESTAMP
+);

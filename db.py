@@ -39,6 +39,7 @@ def setup_db():
         score       FLOAT,
         risk_pct    FLOAT,
         violation   VARCHAR(5),
+        source      VARCHAR(30) DEFAULT 'signal',
         logged_at   TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS discipline_log (
@@ -178,6 +179,7 @@ def setup_db():
     ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS entry_confirmed BOOLEAN DEFAULT FALSE;
     ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS closed_at TIMESTAMP;
     ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS market_condition VARCHAR(20);
+    ALTER TABLE trade_log ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'signal';
 
     ALTER TABLE models ADD COLUMN IF NOT EXISTS consecutive_losses INT DEFAULT 0;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS auto_deactivate_threshold INT DEFAULT 5;
@@ -270,6 +272,67 @@ def setup_db():
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS last_alert_at TIMESTAMP;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;
+
+    CREATE TABLE IF NOT EXISTS tracked_wallets (
+        id                SERIAL PRIMARY KEY,
+        address           VARCHAR(100) NOT NULL,
+        chain             VARCHAR(20)  NOT NULL,
+        label             VARCHAR(100),
+        tier              VARCHAR(20),
+        tier_label        VARCHAR(50),
+        credibility       VARCHAR(20),
+        wallet_age_days   INT,
+        tx_count          INT,
+        estimated_win_rate FLOAT,
+        total_value_usd   FLOAT,
+        portfolio_size_label VARCHAR(20),
+        last_tx_hash      VARCHAR(200),
+        last_checked_at   TIMESTAMP,
+        alert_on_buy      BOOLEAN DEFAULT TRUE,
+        alert_on_sell     BOOLEAN DEFAULT TRUE,
+        alert_min_usd     FLOAT   DEFAULT 100,
+        active            BOOLEAN DEFAULT TRUE,
+        added_at          TIMESTAMP DEFAULT NOW(),
+        notes             TEXT,
+        UNIQUE(address, chain)
+    );
+    CREATE TABLE IF NOT EXISTS wallet_transactions (
+        id               SERIAL PRIMARY KEY,
+        wallet_id        INT REFERENCES tracked_wallets(id),
+        wallet_address   VARCHAR(100),
+        tx_hash          VARCHAR(200) UNIQUE,
+        chain            VARCHAR(20),
+        tx_type          VARCHAR(20),
+        token_address    VARCHAR(100),
+        token_name       VARCHAR(100),
+        token_symbol     VARCHAR(20),
+        amount_token     FLOAT,
+        amount_usd       FLOAT,
+        price_per_token  FLOAT,
+        token_risk_score INT,
+        token_moon_score INT,
+        token_risk_level VARCHAR(20),
+        alert_sent       BOOLEAN DEFAULT FALSE,
+        tx_timestamp     TIMESTAMP,
+        detected_at      TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS wallet_copy_trades (
+        id               SERIAL PRIMARY KEY,
+        wallet_tx_id     INT REFERENCES wallet_transactions(id),
+        token_address    VARCHAR(100),
+        token_symbol     VARCHAR(20),
+        entry_price      FLOAT,
+        entry_usd        FLOAT,
+        tp1              FLOAT,
+        tp2              FLOAT,
+        tp3              FLOAT,
+        sl               FLOAT,
+        result           VARCHAR(10),
+        exit_price       FLOAT,
+        pnl_x            FLOAT,
+        logged_at        TIMESTAMP DEFAULT NOW(),
+        closed_at        TIMESTAMP
+    );
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -344,12 +407,12 @@ def log_trade(trade):
             cur.execute("""
                 INSERT INTO trade_log
                     (pair, model_id, tier, direction, entry_price, sl, tp,
-                     rr, session, score, risk_pct, violation)
+                     rr, session, score, risk_pct, violation, source)
                 VALUES (%(pair)s, %(model_id)s, %(tier)s, %(direction)s,
                         %(entry_price)s, %(sl)s, %(tp)s, %(rr)s,
-                        %(session)s, %(score)s, %(risk_pct)s, %(violation)s)
+                        %(session)s, %(score)s, %(risk_pct)s, %(violation)s, %(source)s)
                 RETURNING id
-            """, trade)
+            """, {**trade, "source": trade.get("source", "signal")})
             tid = cur.fetchone()["id"]
         conn.commit()
     return tid
@@ -1310,3 +1373,152 @@ def get_degen_rule_performance(model_id: str) -> list:
             "contribution_score": contribution,
         })
     return results
+
+
+# ── Wallet Tracker ────────────────────────────────────────────
+def add_tracked_wallet(wallet: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO tracked_wallets
+                (address, chain, label, tier, tier_label, credibility, wallet_age_days, tx_count, estimated_win_rate, total_value_usd, portfolio_size_label, last_tx_hash, alert_on_buy, alert_on_sell, alert_min_usd, active, notes)
+                VALUES (%(address)s,%(chain)s,%(label)s,%(tier)s,%(tier_label)s,%(credibility)s,%(age_days)s,%(tx_count)s,%(estimated_win_rate)s,%(total_value_usd)s,%(portfolio_size_label)s,%(last_tx_hash)s,%(alert_on_buy)s,%(alert_on_sell)s,%(alert_min_usd)s,TRUE,%(notes)s)
+                ON CONFLICT (address, chain) DO UPDATE SET
+                    label=EXCLUDED.label, tier=EXCLUDED.tier, tier_label=EXCLUDED.tier_label, credibility=EXCLUDED.credibility,
+                    wallet_age_days=EXCLUDED.wallet_age_days, tx_count=EXCLUDED.tx_count, estimated_win_rate=EXCLUDED.estimated_win_rate,
+                    total_value_usd=EXCLUDED.total_value_usd, portfolio_size_label=EXCLUDED.portfolio_size_label,
+                    alert_on_buy=EXCLUDED.alert_on_buy, alert_on_sell=EXCLUDED.alert_on_sell, alert_min_usd=EXCLUDED.alert_min_usd
+                RETURNING id
+            """, {**wallet, "notes": wallet.get("notes"), "last_tx_hash": wallet.get("last_tx_hash")})
+            wid = int(cur.fetchone()["id"])
+        conn.commit()
+    return wid
+
+
+def get_tracked_wallets(active_only: bool = True) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            sql = "SELECT * FROM tracked_wallets" + (" WHERE active=TRUE" if active_only else "") + " ORDER BY added_at DESC"
+            cur.execute(sql)
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_tracked_wallet(wallet_id: int) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM tracked_wallets WHERE id=%s", (wallet_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_tracked_wallet_by_address(address: str, chain: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM tracked_wallets WHERE address=%s AND chain=%s", (address, chain))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def update_wallet_last_tx(wallet_id: int, tx_hash: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE tracked_wallets SET last_tx_hash=%s,last_checked_at=NOW() WHERE id=%s", (tx_hash, wallet_id))
+        conn.commit()
+
+
+def update_wallet_profile(wallet_id: int, profile: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE tracked_wallets
+                SET tier=%s,tier_label=%s,credibility=%s,wallet_age_days=%s,tx_count=%s,estimated_win_rate=%s,total_value_usd=%s,portfolio_size_label=%s,last_checked_at=NOW()
+                WHERE id=%s
+            """, (profile.get("tier"), profile.get("tier_label"), profile.get("credibility"), profile.get("age_days"), profile.get("tx_count"), profile.get("estimated_win_rate"), profile.get("total_value_usd"), profile.get("portfolio_size_label"), wallet_id))
+        conn.commit()
+
+
+def set_wallet_active(wallet_id: int, active: bool) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE tracked_wallets SET active=%s WHERE id=%s", (active, wallet_id))
+        conn.commit()
+
+
+def delete_tracked_wallet(wallet_id: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM tracked_wallets WHERE id=%s", (wallet_id,))
+        conn.commit()
+
+
+def log_wallet_transaction(tx: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO wallet_transactions
+                (wallet_id,wallet_address,tx_hash,chain,tx_type,token_address,token_name,token_symbol,amount_token,amount_usd,price_per_token,token_risk_score,token_moon_score,token_risk_level,alert_sent,tx_timestamp)
+                VALUES (%(wallet_id)s,%(wallet_address)s,%(tx_hash)s,%(chain)s,%(tx_type)s,%(token_address)s,%(token_name)s,%(token_symbol)s,%(amount_token)s,%(amount_usd)s,%(price_per_token)s,%(token_risk_score)s,%(token_moon_score)s,%(token_risk_level)s,%(alert_sent)s,%(tx_timestamp)s)
+                ON CONFLICT (tx_hash) DO UPDATE SET alert_sent=EXCLUDED.alert_sent
+                RETURNING id
+            """, tx)
+            row = cur.fetchone()
+            wid = int(row["id"]) if row else 0
+        conn.commit()
+    return wid
+
+
+def get_wallet_transactions(wallet_id: int, limit: int = 20) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM wallet_transactions WHERE wallet_id=%s ORDER BY tx_timestamp DESC NULLS LAST, detected_at DESC LIMIT %s", (wallet_id, limit))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_recent_wallet_alerts(hours: int = 24) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT wt.*, tw.label
+                FROM wallet_transactions wt
+                LEFT JOIN tracked_wallets tw ON tw.id = wt.wallet_id
+                WHERE wt.detected_at >= NOW() - (%s || ' hours')::interval
+                ORDER BY wt.detected_at DESC
+            """, (hours,))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def log_copy_trade(trade: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO wallet_copy_trades
+                (wallet_tx_id, token_address, token_symbol, entry_price, entry_usd, tp1, tp2, tp3, sl, result, exit_price, pnl_x, closed_at)
+                VALUES (%(wallet_tx_id)s,%(token_address)s,%(token_symbol)s,%(entry_price)s,%(entry_usd)s,%(tp1)s,%(tp2)s,%(tp3)s,%(sl)s,%(result)s,%(exit_price)s,%(pnl_x)s,%(closed_at)s)
+                RETURNING id
+            """, {**trade, "result": trade.get("result"), "exit_price": trade.get("exit_price"), "pnl_x": trade.get("pnl_x"), "closed_at": trade.get("closed_at")})
+            tid = int(cur.fetchone()["id"])
+        conn.commit()
+    return tid
+
+
+def log_degen_copy_trade(token_symbol: str, token_id: int) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO degen_trades (token_id, token_symbol, result) VALUES (%s,%s,%s) RETURNING id", (token_id, token_symbol, None))
+            tid = int(cur.fetchone()["id"])
+        conn.commit()
+    return tid
+
+
+def get_best_wallet_calls(limit: int = 20) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(tw.label, wt.wallet_address) AS wallet_label, wct.token_symbol, wct.entry_price, wct.pnl_x
+                FROM wallet_copy_trades wct
+                LEFT JOIN wallet_transactions wt ON wt.id = wct.wallet_tx_id
+                LEFT JOIN tracked_wallets tw ON tw.id = wt.wallet_id
+                ORDER BY wct.pnl_x DESC NULLS LAST, wct.logged_at DESC
+                LIMIT %s
+            """, (limit,))
+            return [dict(r) for r in cur.fetchall()]
