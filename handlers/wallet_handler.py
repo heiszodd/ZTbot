@@ -27,6 +27,12 @@ def _wallets_keyboard() -> InlineKeyboardMarkup:
 
 
 async def wallets_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        msg = await query.message.reply_text("🐋 Whale Tracker\n━━━━━━━━━━━━━━━━\n⏳ Loading live data...", reply_markup=_wallets_keyboard())
+    else:
+        msg = await update.message.reply_text("🐋 Whale Tracker\n━━━━━━━━━━━━━━━━\n⏳ Loading live data...", reply_markup=_wallets_keyboard())
     wallets = db.get_tracked_wallets(active_only=False)
     active = [w for w in wallets if w.get("active")]
     alerts = db.get_recent_wallet_alerts(hours=24)
@@ -38,10 +44,7 @@ async def wallets_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Alerts today: {len(alerts)}\n"
         f"Last activity: {last} WAT"
     )
-    sender = update.callback_query.message.reply_text if update.callback_query else update.message.reply_text
-    if update.callback_query:
-        await update.callback_query.answer()
-    await sender(text, reply_markup=_wallets_keyboard())
+    await msg.edit_text(text, reply_markup=_wallets_keyboard())
 
 
 async def list_wallets(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -125,7 +128,7 @@ async def add_wallet_address(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
     data["address"] = address
     await update.message.reply_text("🔍 Analysing wallet... this takes a few seconds")
-    profile = wallet_tracker.score_whale_reputation(address, chain)
+    profile = await wallet_tracker.score_whale_reputation(address, chain)
     data.update(profile)
     holdings = profile.get("top_holdings", [])
     lines = [profile.get("summary", "Wallet profile"), "", "Top holdings:"]
@@ -203,7 +206,7 @@ async def add_wallet_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
     data = context.user_data.get("new_wallet", {})
     wallet_id = db.add_tracked_wallet(data)
-    txs = wallet_tracker.get_recent_transactions(data["address"], data["chain"], limit=1)
+    txs = await wallet_tracker.get_recent_transactions(data["address"], data["chain"], limit=1)
     if txs:
         db.update_wallet_last_tx(wallet_id, txs[0]["tx_hash"])
     await q.message.reply_text("✅ Wallet added to tracker.", reply_markup=commands.degen_keyboard())
@@ -212,6 +215,7 @@ async def add_wallet_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_wallet_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    await q.answer()
     if not _guard(update):
         return
     data = q.data
@@ -222,17 +226,14 @@ async def handle_wallet_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("wallet:detail:"):
         return await wallet_detail(update, context, int(data.split(":")[-1]))
     if data.startswith("wallet:pause:"):
-        await q.answer()
         wid = int(data.split(":")[-1])
         w = db.get_tracked_wallet(wid)
         db.set_wallet_active(wid, not bool(w.get("active")))
         return await wallet_detail(update, context, wid)
     if data.startswith("wallet:remove:"):
-        await q.answer()
         db.delete_tracked_wallet(int(data.split(":")[-1]))
         return await wallets_dashboard(update, context)
     if data.startswith("wallet:history:"):
-        await q.answer()
         wid = int(data.split(":")[-1])
         txs = db.get_wallet_transactions(wid, limit=20)
         lines = ["Recent wallet activity:"]
@@ -241,7 +242,7 @@ async def handle_wallet_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"• {t.get('tx_type')} {t.get('token_symbol')} ${float(t.get('amount_usd') or 0):,.0f} {wt}")
         return await q.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=f"wallet:detail:{wid}")]]))
     if data == "wallet:activity":
-        await q.answer()
+        msg = await q.message.reply_text("🆕 Latest Finds\n━━━━━━━━━━━━━━━━\n⏳ Loading live data...")
         alerts = db.get_recent_wallet_alerts(hours=72)
         lines = ["Recent activity (20):"]
         for a in alerts[:20]:
@@ -249,14 +250,12 @@ async def handle_wallet_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"• {a.get('label') or a.get('wallet_address','')[:6]} {a.get('tx_type')} {a.get('token_symbol')} ${float(a.get('amount_usd') or 0):,.0f} {wt}")
         return await q.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data="wallet:dash")]]))
     if data == "wallet:calls":
-        await q.answer()
         calls = db.get_best_wallet_calls(limit=20)
         lines = ["Best whale calls we've seen:"]
         for c in calls:
             lines.append(f"• {c.get('wallet_label')} {c.get('token_symbol')} entry {c.get('entry_price')} max gain {c.get('pnl_x')}x")
         return await q.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data="wallet:dash")]]))
     if data.startswith("wallet:demo_copy:"):
-        await q.answer()
         from handlers import demo_handler
         tx_hash = data.split(":")[-1]
         item = context.application.bot_data.get(f"wallet_tx:{tx_hash}")
@@ -271,7 +270,6 @@ async def handle_wallet_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok, msg = await demo_handler.open_demo_from_signal(context, "degen", {"token_symbol": tx.get("token_symbol"), "direction": "BUY", "entry_price": entry, "sl": entry * 0.85, "tp1": entry * 2, "tp2": entry * 5, "tp3": entry * 10, "position_size_usd": risk_amount * 10, "risk_amount_usd": risk_amount, "risk_pct": 0.25, "model_id": "wallet_copy", "model_name": "Whale Copy", "tier": "C", "score": 0, "source": "whale_copy", "notes": tx.get("token_address")})
         return await q.message.reply_text(msg)
     if data.startswith("wallet:copy:"):
-        await q.answer()
         tx_hash = data.split(":")[-1]
         item = context.application.bot_data.get(f"wallet_tx:{tx_hash}")
         if not item:
@@ -284,7 +282,6 @@ async def handle_wallet_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(f"Entry ${entry:.8f}\nSL ${sl:.8f}\nTP1 ${tp1:.8f}\nTP2 ${tp2:.8f}\nTP3 ${tp3:.8f}\n\n💰 How much to allocate?", reply_markup=kb)
         return COPY_ALLOC
     if data.startswith("wallet:alloc:"):
-        await q.answer()
         pct = data.split(":")[-1]
         if pct == "manual":
             await q.message.reply_text("Send allocation percentage, e.g. 0.3")

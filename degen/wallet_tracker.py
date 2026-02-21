@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-import requests
+import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 import db
@@ -24,11 +24,12 @@ ETHERSCAN_TX_URL = "https://api.etherscan.io/api?module=account&action=tokentx&a
 BSCSCAN_TX_URL = "https://api.bscscan.com/api?module=account&action=tokentx&address={address}&sort=desc&apikey={api_key}"
 
 
-def _safe_get(url: str) -> dict[str, Any]:
+async def _safe_get(url: str) -> dict[str, Any]:
     try:
-        r = requests.get(url, timeout=8)
-        r.raise_for_status()
-        data = r.json()
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.json()
         return data if isinstance(data, dict) else {"data": data}
     except Exception as exc:
         log.warning("wallet api failed url=%s err=%s", url, exc)
@@ -88,28 +89,28 @@ def _normalize_tx(raw: dict, chain: str, wallet_address: str) -> dict:
     }
 
 
-def get_recent_transactions(wallet_address: str, chain: str, limit: int = 10) -> list[dict]:
+async def get_recent_transactions(wallet_address: str, chain: str, limit: int = 10) -> list[dict]:
     chain_key = chain.upper()
     txs: list[dict] = []
     if chain_key == "SOL":
-        primary = _safe_get(SOLSCAN_TX_URL.format(address=wallet_address, limit=limit))
+        primary = await _safe_get(SOLSCAN_TX_URL.format(address=wallet_address, limit=limit))
         rows = primary.get("data") or []
         if not rows and HELIUS_API_KEY:
-            helius = _safe_get(HELIUS_TX_URL.format(address=wallet_address, api_key=HELIUS_API_KEY, limit=limit))
+            helius = await _safe_get(HELIUS_TX_URL.format(address=wallet_address, api_key=HELIUS_API_KEY, limit=limit))
             rows = helius if isinstance(helius, list) else helius.get("data") or []
         txs = [_normalize_tx(x, "SOL", wallet_address) for x in rows[:limit]]
     elif chain_key in {"ETH", "BASE"} and ETHERSCAN_KEY:
-        rows = (_safe_get(ETHERSCAN_TX_URL.format(address=wallet_address, api_key=ETHERSCAN_KEY)).get("result") or [])[:limit]
+        rows = ((await _safe_get(ETHERSCAN_TX_URL.format(address=wallet_address, api_key=ETHERSCAN_KEY))).get("result") or [])[:limit]
         txs = [_normalize_tx(x, chain_key, wallet_address) for x in rows]
     elif chain_key == "BSC" and BSCSCAN_KEY:
-        rows = (_safe_get(BSCSCAN_TX_URL.format(address=wallet_address, api_key=BSCSCAN_KEY)).get("result") or [])[:limit]
+        rows = ((await _safe_get(BSCSCAN_TX_URL.format(address=wallet_address, api_key=BSCSCAN_KEY))).get("result") or [])[:limit]
         txs = [_normalize_tx(x, "BSC", wallet_address) for x in rows]
     txs.sort(key=lambda x: x["timestamp"], reverse=True)
     return txs
 
 
-def detect_new_transactions(wallet: dict, last_seen_tx: str) -> list[dict]:
-    rows = get_recent_transactions(wallet["address"], wallet["chain"], limit=10)
+async def detect_new_transactions(wallet: dict, last_seen_tx: str) -> list[dict]:
+    rows = await get_recent_transactions(wallet["address"], wallet["chain"], limit=10)
     if not last_seen_tx:
         return rows[:1]
     out = []
@@ -120,11 +121,11 @@ def detect_new_transactions(wallet: dict, last_seen_tx: str) -> list[dict]:
     return out
 
 
-def get_wallet_portfolio(wallet_address: str, chain: str) -> list[dict]:
+async def get_wallet_portfolio(wallet_address: str, chain: str) -> list[dict]:
     chain_key = chain.upper()
     if chain_key != "SOL":
         return []
-    payload = _safe_get(SOLSCAN_TOKEN_URL.format(address=wallet_address))
+    payload = await _safe_get(SOLSCAN_TOKEN_URL.format(address=wallet_address))
     rows = payload.get("data") or []
     out = []
     for row in rows:
@@ -139,8 +140,8 @@ def get_wallet_portfolio(wallet_address: str, chain: str) -> list[dict]:
     return sorted(out, key=lambda x: x["value_usd"], reverse=True)
 
 
-def get_wallet_pnl_estimate(wallet_address: str, chain: str) -> dict:
-    txs = get_recent_transactions(wallet_address, chain, limit=100)
+async def get_wallet_pnl_estimate(wallet_address: str, chain: str) -> dict:
+    txs = await get_recent_transactions(wallet_address, chain, limit=100)
     buys = sum(x["amount_usd"] for x in txs if x["type"] == "buy")
     sells = sum(x["amount_usd"] for x in txs if x["type"] == "sell")
     wins = sum(1 for x in txs if x["type"] == "sell" and x["amount_usd"] > 0)
@@ -153,10 +154,10 @@ def get_wallet_pnl_estimate(wallet_address: str, chain: str) -> dict:
     }
 
 
-def score_whale_reputation(wallet_address: str, chain: str) -> dict:
-    txs = get_recent_transactions(wallet_address, chain, limit=100)
-    portfolio = get_wallet_portfolio(wallet_address, chain)
-    pnl = get_wallet_pnl_estimate(wallet_address, chain)
+async def score_whale_reputation(wallet_address: str, chain: str) -> dict:
+    txs = await get_recent_transactions(wallet_address, chain, limit=100)
+    portfolio = await get_wallet_portfolio(wallet_address, chain)
+    pnl = await get_wallet_pnl_estimate(wallet_address, chain)
     total_value = sum(x.get("value_usd", 0) for x in portfolio)
     tx_count = len(txs)
     now = datetime.now(timezone.utc)
@@ -209,8 +210,8 @@ def score_whale_reputation(wallet_address: str, chain: str) -> dict:
     }
 
 
-def get_token_market_data(token_address: str) -> dict:
-    payload = _safe_get(DEXSCREENER_URL.format(token=token_address))
+async def get_token_market_data(token_address: str) -> dict:
+    payload = await _safe_get(DEXSCREENER_URL.format(token=token_address))
     pairs = payload.get("pairs") or []
     if not pairs:
         return {}
@@ -290,10 +291,10 @@ async def wallet_monitor_job(context):
 
     for wallet in selected:
         try:
-            new_txs = detect_new_transactions(wallet, wallet.get("last_tx_hash") or "")
+            new_txs = await detect_new_transactions(wallet, wallet.get("last_tx_hash") or "")
             for tx in reversed(new_txs):
                 if tx["type"] == "buy" and wallet.get("alert_on_buy", True) and tx["amount_usd"] >= float(wallet.get("alert_min_usd") or 0):
-                    intel = get_token_market_data(tx["token_address"])
+                    intel = await get_token_market_data(tx["token_address"])
                     token_payload = {"address": tx["token_address"], "symbol": tx["token_symbol"], "price_usd": intel.get("price_usd", tx["price_per_token"]), "liquidity_usd": intel.get("liquidity", 0), "mcap": intel.get("mcap", 0)}
                     risk = risk_engine.score_token_risk(token_payload)
                     moon = moon_engine.score_moonshot_potential(token_payload)

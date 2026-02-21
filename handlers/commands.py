@@ -82,9 +82,10 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if dest == "home":
         await q.message.reply_text(formatters.fmt_landing(), reply_markup=landing_keyboard())
     elif dest == "perps_home":
+        msg = await q.message.reply_text("📈 Perps Trading\n━━━━━━━━━━━━━━━━\n⏳ Loading live data...", reply_markup=perps_keyboard())
         active = db.get_active_models()
         recent = db.get_recent_alerts(hours=2, limit=3)
-        await q.message.reply_text(formatters.fmt_perps_home(active, recent, engine.get_session(), formatters._wat_now().strftime("%H:%M")), reply_markup=perps_keyboard())
+        await msg.edit_text(formatters.fmt_perps_home(active, recent, engine.get_session(), formatters._wat_now().strftime("%H:%M")), reply_markup=perps_keyboard())
     elif dest == "degen_home":
         from handlers import degen_handler
         await degen_handler.degen_home(update, context)
@@ -104,12 +105,13 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif dest == "alerts":
         await q.message.reply_text(formatters.fmt_alert_log(db.get_recent_alerts(hours=24, limit=20)), parse_mode="Markdown")
     elif dest == "prices":
-        live_px = px.fetch_prices(SUPPORTED_PAIRS)
+        msg = await q.message.reply_text("💹 Live Prices\n━━━━━━━━━━━━━━━━\n⏳ Loading live data...")
+        live_px = await px.fetch_prices(SUPPORTED_PAIRS)
         lines = ["💹 *Live Prices*", "━━━━━━━━━━━━━━━━━━━━━━━━"]
         for pair in SUPPORTED_PAIRS:
             if pair in live_px:
                 lines.append(f"`{pair}` {px.fmt_price(live_px[pair])}")
-        await q.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await msg.edit_text("\n".join(lines), parse_mode="Markdown")
     elif dest == "status":
         await q.message.reply_text(formatters.fmt_status(engine.get_session(), True, len(db.get_active_models()), True), parse_mode="Markdown")
     elif dest == "news":

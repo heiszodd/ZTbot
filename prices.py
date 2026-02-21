@@ -1,6 +1,7 @@
 """Market data utilities powered by CryptoCompare for historical and live-ready feeds."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -11,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from statistics import mean
 
+import httpx
 import requests
 
 try:
@@ -57,6 +59,7 @@ FALLBACK_PRICES = {
 }
 
 _SESSION = requests.Session()
+
 LAST_API_CALL_TS: float | None = None
 LAST_API_ERROR: str | None = None
 API_CALL_COUNT = 0
@@ -382,7 +385,7 @@ def fetch_historical_1m_btcusdt_2023_to_now() -> list[Candle]:
     return fetch_cryptocompare_ohlcv("BTCUSDT", "1m", start_ms)
 
 
-def get_crypto_prices(pairs: list[str]) -> dict[str, float]:
+async def get_crypto_prices(pairs: list[str]) -> dict[str, float]:
     if not pairs:
         return {}
 
@@ -420,7 +423,15 @@ def get_crypto_prices(pairs: list[str]) -> dict[str, float]:
     fsyms = ",".join(fsym for _, fsym, _ in missing_parsed)
 
     try:
-        payload = _request(CRYPTOCOMPARE_PRICE_MULTI_PATH, {"fsyms": fsyms, "tsyms": tsym}, timeout=8.0)
+        params = {"fsyms": fsyms, "tsyms": tsym}
+        if CRYPTOCOMPARE_API_KEY:
+            params["api_key"] = CRYPTOCOMPARE_API_KEY
+        if CRYPTOCOMPARE_EXTRA_PARAMS:
+            params["extraParams"] = CRYPTOCOMPARE_EXTRA_PARAMS
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            response = await client.get(f"{CRYPTOCOMPARE_BASE_URL}{CRYPTOCOMPARE_PRICE_MULTI_PATH}", params=params)
+            response.raise_for_status()
+            payload = response.json()
         out: dict[str, float] = {}
         for pair, fsym, _ in missing_parsed:
             price = payload.get(fsym, {}).get(tsym)
@@ -437,12 +448,15 @@ def get_crypto_prices(pairs: list[str]) -> dict[str, float]:
         return {pair: merged[pair] for pair in pairs if pair in merged}
 
 
-def fetch_prices(pairs: list[str]) -> dict[str, float]:
-    return get_crypto_prices(pairs)
+async def fetch_prices(pairs: list[str]) -> dict[str, float]:
+    return await get_crypto_prices(pairs)
 
 
 def get_price(pair: str) -> float | None:
-    return fetch_prices([pair]).get(pair)
+    cached = _LIVE_PRICE_CACHE.get(pair)
+    if cached:
+        return cached[0]
+    return FALLBACK_PRICES.get(pair)
 
 
 def get_recent_series(pair: str, days: int = 7, interval: str = "1m") -> list[float]:
@@ -489,8 +503,8 @@ def fmt_price(price: float | None) -> str:
     return f"${price:.6f}"
 
 
-def get_all_prices() -> dict[str, float]:
-    return fetch_prices(CRYPTO_PAIRS)
+async def get_all_prices() -> dict[str, float]:
+    return await fetch_prices(CRYPTO_PAIRS)
 
 
 def get_api_health() -> dict[str, str | int | float | None]:
