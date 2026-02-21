@@ -468,6 +468,7 @@ def main():
     app.add_handler(CallbackQueryHandler(commands.handle_scan_cb,   pattern="^scan:"))
     app.add_handler(CallbackQueryHandler(commands.handle_backtest_cb, pattern="^backtest:"))
     app.add_handler(CallbackQueryHandler(alerts.handle_alert_response, pattern="^alert:"))
+    app.add_handler(CallbackQueryHandler(alerts.handle_pending_cb, pattern="^pending:"))
     app.add_handler(CallbackQueryHandler(stats.handle_journal_cb, pattern="^journal:"))
     app.add_handler(CallbackQueryHandler(news_handler.handle_news_cb, pattern="^news:"))
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_model_cb, pattern="^degen_model:"))
@@ -486,6 +487,13 @@ def main():
         interval=SCANNER_INTERVAL,
         first=15,
         name="scanner"
+    )
+
+    app.job_queue.run_repeating(
+        alerts.run_pending_checker,
+        interval=30,
+        first=15,
+        name="pending_checker"
     )
 
     app.job_queue.run_repeating(

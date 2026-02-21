@@ -20,6 +20,48 @@ def _is_dup(pair, model_id, tier): return (datetime.now(timezone.utc).timestamp(
 def _mark(pair, model_id, tier): _recent[_dedup_key(pair, model_id, tier)] = datetime.now(timezone.utc).timestamp()
 
 
+def format_duration(start_time: datetime) -> str:
+    if not start_time:
+        return "0m"
+    delta = datetime.now(timezone.utc).replace(tzinfo=None) - (start_time.replace(tzinfo=None) if getattr(start_time, "tzinfo", None) else start_time)
+    minutes = int(delta.total_seconds() / 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours < 24:
+        return f"{hours}h {mins}m"
+    days = hours // 24
+    return f"{days}d {hours % 24}h"
+
+
+def make_score_bar(score_pct: float, width: int = 10) -> str:
+    filled = round(min(score_pct, 100) / 100 * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def get_score_trend(current: float, previous: float) -> str:
+    delta = current - previous
+    if delta > 2:
+        return f"📈 Improving (+{delta:.1f} pts)"
+    elif delta < -2:
+        return f"📉 Worsening ({delta:.1f} pts)"
+    return "➡️ Stable"
+
+
+def pending_keyboard(setup_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👀 Watch", callback_data=f"pending:watch:{setup_id}"),
+            InlineKeyboardButton("🔕 Dismiss", callback_data=f"pending:dismiss:{setup_id}")
+        ],
+        [
+            InlineKeyboardButton("⚙️ View Model", callback_data=f"pending:model:{setup_id}"),
+            InlineKeyboardButton("🏠 Home", callback_data="nav:perps_home")
+        ]
+    ])
+
+
 def _correlation_warning(pair: str):
     open_pairs = set(db.get_open_trades_pairs())
     corr = set(CORRELATED_PAIRS.get(pair, [])) & open_pairs
@@ -59,7 +101,7 @@ def check_proximity_alerts(bot, model, price):
                 asyncio.create_task(bot.send_message(chat_id=CHAT_ID, text=f"📍 Price approaching key level [{lv}] on [{model['pair']}] — [{model['name']}] — prepare your checklist", parse_mode="Markdown"))
 
 
-async def _evaluate_and_send(bot, model: dict, force=False, pair_override: str | None = None):
+async def _evaluate_and_send(bot, model: dict, force=False, pair_override: str | None = None, pending_duration=None, pending_checks=None):
     global _circuit_warned_at
     prefs = db.get_user_preferences(CHAT_ID)
     if prefs.get("risk_off_mode"):
@@ -97,7 +139,7 @@ async def _evaluate_and_send(bot, model: dict, force=False, pair_override: str |
     key = f"{pair}_{model['id']}_{datetime.now(timezone.utc).strftime('%H%M%S')}"
     _pending[key] = (setup, scan_model, scored)
 
-    text = formatters.fmt_alert(setup, scan_model, scored, risk_pct=float(TIER_RISK.get(scored["tier"], 0)), risk_usd=0.0, correlation_warning=_correlation_warning(pair))
+    text = formatters.fmt_alert(setup, scan_model, scored, risk_pct=float(TIER_RISK.get(scored["tier"], 0)), risk_usd=0.0, correlation_warning=_correlation_warning(pair), pending_duration=pending_duration, pending_checks=pending_checks)
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Entered", callback_data=f"alert:entered:{key}"), InlineKeyboardButton("🎮 Demo Entry", callback_data=f"alert:demo:{key}")],[InlineKeyboardButton("❌ Skipped", callback_data=f"alert:skipped:{key}"), InlineKeyboardButton("👀 Watching", callback_data=f"alert:watching:{key}")]])
     await bot.send_message(chat_id=CHAT_ID, text=text, reply_markup=kb, parse_mode="Markdown")
     job = bot._application.job_queue.run_once(_setup_aging_follow_up, when=900, data={"pair": pair, "entry": price}, name=f"aging:{key}")
@@ -105,26 +147,289 @@ async def _evaluate_and_send(bot, model: dict, force=False, pair_override: str |
     return True
 
 
+def score_pair(pair: str, timeframe: str, model: dict):
+    scan_model = {**model, "pair": pair, "timeframe": timeframe}
+    series = px.get_recent_series(pair, days=2)
+    if not series:
+        return None
+    setup = engine.build_live_setup(scan_model, series)
+    if not setup:
+        return None
+    scored = engine.score_setup(setup, scan_model)
+    atr = px.estimate_atr(series[-30:]) if series else None
+    price = px.get_price(pair)
+    if not price:
+        return None
+    sl, tp, rr = px.calc_sl_tp(price, setup.get("direction", "BUY"), atr=atr)
+    scored["score"] = float(scored.get("final_score", 0) or 0)
+    scored["entry"] = price
+    scored["sl"] = sl
+    scored["tp"] = tp
+    scored["tp1"] = tp
+    scored["tp2"] = round(tp + (tp - price) * 0.5, 5) if setup.get("direction", "BUY") == "BUY" else round(tp - (price - tp) * 0.5, 5)
+    scored["tp3"] = round(tp + (tp - price), 5) if setup.get("direction", "BUY") == "BUY" else round(tp - (price - tp), 5)
+    scored["direction"] = setup.get("direction", "BUY")
+    scored["invalidated"] = not scored.get("valid", True)
+    scored["invalidation_reason"] = scored.get("invalid_reason")
+    return scored
+
+
 async def run_scanner(context: ContextTypes.DEFAULT_TYPE):
     bot = context.application.bot
-    models = db.get_all_models()
-    sem = asyncio.Semaphore(4)
+    models = [m for m in db.get_all_models() if m.get("status") == "active"]
     scan_pairs = list(dict.fromkeys(SUPPORTED_PAIRS or []))
+    processing = context.bot_data.setdefault("processing_setups", set())
 
-    async def _scan_model_pair(m, pair):
-        async with sem:
+    for model in models:
+        for pair in scan_pairs:
+            timeframe = model.get("timeframe")
+            existing = db.get_pending_setup(model.get("id"), pair, timeframe)
+            if existing and existing.get("id") in processing:
+                continue
             try:
-                return await _evaluate_and_send(bot, m, pair_override=pair)
+                if existing:
+                    processing.add(existing.get("id"))
+                score_result = score_pair(pair, timeframe, model)
+                if not score_result:
+                    continue
+                classification = engine.classify_score_result(score_result, model)
+
+                if classification["classification"] == "FULL_ALERT":
+                    if existing and existing.get("status") == "pending":
+                        await promote_to_full_alert(context, existing, score_result)
+                    else:
+                        tier = "A" if score_result.get("score", 0) >= model.get("tier_a", 9.5) else "B" if score_result.get("score", 0) >= model.get("tier_b", 7.5) else "C"
+                        if _is_dup(pair, model["id"], tier):
+                            continue
+                        await _evaluate_and_send(bot, model, pair_override=pair)
+
+                elif classification["classification"] == "PENDING":
+                    if existing and existing.get("status") == "pending":
+                        await update_pending_message(context, existing, classification, score_result)
+                        continue
+                    if existing and existing.get("status") == "promoted" and existing.get("promoted_at"):
+                        if (datetime.now(timezone.utc).replace(tzinfo=None) - existing["promoted_at"]).total_seconds() < 900:
+                            continue
+                    if existing and existing.get("status") == "expired":
+                        db.delete_pending_setup(existing["id"])
+
+                    now = datetime.now(timezone.utc)
+                    setup_payload = {
+                        "model_id": model["id"], "model_name": model.get("name"), "pair": pair, "timeframe": timeframe,
+                        "direction": score_result.get("direction"), "entry_price": score_result.get("entry"), "sl": score_result.get("sl"),
+                        "tp1": score_result.get("tp1"), "tp2": score_result.get("tp2"), "tp3": score_result.get("tp3"),
+                        "current_score": score_result.get("score"), "max_possible_score": sum(float(r.get("weight",0) or 0) for r in model.get("rules",[])),
+                        "score_pct": classification.get("score_pct"), "min_score_threshold": float(model.get("min_score") or model.get("tier_c") or 0),
+                        "passed_rules": classification.get("passed_rules"), "failed_rules": classification.get("failed_rules"),
+                        "mandatory_passed": classification.get("mandatory_passed"), "mandatory_failed": classification.get("mandatory_failed"),
+                        "rule_snapshots": {"score": score_result.get("score"), "passed_rule_ids": [r.get("id") for r in classification.get("passed_rules",[])], "failed_rule_ids": [r.get("id") for r in classification.get("failed_rules",[])]},
+                        "telegram_chat_id": CHAT_ID, "status": "pending", "first_detected_at": now, "check_count": 1, "peak_score_pct": classification.get("score_pct",0),
+                    }
+                    setup_id = db.save_pending_setup(setup_payload)
+                    record = db.get_pending_setup(model["id"], pair, timeframe)
+                    record["first_seen_label"] = now.strftime("%H:%M WAT")
+                    record["last_check_label"] = now.strftime("%H:%M WAT")
+                    record["trend"] = "➡️ Score unchanged"
+                    text = formatters.fmt_pending_setup(record, classification, score_result)
+                    msg = await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown", reply_markup=pending_keyboard(setup_id))
+                    db.update_pending_setup(setup_id, {"telegram_message_id": msg.message_id})
+
+                else:
+                    if existing and existing.get("status") == "pending":
+                        await expire_pending_message(context, existing, classification)
             except Exception as e:
                 log.error(f"scanner error {e}")
-                return False
-
-    if models and scan_pairs:
-        await asyncio.gather(*[_scan_model_pair(m, pair) for m in models for pair in scan_pairs])
+            finally:
+                if existing and existing.get("id") in processing:
+                    processing.discard(existing.get("id"))
     try:
         await degen_scan_job(context)
     except Exception as e:
         log.error(f"degen scanner error {e}")
+
+
+async def update_pending_message(context, setup: dict, classification: dict, score_result: dict):
+    now = datetime.now(timezone.utc)
+    prev = float(setup.get("current_score") or 0)
+    setup["first_seen_label"] = (setup.get("first_detected_at") or now).strftime("%H:%M WAT")
+    setup["last_check_label"] = now.strftime("%H:%M WAT")
+    setup["trend"] = get_score_trend(float(score_result.get("score") or 0), prev)
+    new_text = formatters.fmt_pending_setup(setup, classification, score_result)
+    old_snapshot = setup.get("rule_snapshots", {}) or {}
+    new_snapshot = {
+        "score": score_result["score"],
+        "passed_rule_ids": [r.get("id") for r in classification["passed_rules"]],
+        "failed_rule_ids": [r.get("id") for r in classification["failed_rules"]],
+    }
+    if old_snapshot == new_snapshot:
+        db.update_pending_setup(setup["id"], {"last_updated_at": now})
+        return
+    try:
+        await context.bot.edit_message_text(
+            chat_id=setup["telegram_chat_id"],
+            message_id=setup["telegram_message_id"],
+            text=new_text,
+            reply_markup=pending_keyboard(setup["id"]),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        if "message is not modified" in str(e):
+            pass
+        elif "message to edit not found" in str(e):
+            msg = await context.bot.send_message(chat_id=setup["telegram_chat_id"], text=new_text, parse_mode="Markdown", reply_markup=pending_keyboard(setup["id"]))
+            db.update_pending_setup(setup["id"], {"telegram_message_id": msg.message_id})
+        else:
+            log.error(f"Failed to edit pending message: {e}")
+
+    db.update_pending_setup(setup["id"], {
+        "current_score": score_result["score"],
+        "score_pct": classification["score_pct"],
+        "passed_rules": classification["passed_rules"],
+        "failed_rules": classification["failed_rules"],
+        "mandatory_passed": classification["mandatory_passed"],
+        "mandatory_failed": classification["mandatory_failed"],
+        "rule_snapshots": new_snapshot,
+        "last_updated_at": now,
+        "check_count": int(setup.get("check_count", 0)) + 1,
+        "peak_score_pct": max(float(setup.get("peak_score_pct") or 0), classification["score_pct"]),
+        "entry_price": score_result.get("entry"), "sl": score_result.get("sl"), "tp1": score_result.get("tp1"), "tp2": score_result.get("tp2"), "tp3": score_result.get("tp3"),
+    })
+
+
+async def promote_to_full_alert(context, setup: dict, score_result: dict):
+    try:
+        promoted_text = (
+            f"✅ *SETUP CONFIRMED — FULL ALERT SENT*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚙️ {setup['model_name']}\n"
+            f"🪙 {setup['pair']}   {setup['timeframe']}\n"
+            f"⏱ Pending for: {format_duration(setup['first_detected_at'])}\n"
+            f"📊 Peak score: {float(setup.get('peak_score_pct') or 0):.0f}%\n"
+            f"✅ All criteria now met — see alert below"
+        )
+        await context.bot.edit_message_text(chat_id=setup["telegram_chat_id"], message_id=setup["telegram_message_id"], text=promoted_text, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Failed to edit promoted message: {e}")
+
+    db.promote_pending_setup(setup["id"])
+    model = db.get_model(setup["model_id"])
+    if model:
+        tier = "A" if score_result.get("score", 0) >= model.get("tier_a", 9.5) else "B" if score_result.get("score", 0) >= model.get("tier_b", 7.5) else "C"
+        if not _is_dup(setup["pair"], model["id"], tier):
+            await _evaluate_and_send(context.bot, model, pair_override=setup["pair"], pending_duration=format_duration(setup["first_detected_at"]), pending_checks=setup.get("check_count", 0))
+
+
+async def expire_pending_message(context, setup: dict, classification: dict):
+    reason = ""
+    if classification["classification"] == "INVALIDATED":
+        reason = f"❌ Invalidated: {classification.get('reason', 'mandatory gate failed')}"
+    elif classification["classification"] == "INSUFFICIENT":
+        reason = "📉 Setup weakened below 50% threshold"
+
+    try:
+        expired_text = (
+            f"❌ *PENDING SETUP EXPIRED*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚙️ {setup['model_name']}\n"
+            f"🪙 {setup['pair']}   {setup['timeframe']}\n"
+            f"⏱ Was pending for: {format_duration(setup['first_detected_at'])}\n"
+            f"📊 Peak score reached: {float(setup.get('peak_score_pct', 0) or 0):.0f}%\n"
+            f"🔄 Total checks: {setup['check_count']}\n\n{reason}\n\n_Setup did not complete. Market moved away._"
+        )
+        await context.bot.edit_message_text(chat_id=setup["telegram_chat_id"], message_id=setup["telegram_message_id"], text=expired_text, parse_mode="Markdown")
+    except Exception as e:
+        log.error(f"Failed to edit expired message: {e}")
+
+    db.expire_pending_setup(setup["id"])
+
+
+async def run_pending_checker(context):
+    tick_count = context.bot_data.get("pending_tick", 0) + 1
+    context.bot_data["pending_tick"] = tick_count
+    processing = context.bot_data.setdefault("processing_setups", set())
+    watched = context.bot_data.get("watched_setups", set())
+    pending = db.get_all_pending_setups(status="pending")
+    if len(pending) > 20:
+        pending = sorted(pending, key=lambda x: float(x.get("score_pct") or 0), reverse=True)[:20]
+
+    last_cleanup = context.bot_data.get("pending_last_cleanup")
+    if not last_cleanup or (datetime.now(timezone.utc) - last_cleanup).total_seconds() >= 3600:
+        db.delete_old_expired_setups(hours=24)
+        context.bot_data["pending_last_cleanup"] = datetime.now(timezone.utc)
+
+    for setup in pending:
+        if setup["id"] in processing:
+            continue
+        is_watched = setup["id"] in watched
+        if not is_watched and tick_count % 2 != 0:
+            continue
+        processing.add(setup["id"])
+        try:
+            model = db.get_model(setup["model_id"])
+            if not model or model.get("status") != "active":
+                db.expire_pending_setup(setup["id"])
+                continue
+
+            score_result = score_pair(setup["pair"], setup["timeframe"], model)
+            if not score_result:
+                stale_minutes = (datetime.now(timezone.utc).replace(tzinfo=None) - setup["last_updated_at"]).total_seconds() / 60
+                if stale_minutes >= 10:
+                    try:
+                        await context.bot.edit_message_text(chat_id=setup["telegram_chat_id"], message_id=setup["telegram_message_id"], text="⚠️ _Price data unavailable — retrying..._", parse_mode="Markdown", reply_markup=pending_keyboard(setup["id"]))
+                    except Exception:
+                        pass
+                    db.update_pending_setup(setup["id"], {"status": "stale"})
+                continue
+
+            classification = engine.classify_score_result(score_result, model)
+            if classification["classification"] == "FULL_ALERT":
+                await promote_to_full_alert(context, setup, score_result)
+            elif classification["classification"] == "PENDING":
+                await update_pending_message(context, setup, classification, score_result)
+            else:
+                await expire_pending_message(context, setup, classification)
+        except Exception as e:
+            log.error(f"Pending checker error for setup {setup['id']}: {e}")
+        finally:
+            processing.discard(setup["id"])
+
+
+async def handle_pending_cb(update, context):
+    q = update.callback_query
+    await q.answer()
+    parts = q.data.split(":")
+    action = parts[1]
+    setup_id = int(parts[2])
+
+    if action == "watch":
+        watched = context.bot_data.setdefault("watched_setups", set())
+        watched.add(setup_id)
+        await q.answer("👀 Now watching this setup closely", show_alert=False)
+        try:
+            await q.message.reply_text("👀 Watching — checking every 15s", parse_mode="Markdown")
+        except Exception:
+            pass
+    elif action == "dismiss":
+        db.expire_pending_setup(setup_id)
+        db.delete_pending_setup(setup_id)
+        try:
+            await q.edit_message_text("🔕 Dismissed by user")
+        except Exception:
+            pass
+        await q.answer("Setup dismissed", show_alert=False)
+    elif action == "model":
+        recs = [x for x in db.get_all_pending_setups(status="pending") if x["id"] == setup_id]
+        if not recs:
+            await q.answer("Setup not found", show_alert=True)
+            return
+        setup = recs[0]
+        from handlers import commands
+        m = db.get_model(setup["model_id"])
+        if not m:
+            await q.answer("Model not found", show_alert=True)
+            return
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="nav:perps_home")]])
+        await q.message.reply_text(formatters.fmt_model_detail(m, px.get_price(m['pair'])), parse_mode="Markdown", reply_markup=kb)
 
 
 async def _render_checklist(message, context):

@@ -73,6 +73,65 @@ CREATE TABLE IF NOT EXISTS alert_log (
 );
 ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
 
+CREATE TABLE IF NOT EXISTS pending_setups (
+    id                  SERIAL PRIMARY KEY,
+    model_id            VARCHAR(50) NOT NULL,
+    model_name          VARCHAR(100),
+    pair                VARCHAR(20) NOT NULL,
+    timeframe           VARCHAR(10),
+    direction           VARCHAR(10),
+    entry_price         FLOAT,
+    sl                  FLOAT,
+    tp1                 FLOAT,
+    tp2                 FLOAT,
+    tp3                 FLOAT,
+    current_score       FLOAT,
+    max_possible_score  FLOAT,
+    score_pct           FLOAT,
+    min_score_threshold FLOAT,
+    passed_rules        JSONB,
+    failed_rules        JSONB,
+    mandatory_passed    JSONB,
+    mandatory_failed    JSONB,
+    rule_snapshots      JSONB,
+    telegram_message_id BIGINT,
+    telegram_chat_id    BIGINT,
+    status              VARCHAR(20) DEFAULT 'pending',
+    first_detected_at   TIMESTAMP DEFAULT NOW(),
+    last_updated_at     TIMESTAMP DEFAULT NOW(),
+    promoted_at         TIMESTAMP,
+    expired_at          TIMESTAMP,
+    check_count         INT DEFAULT 1,
+    peak_score_pct      FLOAT,
+    UNIQUE(model_id, pair, timeframe)
+);
+
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS direction VARCHAR(10);
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS entry_price FLOAT;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS sl FLOAT;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS tp1 FLOAT;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS tp2 FLOAT;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS tp3 FLOAT;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS current_score FLOAT;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS max_possible_score FLOAT;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS score_pct FLOAT;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS min_score_threshold FLOAT;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS passed_rules JSONB;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS failed_rules JSONB;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS mandatory_passed JSONB;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS mandatory_failed JSONB;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS rule_snapshots JSONB;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS telegram_message_id BIGINT;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS telegram_chat_id BIGINT;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending';
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS first_detected_at TIMESTAMP DEFAULT NOW();
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS last_updated_at TIMESTAMP DEFAULT NOW();
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMP;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS expired_at TIMESTAMP;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS check_count INT DEFAULT 1;
+ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS peak_score_pct FLOAT;
+
 CREATE TABLE IF NOT EXISTS user_preferences (
     chat_id               BIGINT PRIMARY KEY,
     account_balance       FLOAT        DEFAULT 10000,

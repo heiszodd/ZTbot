@@ -31,8 +31,9 @@ def perps_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="nav:models")],
         [InlineKeyboardButton("🧪 Backtest", callback_data="backtest:start"), InlineKeyboardButton("📊 Stats", callback_data="nav:stats")],
-        [InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline"), InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts")],
-        [InlineKeyboardButton("🔍 Scan", callback_data="nav:scan"), InlineKeyboardButton("📓 Journal", callback_data="nav:journal")],
+        [InlineKeyboardButton("⏳ Pending", callback_data="nav:pending"), InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline")],
+        [InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts"), InlineKeyboardButton("🔍 Scan", callback_data="nav:scan")],
+        [InlineKeyboardButton("📓 Journal", callback_data="nav:journal")],
         [InlineKeyboardButton("📰 News", callback_data="nav:news"), InlineKeyboardButton("🎮 Demo", callback_data="demo:perps:home")],
         [InlineKeyboardButton("➕ New Model", callback_data="wiz:start"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
         [InlineKeyboardButton("🎰 Go to Degen", callback_data="nav:degen_home")],
@@ -66,7 +67,8 @@ async def perps_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     active = db.get_active_models()
     recent = db.get_recent_alerts(hours=2, limit=3)
-    await update.message.reply_text(formatters.fmt_perps_home(active, recent, engine.get_session(), formatters._wat_now().strftime("%H:%M")), reply_markup=perps_keyboard())
+    pending = db.get_all_pending_setups(status="pending")
+    await update.message.reply_text(formatters.fmt_perps_home(active, recent, engine.get_session(), formatters._wat_now().strftime("%H:%M"), pending_setups=pending), reply_markup=perps_keyboard())
 
 
 async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,7 +87,8 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await q.message.reply_text("📈 Perps Trading\n━━━━━━━━━━━━━━━━\n⏳ Loading live data...", reply_markup=perps_keyboard())
         active = db.get_active_models()
         recent = db.get_recent_alerts(hours=2, limit=3)
-        await msg.edit_text(formatters.fmt_perps_home(active, recent, engine.get_session(), formatters._wat_now().strftime("%H:%M")), reply_markup=perps_keyboard())
+        pending = db.get_all_pending_setups(status="pending")
+        await msg.edit_text(formatters.fmt_perps_home(active, recent, engine.get_session(), formatters._wat_now().strftime("%H:%M"), pending_setups=pending), reply_markup=perps_keyboard())
     elif dest == "degen_home":
         from handlers import degen_handler
         await degen_handler.degen_home(update, context)
@@ -123,6 +126,37 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(formatters.fmt_heatmap(db.get_hourly_breakdown()), parse_mode="Markdown")
     elif dest == "rolling10":
         await q.message.reply_text(formatters.fmt_rolling_10(db.get_rolling_10()), parse_mode="Markdown")
+    elif dest == "pending":
+        pending = db.get_all_pending_setups(status="pending")
+        lines = [
+            "⏳ *Pending Setups*",
+            "━━━━━━━━━━━━━━━━━━━━━━━━",
+            "Setups that are partially meeting criteria.",
+            "Updated live every 30 seconds.",
+            "",
+        ]
+        kb_rows = []
+        if not pending:
+            lines.append("📭 No pending setups right now.")
+            lines.append("The scanner is watching all active models.")
+        else:
+            lines.append(f"{len(pending)} setup(s) being tracked:")
+            for p in pending:
+                pct = float(p.get("score_pct") or 0)
+                bar = "█" * round(min(100, pct) / 10) + "░" * (10 - round(min(100, pct) / 10))
+                passed = len(p.get("passed_rules") or [])
+                total = passed + len(p.get("failed_rules") or [])
+                lines.extend([
+                    "",
+                    f"⚙️ {p.get('model_name')}",
+                    f"🪙 {p.get('pair')}   {p.get('timeframe')}   {p.get('direction')}",
+                    f"[{bar}] {pct:.0f}%",
+                    f"✅ {passed}/{max(total,1)} rules   ⏱ {int((formatters._wat_now().replace(tzinfo=None) - p['first_detected_at']).total_seconds()//60)}m",
+                    "➡️ Stable",
+                ])
+                kb_rows.append([InlineKeyboardButton(f"🔍 View {p.get('pair')} Setup", callback_data=f"pending:model:{p['id']}")])
+        kb_rows.extend([[InlineKeyboardButton("🔄 Refresh", callback_data="nav:pending"), InlineKeyboardButton("🏠 Home", callback_data="nav:home")]])
+        await q.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb_rows))
     elif dest == "scan":
         pairs = [[InlineKeyboardButton(p, callback_data=f"scan:{p}")] for p in SUPPORTED_PAIRS]
         await q.message.reply_text("Choose pair to scan", reply_markup=InlineKeyboardMarkup(pairs))
