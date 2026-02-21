@@ -184,10 +184,13 @@ async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_backtest_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    action = q.data.split(":")[1] if ":" in q.data else "start"
+    parts = q.data.split(":")
+    action = parts[1] if len(parts) > 1 else "start"
 
     if action == "start" or action == "again":
         await _send_backtest_entry(q.message.reply_text)
+    elif action == "model" and len(parts) > 2:
+        await _send_backtest_days(q.message.reply_text, parts[2])
 
 
 async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -204,10 +207,46 @@ def _backtest_screen_kb() -> InlineKeyboardMarkup:
 
 
 async def _send_backtest_entry(reply):
+    models = db.get_all_models()
+    if not models:
+        await reply("🧪 *Backtest*\nNo models found yet. Create one first from the Models screen.", parse_mode="Markdown", reply_markup=_backtest_screen_kb())
+        return
+
+    model_rows = [
+        [InlineKeyboardButton(f"{'🟢' if m['status'] == 'active' else '⚫'} {m['name']}", callback_data=f"backtest:model:{m['id']}")]
+        for m in models
+    ]
+    model_rows.append([InlineKeyboardButton("« Back to Perps", callback_data="nav:perps_home")])
+
     await reply(
-        "🧪 *Backtest*\nChoose a model and range using `/backtest <model_id> [days]`.",
+        "🧪 *Backtest*\nSelect a model to generate a ready-to-send command.",
         parse_mode="Markdown",
-        reply_markup=_backtest_screen_kb(),
+        reply_markup=InlineKeyboardMarkup(model_rows),
+    )
+
+
+async def _send_backtest_days(reply, model_id: str):
+    model = db.get_model(model_id)
+    if not model:
+        await reply("❌ Model not found. Please choose again.", reply_markup=_backtest_screen_kb())
+        return
+
+    day_options = [7, 14, 30, 60]
+    day_buttons = [
+        InlineKeyboardButton(
+            f"{days}d",
+            switch_inline_query_current_chat=f"/backtest {model_id} {days}",
+        )
+        for days in day_options
+    ]
+    keyboard = [day_buttons[:2], day_buttons[2:]]
+    keyboard.append([InlineKeyboardButton("🔄 Choose Another Model", callback_data="backtest:start")])
+    keyboard.append([InlineKeyboardButton("« Back to Perps", callback_data="nav:perps_home")])
+
+    await reply(
+        f"🧪 *Backtest*\nModel: *{model['name']}* (`{model_id}`)\nPick a range to prefill the command.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
