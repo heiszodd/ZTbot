@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 import time
-from datetime import timedelta, timezone
+from datetime import datetime as dt_datetime, timedelta, timezone
 from pathlib import Path
 
 import db
@@ -173,14 +173,8 @@ def _compute_performance(recent_trades: list[dict]) -> dict:
 
 
 def clear_screen() -> None:
-    """
-    Clear the terminal in a TERM-safe way.
-
-    Railway services run in non-interactive containers where shelling out to
-    `clear` / `cls` can emit noisy warnings like: "TERM environment variable not set".
-    ANSI escape sequences are silent and broadly compatible.
-    """
-    # Move cursor to home + clear full screen.
+    # RAILWAY FIX: avoid os.system('clear') because TERM may be unavailable.
+    # Move cursor to home + clear full screen using ANSI escapes.
     print("\033[H\033[J", end="")
 
 
@@ -370,7 +364,8 @@ def show_dashboard() -> None:
     state.setdefault("system_health", system_health)
 
     interactive = sys.stdin.isatty()
-    print(f"Interactive mode: {'Yes' if interactive else 'No'}")
+    # RAILWAY FIX: explicit env mode print for easier deploy debugging.
+    print("Environment: Interactive (local)" if interactive else "Environment: Non-interactive (Railway)")
 
     # Optional one-off startup action for non-interactive deploy environments.
     run_backtest_on_boot = os.getenv("RUN_BACKTEST", "").strip().lower() == "true"
@@ -418,16 +413,12 @@ def show_dashboard() -> None:
 
             _save_dashboard_state(state)
     else:
-        print("Running in background mode - no input")
-        while True:
-            print("Refreshing dashboard...")
-            state["system_health"]["api_calls_today"] = int(px.get_api_health().get("api_call_count", 0))
-            state["bot_status"]["last_activity"] = _wat_now_str()
-            _render_dashboard(state)
-            print("Interactive actions disabled (stdin is not a TTY).")
-            _save_dashboard_state(state)
-            print("Sleeping 60s on Railway...")
-            time.sleep(60)
+        # RAILWAY FIX: print dashboard once in non-interactive mode (no log spam loop).
+        state["system_health"]["api_calls_today"] = int(px.get_api_health().get("api_call_count", 0))
+        state["bot_status"]["last_activity"] = _wat_now_str()
+        _render_dashboard(state)
+        print("Interactive actions disabled (stdin is not a TTY).")
+        _save_dashboard_state(state)
 
 
 def main():
@@ -502,11 +493,27 @@ def main():
 
 
 if __name__ == "__main__":
+    print("Script started")
+
     if len(sys.argv) > 1 and sys.argv[1].lower() in {"backtest", "--backtest", "-b"}:
         run_backtest()
     elif len(sys.argv) > 1 and sys.argv[1].lower() in {"bot", "--bot"}:
         main()
     else:
-        # Default entrypoint now supports both local interactive CLI and
-        # non-interactive Railway-style background refresh mode.
-        show_dashboard()
+        # Default entrypoint supports local interactive CLI and Railway background mode.
+        interactive = sys.stdin.isatty()
+        print("Environment: Interactive (local)" if interactive else "Environment: Non-interactive (Railway)")
+
+        if interactive:
+            show_dashboard()
+        else:
+            # RAILWAY FIX: no input() loop in Railway non-TTY environment.
+            print("ZTbot background mode started on Railway - no interactive input")
+            show_dashboard()
+            print("Dashboard printed - entering keep-alive loop")
+
+            wat = timezone(timedelta(hours=1))
+            while True:
+                # RAILWAY FIX: keep process alive without busy looping/log flooding.
+                time.sleep(3600)  # 1 hour
+                print("Heartbeat:", dt_datetime.now(wat).strftime("%Y-%m-%d %H:%M:%S WAT"))
