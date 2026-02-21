@@ -33,8 +33,9 @@ def perps_keyboard():
         [InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline"), InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts")],
         [InlineKeyboardButton("🔍 Scan", callback_data="nav:scan"), InlineKeyboardButton("🎯 Goal", callback_data="nav:goal")],
         [InlineKeyboardButton("💰 Budget", callback_data="nav:budget"), InlineKeyboardButton("📓 Journal", callback_data="nav:journal")],
-        [InlineKeyboardButton("📰 News", callback_data="nav:news"), InlineKeyboardButton("➕ New Model", callback_data="wiz:start")],
-        [InlineKeyboardButton("⚡ Status", callback_data="nav:status"), InlineKeyboardButton("🎰 Go to Degen", callback_data="nav:degen_home")],
+        [InlineKeyboardButton("📰 News", callback_data="nav:news"), InlineKeyboardButton("🎮 Demo", callback_data="demo:perps:home")],
+        [InlineKeyboardButton("➕ New Model", callback_data="wiz:start"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
+        [InlineKeyboardButton("🎰 Go to Degen", callback_data="nav:degen_home")],
     ])
 
 
@@ -43,8 +44,9 @@ def degen_keyboard():
         [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="degen_model:list")],
         [InlineKeyboardButton("🆕 Latest Finds", callback_data="wallet:activity"), InlineKeyboardButton("👀 Watchlist", callback_data="wallet:list")],
         [InlineKeyboardButton("🐋 Wallets", callback_data="wallet:dash"), InlineKeyboardButton("📰 News Trades", callback_data="nav:news")],
-        [InlineKeyboardButton("📊 Degen Stats", callback_data="wallet:calls"), InlineKeyboardButton("🔍 Search Token", callback_data="wallet:activity")],
-        [InlineKeyboardButton("➕ New Model", callback_data="degen_model:new"), InlineKeyboardButton("⚙️ Scanner Settings", callback_data="nav:status")],
+        [InlineKeyboardButton("📊 Degen Stats", callback_data="degen:stats"), InlineKeyboardButton("🎮 Demo", callback_data="demo:degen:home")],
+        [InlineKeyboardButton("🔍 Search Token", callback_data="wallet:activity"), InlineKeyboardButton("⚙️ Scanner Settings", callback_data="nav:status")],
+        [InlineKeyboardButton("➕ New Model", callback_data="degen_model:new"), InlineKeyboardButton("⚖️ Compare", callback_data="degen:compare")],
         [InlineKeyboardButton("📈 Go to Perps", callback_data="nav:perps_home")],
     ])
 

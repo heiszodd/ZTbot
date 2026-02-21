@@ -178,7 +178,7 @@ async def news_signal_job(context: ContextTypes.DEFAULT_TYPE):
                 }
             )
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Entered", callback_data=f"news:entered:{trade_id}"), InlineKeyboardButton("❌ Skipped", callback_data=f"news:skipped:{trade_id}"), InlineKeyboardButton("👀 Watching", callback_data=f"news:watching:{trade_id}")]
+                [InlineKeyboardButton("✅ Entered", callback_data=f"news:entered:{trade_id}"), InlineKeyboardButton("🎮 Demo Entry", callback_data=f"news:demo:{trade_id}")],[InlineKeyboardButton("❌ Skipped", callback_data=f"news:skipped:{trade_id}"), InlineKeyboardButton("👀 Watching", callback_data=f"news:watching:{trade_id}")]
             ])
             await context.application.bot.send_message(chat_id=CHAT_ID, text=msg, reply_markup=kb)
             db.mark_signal_sent(event_id)
@@ -236,6 +236,19 @@ async def handle_news_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 }
             )
             await q.message.reply_text("✅ News trade logged. 📸 Screenshot reminder: capture your chart entry now.")
+    elif action == "demo" and len(parts) > 2:
+        from handlers import demo_handler
+        trade_id = int(parts[2])
+        tr = db.get_news_trade(trade_id)
+        if tr:
+            acct = db.get_demo_account("perps")
+            if not acct:
+                return await q.message.reply_text("You don't have a demo account yet. Set one up first.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Setup Demo", callback_data="demo:perps:home")]]))
+            bal = float(acct.get("balance") or 0)
+            risk_amount = bal * 0.005
+            position = risk_amount * 10
+            ok, msg = await demo_handler.open_demo_from_signal(context, "perps", {"pair": tr.get("pair"), "direction": tr.get("direction"), "entry_price": tr.get("entry_price"), "sl": tr.get("sl"), "tp1": tr.get("tp1"), "tp2": tr.get("tp2"), "tp3": tr.get("tp3"), "position_size_usd": position, "risk_amount_usd": risk_amount, "risk_pct": 0.5, "model_id": "NEWS", "model_name": "News", "tier": "N", "score": 0, "source": "news_trade", "notes": "News demo entry"})
+            await q.message.reply_text(msg)
     elif action == "skipped":
         await q.message.reply_text("❌ News trade skipped.")
     elif action == "watching":

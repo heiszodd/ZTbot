@@ -255,6 +255,21 @@ async def handle_wallet_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for c in calls:
             lines.append(f"• {c.get('wallet_label')} {c.get('token_symbol')} entry {c.get('entry_price')} max gain {c.get('pnl_x')}x")
         return await q.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data="wallet:dash")]]))
+    if data.startswith("wallet:demo_copy:"):
+        await q.answer()
+        from handlers import demo_handler
+        tx_hash = data.split(":")[-1]
+        item = context.application.bot_data.get(f"wallet_tx:{tx_hash}")
+        if not item:
+            return await q.message.reply_text("Trade context expired.")
+        acct = db.get_demo_account("degen")
+        if not acct:
+            return await q.message.reply_text("You don't have a demo account yet. Set one up first.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Setup Demo", callback_data="demo:degen:home")]]))
+        tx = item["tx"]
+        entry = float(tx.get("price_per_token") or 0)
+        risk_amount = float(acct.get("balance") or 0) * 0.0025
+        ok, msg = await demo_handler.open_demo_from_signal(context, "degen", {"token_symbol": tx.get("token_symbol"), "direction": "BUY", "entry_price": entry, "sl": entry * 0.85, "tp1": entry * 2, "tp2": entry * 5, "tp3": entry * 10, "position_size_usd": risk_amount * 10, "risk_amount_usd": risk_amount, "risk_pct": 0.25, "model_id": "wallet_copy", "model_name": "Whale Copy", "tier": "C", "score": 0, "source": "whale_copy", "notes": tx.get("token_address")})
+        return await q.message.reply_text(msg)
     if data.startswith("wallet:copy:"):
         await q.answer()
         tx_hash = data.split(":")[-1]
