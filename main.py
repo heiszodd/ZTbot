@@ -465,6 +465,7 @@ def main():
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_cb, pattern="^degen:"))
     app.add_handler(CallbackQueryHandler(demo_handler.handle_demo_cb, pattern="^demo:"))
     app.add_handler(wallet_handler.build_add_wallet_handler())
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, demo_handler.handle_demo_risk_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, stats.handle_journal_text))
 
     # ── Scanner job ───────────────────────────────────

@@ -106,11 +106,19 @@ async def _evaluate_and_send(bot, model: dict, force=False):
 
 async def run_scanner(context: ContextTypes.DEFAULT_TYPE):
     bot = context.application.bot
-    for m in db.get_active_models():
-        try:
-            await _evaluate_and_send(bot, m)
-        except Exception as e:
-            log.error(f"scanner error {e}")
+    models = db.get_active_models()
+    sem = asyncio.Semaphore(4)
+
+    async def _scan_model(m):
+        async with sem:
+            try:
+                return await _evaluate_and_send(bot, m)
+            except Exception as e:
+                log.error(f"scanner error {e}")
+                return False
+
+    if models:
+        await asyncio.gather(*[_scan_model(m) for m in models])
     try:
         await degen_scan_job(context)
     except Exception as e:
@@ -175,21 +183,31 @@ async def handle_alert_response(update, context: ContextTypes.DEFAULT_TYPE):
         if not pending:
             return
         setup, model, scored = pending
-        from handlers import demo_handler
         acct = db.get_demo_account("perps")
         if not acct:
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Setup Demo", callback_data="demo:perps:home")]])
             await q.message.reply_text("You don't have a demo account yet. Set one up first.", reply_markup=kb)
             return
-        bal = float(acct.get("balance") or 0)
-        risk_pct = float(TIER_RISK.get(scored["tier"], 0))
-        risk_amount = max(0, bal * risk_pct / 100)
-        position = risk_amount * 10
-        tp1 = setup.get("entry",0) * 1.01
-        tp2 = setup.get("entry",0) * 1.02
-        tp3 = setup.get("entry",0) * 1.03
-        ok, msg = await demo_handler.open_demo_from_signal(context, "perps", {"pair": setup.get("pair"), "direction": setup.get("direction"), "entry_price": setup.get("entry"), "sl": setup.get("sl"), "tp1": tp1, "tp2": tp2, "tp3": tp3, "position_size_usd": position, "risk_amount_usd": risk_amount, "risk_pct": risk_pct, "model_id": model.get("id"), "model_name": model.get("name"), "tier": scored.get("tier"), "score": scored.get("final_score"), "source": "model_alert", "notes": "Demo entry from alert"})
-        await q.message.reply_text(msg)
+        context.user_data["demo_alert_trade"] = {
+            "pair": setup.get("pair"),
+            "direction": setup.get("direction"),
+            "entry_price": setup.get("entry"),
+            "sl": setup.get("sl"),
+            "tp": setup.get("tp"),
+            "model_id": model.get("id"),
+            "model_name": model.get("name"),
+            "tier": scored.get("tier"),
+            "score": scored.get("final_score"),
+            "balance": float(acct.get("balance") or 0),
+        }
+        await q.message.reply_text(
+            "🎮 Demo Entry\n"
+            f"Pair: {setup.get('pair')}\n"
+            f"Entry: {px.fmt_price(setup.get('entry'))}\n"
+            f"SL: {px.fmt_price(setup.get('sl'))}\n"
+            f"TP: {px.fmt_price(setup.get('tp'))}\n\n"
+            "Reply with risk amount in USD (e.g. 50)."
+        )
 
 
 async def handle_alert_extras(update, context: ContextTypes.DEFAULT_TYPE):

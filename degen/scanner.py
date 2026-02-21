@@ -124,38 +124,47 @@ async def degen_scan_job(context):
     chat_id = getattr(context, "chat_id", None) or context.application.bot_data.get("chat_id")
     tokens = db.get_recent_degen_tokens(limit=100)
     models = db.get_active_degen_models()
-    for token in tokens:
-        token_data = await _fetch_external_data(dict(token))
-        await asyncio.sleep(SOLSCAN_RATE_LIMIT_DELAY)
-        risk = score_token_risk(token_data)
-        moon = score_moonshot_potential(token_data, token_profile=risk.get("profile"))
-        token_data.update(risk)
-        token_data.update(moon)
-        token_data["confluence"] = moon.get("confluence")
-        token_data["initial_risk_score"] = token_data.get("initial_risk_score") or risk.get("risk_score")
-        token_data["latest_risk_score"] = risk.get("risk_score")
-        token_data["token_profile"] = risk.get("profile")
-        token_data["initial_reply_count"] = token_data.get("initial_reply_count") or int(token_data.get("reply_count") or 0)
-        token_data["replies_per_hour"] = (moon.get("social_velocity") or {}).get("replies_per_hour")
-        token_data["social_velocity_score"] = (moon.get("social_velocity") or {}).get("velocity_score")
-        token_id = db.upsert_degen_token_snapshot(token_data)
-        update_narrative_trends(token_data, moon.get("moon_score", 0), risk.get("risk_score", 0))
+    sem = asyncio.Semaphore(6)
 
-        addr = token_data.get("address")
-        if addr and addr not in _RESCORING_JOBS:
-            _RESCORING_JOBS[addr] = context.application.job_queue.run_once(rescore_token_job, when=900, data={"token_address": addr, "chain": token_data.get("chain", "SOL")}, name=f"rescore:{addr}")
+    async def _process_token(token: dict):
+        async with sem:
+            token_data = await _fetch_external_data(dict(token))
+            await asyncio.sleep(SOLSCAN_RATE_LIMIT_DELAY)
+            risk = score_token_risk(token_data)
+            moon = score_moonshot_potential(token_data, token_profile=risk.get("profile"))
+            token_data.update(risk)
+            token_data.update(moon)
+            token_data["confluence"] = moon.get("confluence")
+            token_data["initial_risk_score"] = token_data.get("initial_risk_score") or risk.get("risk_score")
+            token_data["latest_risk_score"] = risk.get("risk_score")
+            token_data["token_profile"] = risk.get("profile")
+            token_data["initial_reply_count"] = token_data.get("initial_reply_count") or int(token_data.get("reply_count") or 0)
+            token_data["replies_per_hour"] = (moon.get("social_velocity") or {}).get("replies_per_hour")
+            token_data["social_velocity_score"] = (moon.get("social_velocity") or {}).get("velocity_score")
+            token_id = db.upsert_degen_token_snapshot(token_data)
+            update_narrative_trends(token_data, moon.get("moon_score", 0), risk.get("risk_score", 0))
 
-        for model in models:
-            try:
-                result = evaluate_token_against_model(token_data, model)
-                if not result["passed"]:
-                    continue
-                if db.has_recent_degen_model_alert(model["id"], token_data.get("address")):
-                    continue
-                await send_model_alert(bot, chat_id, model, token_data, result)
-                db.log_degen_model_alert(model["id"], token_id, token_data.get("address"), token_data.get("symbol"), result["score"], token_data.get("risk_score"), token_data.get("moon_score"), result["passed_rules"])
-                db.increment_degen_model_alert_count(model["id"])
-            except Exception as exc:
-                log.exception("degen scan failed for model=%s token=%s err=%s", model.get("id"), token_data.get("symbol"), exc)
+            addr = token_data.get("address")
+            if addr and addr not in _RESCORING_JOBS:
+                _RESCORING_JOBS[addr] = context.application.job_queue.run_once(rescore_token_job, when=900, data={"token_address": addr, "chain": token_data.get("chain", "SOL")}, name=f"rescore:{addr}")
+
+            hits = 0
+            for model in models:
+                try:
+                    result = evaluate_token_against_model(token_data, model)
+                    if not result["passed"]:
+                        continue
+                    if db.has_recent_degen_model_alert(model["id"], token_data.get("address")):
+                        continue
+                    await send_model_alert(bot, chat_id, model, token_data, result)
+                    db.log_degen_model_alert(model["id"], token_id, token_data.get("address"), token_data.get("symbol"), result["score"], token_data.get("risk_score"), token_data.get("moon_score"), result["passed_rules"])
+                    db.increment_degen_model_alert_count(model["id"])
+                    hits += 1
+                except Exception as exc:
+                    log.exception("degen scan failed for model=%s token=%s err=%s", model.get("id"), token_data.get("symbol"), exc)
+            return hits
+
+    if tokens:
+        await asyncio.gather(*[_process_token(token) for token in tokens])
     await holder_accumulation_check(context)
     await degen_exit_monitor(context)

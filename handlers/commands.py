@@ -1,4 +1,5 @@
 import logging
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
@@ -31,8 +32,7 @@ def perps_keyboard():
         [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="nav:models")],
         [InlineKeyboardButton("🧪 Backtest", callback_data="backtest:start"), InlineKeyboardButton("📊 Stats", callback_data="nav:stats")],
         [InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline"), InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts")],
-        [InlineKeyboardButton("🔍 Scan", callback_data="nav:scan"), InlineKeyboardButton("🎯 Goal", callback_data="nav:goal")],
-        [InlineKeyboardButton("💰 Budget", callback_data="nav:budget"), InlineKeyboardButton("📓 Journal", callback_data="nav:journal")],
+        [InlineKeyboardButton("🔍 Scan", callback_data="nav:scan"), InlineKeyboardButton("📓 Journal", callback_data="nav:journal")],
         [InlineKeyboardButton("📰 News", callback_data="nav:news"), InlineKeyboardButton("🎮 Demo", callback_data="demo:perps:home")],
         [InlineKeyboardButton("➕ New Model", callback_data="wiz:start"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
         [InlineKeyboardButton("🎰 Go to Degen", callback_data="nav:degen_home")],
@@ -170,11 +170,29 @@ async def handle_scan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     pair = q.data.split(":")[1]
-    await q.message.reply_text(f"🔍 Scanning `{pair}`...", parse_mode="Markdown")
+    models = [x for x in db.get_active_models() if x['pair'] == pair]
+    if not models:
+        await q.message.reply_text(f"ℹ️ No active models for `{pair}`.", parse_mode="Markdown")
+        return
+
+    started = time.perf_counter()
+    await q.message.reply_text(f"🔍 Scanning `{pair}` across `{len(models)}` active model(s)...", parse_mode="Markdown")
     from handlers.alerts import _evaluate_and_send
 
-    for m in [x for x in db.get_active_models() if x['pair'] == pair]:
-        await _evaluate_and_send(q.get_bot(), m, force=True)
+    sent = 0
+    for m in models:
+        if await _evaluate_and_send(q.get_bot(), m, force=True):
+            sent += 1
+
+    elapsed = time.perf_counter() - started
+    await q.message.reply_text(
+        f"✅ Scan complete for `{pair}`\n"
+        f"• Models scanned: `{len(models)}`\n"
+        f"• Alerts triggered: `{sent}`\n"
+        f"• Time: `{elapsed:.1f}s`\n"
+        + ("No setups matched right now." if sent == 0 else "Check alerts above for matches."),
+        parse_mode="Markdown",
+    )
 
 
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
