@@ -4,7 +4,6 @@ import logging
 import os
 import sys
 import time
-from datetime import timedelta, timezone
 from pathlib import Path
 
 import db
@@ -13,7 +12,7 @@ from telegram.ext import (
 )
 
 import prices as px
-from config import SCANNER_INTERVAL
+from config import SCANNER_INTERVAL, WAT
 from handlers import commands, alerts, wizard, stats, scheduler
 from engine import run_backtest
 
@@ -41,8 +40,6 @@ MODEL_DESCRIPTIONS = {
 }
 
 
-WAT_TZ = timezone(timedelta(hours=1), name="WAT")
-
 # NOTE: Dashboard globals are intentionally simple and JSON-serializable.
 bot_status = {
     "started_at": time.time(),
@@ -61,7 +58,7 @@ system_health = {
 
 
 def _wat_now() -> datetime.datetime:
-    return datetime.datetime.now(WAT_TZ)
+    return datetime.datetime.now(datetime.timezone.utc).astimezone(WAT)
 
 
 def _wat_now_str() -> str:
@@ -217,7 +214,7 @@ def _render_dashboard(state: dict) -> None:
     _render_section("🤖 Bot Status")
     active_model_names = status.get("active_models") or [m.get("name") for m in all_models if m.get("status") == "active"]
     active_txt = ", ".join(active_model_names) if active_model_names else "None"
-    started_wat = datetime.datetime.fromtimestamp(float(status.get("started_at", now)), tz=WAT_TZ).strftime("%I:%M %p WAT")
+    started_wat = datetime.datetime.fromtimestamp(float(status.get("started_at", now)), tz=datetime.timezone.utc).astimezone(WAT).strftime("%I:%M %p WAT")
     print(f"Status            : {status.get('status', 'Running')}")
     print(f"Active model(s)   : {active_txt}")
     print(f"Last activity     : {status.get('last_activity') or 'N/A'}")
@@ -289,9 +286,9 @@ def _render_dashboard(state: dict) -> None:
     cache_update = "Never"
     cache_files = sorted(Path(health.get("cache_dir", ".")).glob("*.json"))
     if cache_files:
-        cache_update = datetime.datetime.fromtimestamp(cache_files[-1].stat().st_mtime, tz=WAT_TZ).strftime("%Y-%m-%d %H:%M WAT")
+        cache_update = datetime.datetime.fromtimestamp(cache_files[-1].stat().st_mtime, tz=datetime.timezone.utc).astimezone(WAT).strftime("%Y-%m-%d %H:%M WAT")
     last_call = health.get("last_api_call_ts")
-    last_call_fmt = _fmt_datetime(datetime.datetime.fromtimestamp(last_call, tz=WAT_TZ)) if last_call else "Never"
+    last_call_fmt = _fmt_datetime(datetime.datetime.fromtimestamp(last_call, tz=datetime.timezone.utc).astimezone(WAT)) if last_call else "Never"
     print(f"Cache status       : BTCUSDT cached: {cache_marker}, last update: {cache_update}")
     print(f"API calls today    : {system.get('api_calls_today', health.get('api_call_count', 0))}")
     print(f"Last API fetch     : {last_call_fmt}")
@@ -439,12 +436,12 @@ def main():
     app.add_handler(CommandHandler("result",      stats.result_cmd))
     app.add_handler(CommandHandler("create_model",wizard.wiz_start))
     app.add_handler(CommandHandler("backtest",    commands.backtest))
-    app.add_handler(CommandHandler("goal",        commands.goal_cmd))
-    app.add_handler(CommandHandler("budget",      commands.budget_cmd))
     app.add_handler(CommandHandler("journal",     commands.journal_cmd))
 
-    # ── Model wizard (ConversationHandler — must be first) ──
+    # ── Conversations (must be before generic callback routers) ──
     app.add_handler(wizard.build_wizard_handler())
+    app.add_handler(commands.build_goal_handler())
+    app.add_handler(commands.build_budget_handler())
 
     # ── Callback routers ──────────────────────────────
     app.add_handler(CallbackQueryHandler(commands.handle_nav,       pattern="^nav:"))
@@ -465,7 +462,7 @@ def main():
 
     app.job_queue.run_daily(
         scheduler.send_morning_briefing,
-        time=datetime.time(hour=7, minute=0, tzinfo=datetime.timezone.utc),
+        time=datetime.time(hour=6, minute=0, tzinfo=datetime.timezone.utc),
         name="morning_briefing",
     )
     app.job_queue.run_daily(
@@ -480,14 +477,14 @@ def main():
     )
     app.job_queue.run_daily(
         scheduler.send_weekly_review_prompt,
-        time=datetime.time(hour=17, minute=0, tzinfo=datetime.timezone.utc),
+        time=datetime.time(hour=20, minute=0, tzinfo=datetime.timezone.utc),
         days=(6,),
         name="weekly_review",
     )
     app.job_queue.run_monthly(
         scheduler.send_monthly_report,
-        when=datetime.time(hour=0, minute=1, tzinfo=datetime.timezone.utc),
-        day=1,
+        when=datetime.time(hour=23, minute=1, tzinfo=datetime.timezone.utc),
+        day=-1,
         name="monthly_report",
     )
     app.job_queue.run_daily(scheduler.send_end_of_day_summary, time=datetime.time(hour=21, minute=0, tzinfo=datetime.timezone.utc), name="eod_summary")

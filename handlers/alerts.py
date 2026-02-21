@@ -15,8 +15,8 @@ _DEDUP_SEC = 900
 
 
 def _dedup_key(pair, model_id, tier): return f"{pair}_{model_id}_{tier}"
-def _is_dup(pair, model_id, tier): return (datetime.utcnow().timestamp() - _recent.get(_dedup_key(pair, model_id, tier), 0)) < _DEDUP_SEC
-def _mark(pair, model_id, tier): _recent[_dedup_key(pair, model_id, tier)] = datetime.utcnow().timestamp()
+def _is_dup(pair, model_id, tier): return (datetime.now(timezone.utc).timestamp() - _recent.get(_dedup_key(pair, model_id, tier), 0)) < _DEDUP_SEC
+def _mark(pair, model_id, tier): _recent[_dedup_key(pair, model_id, tier)] = datetime.now(timezone.utc).timestamp()
 
 
 def _correlation_warning(pair: str):
@@ -52,7 +52,7 @@ def check_proximity_alerts(bot, model, price):
             continue
         if lv and abs((price - lv) / lv) * 100 <= 0.3:
             key = f"{model['pair']}:{lv}"
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             if key not in _last_proximity or (now - _last_proximity[key]).total_seconds() > 1800:
                 _last_proximity[key] = now
                 asyncio.create_task(bot.send_message(chat_id=CHAT_ID, text=f"📍 Price approaching key level [{lv}] on [{model['pair']}] — [{model['name']}] — prepare your checklist", parse_mode="Markdown"))
@@ -92,7 +92,7 @@ async def _evaluate_and_send(bot, model: dict, force=False):
 
     db.log_alert(pair, model["id"], model["name"], scored["final_score"], scored["tier"], setup["direction"], price, sl, tp, rr, True)
     _mark(pair, model["id"], scored["tier"])
-    key = f"{pair}_{model['id']}_{datetime.utcnow().strftime('%H%M%S')}"
+    key = f"{pair}_{model['id']}_{datetime.now(timezone.utc).strftime('%H%M%S')}"
     _pending[key] = (setup, model, scored)
 
     text = formatters.fmt_alert(setup, model, scored, risk_pct=float(TIER_RISK.get(scored["tier"], 0)), risk_usd=0.0, correlation_warning=_correlation_warning(pair))
@@ -145,7 +145,7 @@ async def handle_alert_response(update, context: ContextTypes.DEFAULT_TYPE):
             _aging_jobs.pop(key).schedule_removal()
         last = db.get_last_closed_loss()
         if last and last.get("closed_at"):
-            mins = int((datetime.utcnow() - last["closed_at"]).total_seconds() / 60)
+            mins = int((datetime.now(timezone.utc) - last["closed_at"]).total_seconds() / 60)
             if mins <= 10:
                 context.user_data["revenge_pending"] = {"key": key, "mins": mins}
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("Yes, proceed", callback_data="alert:revenge_yes"), InlineKeyboardButton("No, skip this one", callback_data="alert:revenge_no")]])
