@@ -131,3 +131,98 @@ async def handle_degen_model_cb(update: Update, context: ContextTypes.DEFAULT_TY
     elif action == "edit":
         db.save_degen_model_version(model_id)
         await q.message.reply_text("Edit via wizard currently starts over.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Start Wizard", callback_data="degen_wiz:start")]]))
+
+from degen.narrative_tracker import detect_narrative, get_cold_narratives, get_hot_narratives
+
+
+async def degen_stats_screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    hot = get_hot_narratives(limit=3)
+    cold = get_cold_narratives()
+    rug = db.get_rug_postmortem_stats() if hasattr(db, "get_rug_postmortem_stats") else {"total": 0, "alerted": 0, "alerted_pct": 0, "avg_minutes": 0, "top_signals": [], "missed": []}
+    txt = [
+        "📊 Degen Stats",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "🔥 Hot Narratives This Week",
+    ]
+    for h in hot:
+        txt.append(f"• {h['narrative']}: {h['token_count']} tokens | moon {h['avg_moon_score']:.1f}")
+    if cold:
+        txt.append(f"❄️ Cold: {cold[0]['narrative']} — losing momentum")
+    txt.extend([
+        "",
+        "☠️ Rug Post-Mortems",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"Total rugs detected: {rug['total']}",
+        f"Rugs we alerted on:  {rug['alerted']} ({rug['alerted_pct']}%)",
+        f"Avg time to rug:     {rug['avg_minutes']} minutes",
+        f"Most common signals: {', '.join(rug.get('top_signals', [])[:3])}",
+        f"Missed signals:      {', '.join(rug.get('missed', [])[:3])}",
+    ])
+    sender = update.callback_query.message.reply_text if update.callback_query else update.message.reply_text
+    if update.callback_query:
+        await update.callback_query.answer()
+    await sender("\n".join(txt))
+
+
+async def handle_degen_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    data = q.data
+    if data == "degen:stats":
+        return await degen_stats_screen(update, context)
+    if data == "degen:portfolio_risk":
+        open_degen = db.get_open_demo_trades("degen") if hasattr(db, "get_open_demo_trades") else []
+        open_copy = [r for r in db.get_wallet_copy_trades(limit=200) if r.get("result") is None] if hasattr(db, "get_wallet_copy_trades") else []
+        total = len(open_degen) + len(open_copy)
+        chain_counts = {}
+        narrative_counts = {}
+        for t in open_degen:
+            chain = t.get("chain", "SOL")
+            chain_counts[chain] = chain_counts.get(chain, 0) + 1
+            n = detect_narrative(t.get("token_symbol", ""), t.get("notes", ""))
+            narrative_counts[n] = narrative_counts.get(n, 0) + 1
+        lines = ["📊 Degen Portfolio Risk", "━━━━━━━━━━━━━━━━━━━━━━━━", f"Open Positions: {total}", "", "🔗 Chain Concentration:"]
+        for k, v in chain_counts.items():
+            pct = (v / total * 100) if total else 0
+            lines.append(f"  {k}: {v} positions ({pct:.1f}%)")
+        lines.append("\n🎭 Narrative Concentration:")
+        for k, v in narrative_counts.items():
+            pct = (v / total * 100) if total else 0
+            warn = " — ⚠️ concentrated" if pct > 50 else ""
+            lines.append(f"  {k}: {v} positions{warn}")
+        await q.message.reply_text("\n".join(lines))
+        return
+    if data == "degen:compare":
+        rows = db.get_recent_degen_tokens(limit=20)
+        if len(rows) < 2:
+            return await q.message.reply_text("Need at least 2 tokens to compare.")
+        context.user_data["compare_candidates"] = rows
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{t.get('symbol')}", callback_data=f"degen:compare:a:{t.get('address')}")] for t in rows[:10]])
+        return await q.message.reply_text("Select first token to compare:", reply_markup=kb)
+    if data.startswith("degen:compare:a:"):
+        a = data.split(":")[-1]
+        context.user_data["compare_a"] = a
+        rows = [t for t in context.user_data.get("compare_candidates", []) if t.get("address") != a]
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{t.get('symbol')}", callback_data=f"degen:compare:b:{t.get('address')}")] for t in rows[:10]])
+        return await q.message.reply_text("Select second token:", reply_markup=kb)
+    if data.startswith("degen:compare:b:"):
+        b = data.split(":")[-1]
+        a = context.user_data.get("compare_a")
+        rows = context.user_data.get("compare_candidates", [])
+        ta = next((x for x in rows if x.get("address") == a), {})
+        tb = next((x for x in rows if x.get("address") == b), {})
+        verdict = ta.get("symbol") if float(ta.get("moon_score",0)) - float(ta.get("risk_score",100)) > float(tb.get("moon_score",0)) - float(tb.get("risk_score",100)) else tb.get("symbol")
+        msg = (
+            "⚖️ Token Comparison\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"             {ta.get('symbol')}    {tb.get('symbol')}\n"
+            f"Chain:       {ta.get('chain')}      {tb.get('chain')}\n"
+            f"Market Cap:  ${float(ta.get('mcap',0)):,.0f}      ${float(tb.get('mcap',0)):,.0f}\n"
+            f"Liquidity:   ${float(ta.get('liquidity_usd',0)):,.0f}      ${float(tb.get('liquidity_usd',0)):,.0f}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🛡️ Risk:     {int(ta.get('risk_score',0))}/100      {int(tb.get('risk_score',0))}/100\n"
+            f"🚀 Moon:     {int(ta.get('moon_score',0))}/100      {int(tb.get('moon_score',0))}/100\n\n"
+            f"VERDICT: {verdict} scores better overall."
+        )
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ Ape {ta.get('symbol')}", callback_data=f"wallet:watch:{ta.get('address')}"), InlineKeyboardButton(f"✅ Ape {tb.get('symbol')}", callback_data=f"wallet:watch:{tb.get('address')}")], [InlineKeyboardButton("👀 Watch Both", callback_data="wallet:dismiss"), InlineKeyboardButton("❌ Skip Both", callback_data="wallet:dismiss")]])
+        return await q.message.reply_text(msg, reply_markup=kb)

@@ -344,3 +344,111 @@ CREATE TABLE IF NOT EXISTS wallet_copy_trades (
     logged_at        TIMESTAMP DEFAULT NOW(),
     closed_at        TIMESTAMP
 );
+
+-- Upgrade: degen enhancements + demo mode
+ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS initial_risk_score INT;
+ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS initial_scored_at TIMESTAMP;
+ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS latest_risk_score INT;
+ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS last_rescored_at TIMESTAMP;
+ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS trajectory VARCHAR(20);
+ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS initial_reply_count INT;
+ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS replies_per_hour FLOAT;
+ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS social_velocity_score INT;
+ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS token_profile VARCHAR(40);
+ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS holders_last_checked_at TIMESTAMP;
+ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS rugged BOOLEAN DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS rug_postmortems (
+    id                SERIAL PRIMARY KEY,
+    token_id          INT REFERENCES degen_tokens(id),
+    token_address     VARCHAR(100),
+    token_symbol      VARCHAR(20),
+    initial_risk_score INT,
+    final_risk_score  INT,
+    initial_moon_score INT,
+    price_at_alert    FLOAT,
+    price_at_rug      FLOAT,
+    drop_pct          FLOAT,
+    time_to_rug_minutes INT,
+    was_alerted       BOOLEAN,
+    was_in_watchlist  BOOLEAN,
+    triggered_risk_factors JSONB,
+    missed_signals    JSONB,
+    detected_at       TIMESTAMP,
+    rugged_at         TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS narrative_trends (
+    id              SERIAL PRIMARY KEY,
+    narrative       VARCHAR(50),
+    token_count     INT DEFAULT 0,
+    avg_moon_score  FLOAT DEFAULT 0,
+    avg_risk_score  FLOAT DEFAULT 0,
+    total_volume    FLOAT DEFAULT 0,
+    win_rate        FLOAT DEFAULT 0,
+    week_start      DATE,
+    updated_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS demo_accounts (
+    id              SERIAL PRIMARY KEY,
+    section         VARCHAR(10) NOT NULL,
+    balance         FLOAT NOT NULL DEFAULT 0,
+    initial_deposit FLOAT NOT NULL DEFAULT 0,
+    total_pnl       FLOAT DEFAULT 0,
+    total_pnl_pct   FLOAT DEFAULT 0,
+    peak_balance    FLOAT DEFAULT 0,
+    lowest_balance  FLOAT DEFAULT 0,
+    total_trades    INT DEFAULT 0,
+    winning_trades  INT DEFAULT 0,
+    losing_trades   INT DEFAULT 0,
+    reset_id        INT DEFAULT 0,
+    created_at      TIMESTAMP DEFAULT NOW(),
+    last_reset_at   TIMESTAMP,
+    UNIQUE(section)
+);
+
+CREATE TABLE IF NOT EXISTS demo_trades (
+    id              SERIAL PRIMARY KEY,
+    section         VARCHAR(10) NOT NULL,
+    pair            VARCHAR(20),
+    token_symbol    VARCHAR(20),
+    direction       VARCHAR(5),
+    entry_price     FLOAT,
+    sl              FLOAT,
+    tp1             FLOAT,
+    tp2             FLOAT,
+    tp3             FLOAT,
+    position_size_usd FLOAT,
+    risk_amount_usd FLOAT,
+    risk_pct        FLOAT,
+    current_price   FLOAT,
+    current_pnl_usd FLOAT,
+    current_pnl_pct FLOAT,
+    current_x       FLOAT,
+    result          VARCHAR(10),
+    exit_price      FLOAT,
+    final_pnl_usd   FLOAT,
+    final_pnl_pct   FLOAT,
+    final_x         FLOAT,
+    model_id        VARCHAR(50),
+    model_name      VARCHAR(100),
+    tier            VARCHAR(5),
+    score           FLOAT,
+    source          VARCHAR(30),
+    notes           TEXT,
+    tp1_hit         BOOLEAN DEFAULT FALSE,
+    reset_id        INT DEFAULT 0,
+    opened_at       TIMESTAMP DEFAULT NOW(),
+    closed_at       TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS demo_transactions (
+    id          SERIAL PRIMARY KEY,
+    section     VARCHAR(10),
+    type        VARCHAR(20),
+    amount      FLOAT,
+    balance_after FLOAT,
+    description TEXT,
+    created_at  TIMESTAMP DEFAULT NOW()
+);

@@ -97,7 +97,7 @@ async def _evaluate_and_send(bot, model: dict, force=False):
     _pending[key] = (setup, model, scored)
 
     text = formatters.fmt_alert(setup, model, scored, risk_pct=float(TIER_RISK.get(scored["tier"], 0)), risk_usd=0.0, correlation_warning=_correlation_warning(pair))
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Entered", callback_data=f"alert:entered:{key}"), InlineKeyboardButton("❌ Skipped", callback_data=f"alert:skipped:{key}"), InlineKeyboardButton("👀 Watching", callback_data=f"alert:watching:{key}")]])
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Entered", callback_data=f"alert:entered:{key}"), InlineKeyboardButton("🎮 Demo Entry", callback_data=f"alert:demo:{key}")],[InlineKeyboardButton("❌ Skipped", callback_data=f"alert:skipped:{key}"), InlineKeyboardButton("👀 Watching", callback_data=f"alert:watching:{key}")]])
     await bot.send_message(chat_id=CHAT_ID, text=text, reply_markup=kb, parse_mode="Markdown")
     job = bot._application.job_queue.run_once(_setup_aging_follow_up, when=900, data={"pair": pair, "entry": price}, name=f"aging:{key}")
     _aging_jobs[key] = job
@@ -170,6 +170,26 @@ async def handle_alert_response(update, context: ContextTypes.DEFAULT_TYPE):
             setup, model, _ = pending
             _watching[key] = {"pair": setup["pair"], "model_id": model["id"]}
         await q.message.reply_text("👀 *Watching* — you will get invalidation updates.", parse_mode="Markdown")
+
+    elif action == "demo":
+        if not pending:
+            return
+        setup, model, scored = pending
+        from handlers import demo_handler
+        acct = db.get_demo_account("perps")
+        if not acct:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Setup Demo", callback_data="demo:perps:home")]])
+            await q.message.reply_text("You don't have a demo account yet. Set one up first.", reply_markup=kb)
+            return
+        bal = float(acct.get("balance") or 0)
+        risk_pct = float(TIER_RISK.get(scored["tier"], 0))
+        risk_amount = max(0, bal * risk_pct / 100)
+        position = risk_amount * 10
+        tp1 = setup.get("entry",0) * 1.01
+        tp2 = setup.get("entry",0) * 1.02
+        tp3 = setup.get("entry",0) * 1.03
+        ok, msg = await demo_handler.open_demo_from_signal(context, "perps", {"pair": setup.get("pair"), "direction": setup.get("direction"), "entry_price": setup.get("entry"), "sl": setup.get("sl"), "tp1": tp1, "tp2": tp2, "tp3": tp3, "position_size_usd": position, "risk_amount_usd": risk_amount, "risk_pct": risk_pct, "model_id": model.get("id"), "model_name": model.get("name"), "tier": scored.get("tier"), "score": scored.get("final_score"), "source": "model_alert", "notes": "Demo entry from alert"})
+        await q.message.reply_text(msg)
 
 
 async def handle_alert_extras(update, context: ContextTypes.DEFAULT_TYPE):

@@ -338,6 +338,109 @@ def setup_db():
         with conn.cursor() as cur:
             cur.execute(sql)
             cur.execute(degen_sql)
+            cur.execute("""
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS initial_risk_score INT;
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS initial_scored_at TIMESTAMP;
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS latest_risk_score INT;
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS last_rescored_at TIMESTAMP;
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS trajectory VARCHAR(20);
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS initial_reply_count INT;
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS replies_per_hour FLOAT;
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS social_velocity_score INT;
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS token_profile VARCHAR(40);
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS holders_last_checked_at TIMESTAMP;
+            ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS rugged BOOLEAN DEFAULT FALSE;
+            CREATE TABLE IF NOT EXISTS rug_postmortems (
+                id SERIAL PRIMARY KEY,
+                token_id INT REFERENCES degen_tokens(id),
+                token_address VARCHAR(100),
+                token_symbol VARCHAR(20),
+                initial_risk_score INT,
+                final_risk_score INT,
+                initial_moon_score INT,
+                price_at_alert FLOAT,
+                price_at_rug FLOAT,
+                drop_pct FLOAT,
+                time_to_rug_minutes INT,
+                was_alerted BOOLEAN,
+                was_in_watchlist BOOLEAN,
+                triggered_risk_factors JSONB,
+                missed_signals JSONB,
+                detected_at TIMESTAMP,
+                rugged_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS narrative_trends (
+                id SERIAL PRIMARY KEY,
+                narrative VARCHAR(50),
+                token_count INT DEFAULT 0,
+                avg_moon_score FLOAT DEFAULT 0,
+                avg_risk_score FLOAT DEFAULT 0,
+                total_volume FLOAT DEFAULT 0,
+                win_rate FLOAT DEFAULT 0,
+                week_start DATE,
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS demo_accounts (
+                id SERIAL PRIMARY KEY,
+                section VARCHAR(10) NOT NULL,
+                balance FLOAT NOT NULL DEFAULT 0,
+                initial_deposit FLOAT NOT NULL DEFAULT 0,
+                total_pnl FLOAT DEFAULT 0,
+                total_pnl_pct FLOAT DEFAULT 0,
+                peak_balance FLOAT DEFAULT 0,
+                lowest_balance FLOAT DEFAULT 0,
+                total_trades INT DEFAULT 0,
+                winning_trades INT DEFAULT 0,
+                losing_trades INT DEFAULT 0,
+                reset_id INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT NOW(),
+                last_reset_at TIMESTAMP,
+                UNIQUE(section)
+            );
+            CREATE TABLE IF NOT EXISTS demo_trades (
+                id SERIAL PRIMARY KEY,
+                section VARCHAR(10) NOT NULL,
+                pair VARCHAR(20),
+                token_symbol VARCHAR(20),
+                direction VARCHAR(5),
+                entry_price FLOAT,
+                sl FLOAT,
+                tp1 FLOAT,
+                tp2 FLOAT,
+                tp3 FLOAT,
+                position_size_usd FLOAT,
+                risk_amount_usd FLOAT,
+                risk_pct FLOAT,
+                current_price FLOAT,
+                current_pnl_usd FLOAT,
+                current_pnl_pct FLOAT,
+                current_x FLOAT,
+                result VARCHAR(10),
+                exit_price FLOAT,
+                final_pnl_usd FLOAT,
+                final_pnl_pct FLOAT,
+                final_x FLOAT,
+                model_id VARCHAR(50),
+                model_name VARCHAR(100),
+                tier VARCHAR(5),
+                score FLOAT,
+                source VARCHAR(30),
+                notes TEXT,
+                tp1_hit BOOLEAN DEFAULT FALSE,
+                reset_id INT DEFAULT 0,
+                opened_at TIMESTAMP DEFAULT NOW(),
+                closed_at TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS demo_transactions (
+                id SERIAL PRIMARY KEY,
+                section VARCHAR(10),
+                type VARCHAR(20),
+                amount FLOAT,
+                balance_after FLOAT,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
         conn.commit()
 
 
@@ -1522,3 +1625,334 @@ def get_best_wallet_calls(limit: int = 20) -> list:
                 LIMIT %s
             """, (limit,))
             return [dict(r) for r in cur.fetchall()]
+
+# ── Degen token helpers / postmortem / narrative ───────────────────────────
+def upsert_degen_token_snapshot(token: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO degen_tokens (address, symbol, chain, token_data, initial_risk_score, initial_scored_at, latest_risk_score, last_rescored_at, trajectory, initial_reply_count, replies_per_hour, social_velocity_score, token_profile, holders_last_checked_at)
+                VALUES (%s,%s,%s,%s,%s,NOW(),%s,NOW(),%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT (address) DO UPDATE SET
+                    symbol=EXCLUDED.symbol,
+                    chain=EXCLUDED.chain,
+                    token_data=EXCLUDED.token_data,
+                    latest_risk_score=EXCLUDED.latest_risk_score,
+                    last_rescored_at=NOW(),
+                    trajectory=EXCLUDED.trajectory,
+                    replies_per_hour=EXCLUDED.replies_per_hour,
+                    social_velocity_score=EXCLUDED.social_velocity_score,
+                    token_profile=EXCLUDED.token_profile
+                RETURNING id
+                """,
+                (
+                    token.get("address"), token.get("symbol"), token.get("chain", "SOL"), json.dumps(token),
+                    token.get("initial_risk_score"), token.get("latest_risk_score"), token.get("trajectory"),
+                    token.get("initial_reply_count"), token.get("replies_per_hour"), token.get("social_velocity_score"), token.get("token_profile"),
+                ),
+            )
+            tid = int(cur.fetchone()["id"])
+        conn.commit()
+    return tid
+
+
+def update_degen_token_rescore(address: str, chain: str, payload: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE degen_tokens
+                SET latest_risk_score=%s,last_rescored_at=NOW(),trajectory=%s,token_data=%s
+                WHERE address=%s AND chain=%s
+                """,
+                (payload.get("risk_score"), payload.get("trajectory"), json.dumps(payload), address, chain),
+            )
+        conn.commit()
+
+
+def get_degen_token_by_address(address: str) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM degen_tokens WHERE address=%s", (address,))
+            r = cur.fetchone()
+            if not r:
+                return None
+            d = dict(r)
+            d.update(_decode_json_field(d.get("token_data"), {}))
+            return d
+
+
+def get_degen_token_by_id(token_id: int) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM degen_tokens WHERE id=%s", (token_id,))
+            r = cur.fetchone()
+            if not r:
+                return None
+            d = dict(r)
+            d.update(_decode_json_field(d.get("token_data"), {}))
+            return d
+
+
+def mark_degen_token_rugged(token_id: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE degen_tokens SET rugged=TRUE WHERE id=%s", (token_id,))
+        conn.commit()
+
+
+def insert_rug_postmortem(pm: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO rug_postmortems (token_id,token_address,token_symbol,initial_risk_score,final_risk_score,initial_moon_score,price_at_alert,price_at_rug,drop_pct,time_to_rug_minutes,was_alerted,was_in_watchlist,triggered_risk_factors,missed_signals,detected_at)
+                VALUES (%(token_id)s,%(token_address)s,%(token_symbol)s,%(initial_risk_score)s,%(final_risk_score)s,%(initial_moon_score)s,%(price_at_alert)s,%(price_at_rug)s,%(drop_pct)s,%(time_to_rug_minutes)s,%(was_alerted)s,%(was_in_watchlist)s,%(triggered_risk_factors)s,%(missed_signals)s,%(detected_at)s)
+                RETURNING id
+                """,
+                {**pm, "triggered_risk_factors": json.dumps(pm.get("triggered_risk_factors") or []), "missed_signals": json.dumps(pm.get("missed_signals") or [])},
+            )
+            rid = int(cur.fetchone()["id"])
+        conn.commit()
+    return rid
+
+
+def get_rug_postmortem_stats() -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) n, COALESCE(AVG(time_to_rug_minutes),0) avg_mins, SUM(CASE WHEN was_alerted THEN 1 ELSE 0 END) alerted FROM rug_postmortems")
+            row = dict(cur.fetchone() or {})
+            cur.execute("SELECT jsonb_array_elements_text(triggered_risk_factors) f, COUNT(*) c FROM rug_postmortems GROUP BY f ORDER BY c DESC LIMIT 3")
+            top = [r["f"] for r in cur.fetchall()]
+            cur.execute("SELECT jsonb_array_elements_text(missed_signals) f, COUNT(*) c FROM rug_postmortems GROUP BY f ORDER BY c DESC LIMIT 3")
+            miss = [r["f"] for r in cur.fetchall()]
+    total = int(row.get("n") or 0)
+    alerted = int(row.get("alerted") or 0)
+    return {"total": total, "alerted": alerted, "alerted_pct": round((alerted/total*100),2) if total else 0, "avg_minutes": round(float(row.get("avg_mins") or 0), 1), "top_signals": top, "missed": miss}
+
+
+def upsert_narrative_trend(narrative: str, week_start, moon_score: int, risk_score: int, volume: float) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO narrative_trends (narrative,token_count,avg_moon_score,avg_risk_score,total_volume,week_start)
+                VALUES (%s,1,%s,%s,%s,%s)
+                ON CONFLICT DO NOTHING
+                """,
+                (narrative, moon_score, risk_score, volume, week_start),
+            )
+            cur.execute(
+                """
+                UPDATE narrative_trends
+                SET token_count=token_count+1,
+                    avg_moon_score=((avg_moon_score*token_count)+%s)/(token_count+1),
+                    avg_risk_score=((avg_risk_score*token_count)+%s)/(token_count+1),
+                    total_volume=total_volume+%s,
+                    updated_at=NOW()
+                WHERE narrative=%s AND week_start=%s
+                """,
+                (moon_score, risk_score, volume, narrative, week_start),
+            )
+        conn.commit()
+
+
+def get_hot_narratives(limit: int = 5) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT narrative, token_count, avg_moon_score, ((token_count*0.6)+(avg_moon_score*0.4)) heat
+                FROM narrative_trends
+                ORDER BY heat DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_cold_narratives() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT narrative, token_count, avg_moon_score FROM narrative_trends WHERE token_count < 3 OR avg_moon_score < 40 ORDER BY token_count ASC, avg_moon_score ASC LIMIT 5")
+            return [dict(r) for r in cur.fetchall()]
+
+
+# ── Demo trading ───────────────────────────
+def log_demo_transaction(section: str, type: str, amount: float, description: str) -> None:
+    acct = get_demo_account(section) or {"balance": 0}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO demo_transactions (section,type,amount,balance_after,description) VALUES (%s,%s,%s,%s,%s)", (section, type, amount, acct.get("balance", 0), description))
+        conn.commit()
+
+
+def get_demo_account(section: str) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM demo_accounts WHERE section=%s", (section,))
+            r = cur.fetchone()
+            return dict(r) if r else None
+
+
+def create_demo_account(section: str, initial_deposit: float) -> dict:
+    amt = max(100.0, float(initial_deposit))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO demo_accounts (section,balance,initial_deposit,peak_balance,lowest_balance)
+                VALUES (%s,%s,%s,%s,%s)
+                ON CONFLICT (section) DO UPDATE SET balance=EXCLUDED.balance,initial_deposit=EXCLUDED.initial_deposit,peak_balance=EXCLUDED.peak_balance,lowest_balance=EXCLUDED.lowest_balance
+                RETURNING *
+                """,
+                (section, amt, amt, amt, amt),
+            )
+            row = dict(cur.fetchone())
+        conn.commit()
+    log_demo_transaction(section, "deposit", amt, "Initial demo deposit")
+    return row
+
+
+def deposit_demo_funds(section: str, amount: float) -> dict:
+    amount = max(0.0, float(amount))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE demo_accounts SET balance=balance+%s, peak_balance=GREATEST(peak_balance,balance+%s) WHERE section=%s RETURNING *", (amount, amount, section))
+            row = dict(cur.fetchone())
+        conn.commit()
+    log_demo_transaction(section, "deposit", amount, "Demo deposit")
+    return row
+
+
+def withdraw_demo_funds(section: str, amount: float) -> dict:
+    acct = get_demo_account(section)
+    if not acct:
+        raise ValueError("Demo account not found")
+    amount = min(float(amount), float(acct.get("balance") or 0))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE demo_accounts SET balance=balance-%s, lowest_balance=LEAST(lowest_balance,balance-%s) WHERE section=%s RETURNING *", (amount, amount, section))
+            row = dict(cur.fetchone())
+        conn.commit()
+    log_demo_transaction(section, "withdrawal", -amount, "Demo withdrawal")
+    return row
+
+
+def reset_demo_account(section: str) -> dict:
+    acct = get_demo_account(section)
+    if not acct:
+        raise ValueError("Demo account not found")
+    new_reset = int(acct.get("reset_id") or 0) + 1
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE demo_accounts SET balance=initial_deposit,total_pnl=0,total_pnl_pct=0,total_trades=0,winning_trades=0,losing_trades=0,last_reset_at=NOW(),reset_id=%s WHERE section=%s RETURNING *", (new_reset, section))
+            row = dict(cur.fetchone())
+        conn.commit()
+    log_demo_transaction(section, "deposit", row.get("initial_deposit", 0), f"Demo reset #{new_reset}")
+    return row
+
+
+def open_demo_trade(trade: dict) -> int:
+    section = trade["section"]
+    acct = get_demo_account(section)
+    if not acct:
+        raise ValueError("No demo account")
+    risk = max(0.0, float(trade.get("risk_amount_usd") or 0))
+    balance = float(acct.get("balance") or 0)
+    if risk > balance:
+        risk = balance
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO demo_trades (section,pair,token_symbol,direction,entry_price,sl,tp1,tp2,tp3,position_size_usd,risk_amount_usd,risk_pct,current_price,current_pnl_usd,current_pnl_pct,current_x,model_id,model_name,tier,score,source,notes,reset_id)
+                VALUES (%(section)s,%(pair)s,%(token_symbol)s,%(direction)s,%(entry_price)s,%(sl)s,%(tp1)s,%(tp2)s,%(tp3)s,%(position_size_usd)s,%(risk_amount_usd)s,%(risk_pct)s,%(entry_price)s,0,0,1,%(model_id)s,%(model_name)s,%(tier)s,%(score)s,%(source)s,%(notes)s,%(reset_id)s)
+                RETURNING id
+                """,
+                {**trade, "risk_amount_usd": risk, "reset_id": acct.get("reset_id", 0)},
+            )
+            tid = int(cur.fetchone()["id"])
+            cur.execute("UPDATE demo_accounts SET balance=GREATEST(balance-%s,0) WHERE section=%s", (risk, section))
+        conn.commit()
+    log_demo_transaction(section, "trade_open", -risk, f"Open demo trade #{tid}")
+    return tid
+
+
+def update_demo_trade_pnl(trade_id: int, current_price: float) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM demo_trades WHERE id=%s", (trade_id,))
+            tr = dict(cur.fetchone() or {})
+            if not tr or tr.get("result"):
+                return
+            e = float(tr.get("entry_price") or 0)
+            size = float(tr.get("position_size_usd") or 0)
+            mult = 1 if str(tr.get("direction", "LONG")).upper() in {"LONG", "BUY"} else -1
+            pnl_pct = ((float(current_price) - e) / e * 100 * mult) if e else 0
+            pnl_usd = size * pnl_pct / 100
+            cur.execute("UPDATE demo_trades SET current_price=%s,current_pnl_pct=%s,current_pnl_usd=%s,current_x=%s WHERE id=%s", (current_price, pnl_pct, pnl_usd, 1 + pnl_pct / 100, trade_id))
+        conn.commit()
+
+
+def close_demo_trade(trade_id: int, exit_price: float, result: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM demo_trades WHERE id=%s", (trade_id,))
+            tr = dict(cur.fetchone() or {})
+            if not tr:
+                return {}
+            e = float(tr.get("entry_price") or 0)
+            size = float(tr.get("position_size_usd") or 0)
+            risk_amt = float(tr.get("risk_amount_usd") or 0)
+            mult = 1 if str(tr.get("direction", "LONG")).upper() in {"LONG", "BUY"} else -1
+            pnl_pct = ((float(exit_price) - e) / e * 100 * mult) if e else 0
+            pnl_usd = size * pnl_pct / 100
+            final_x = 1 + pnl_pct / 100
+            cur.execute("UPDATE demo_trades SET result=%s,exit_price=%s,final_pnl_usd=%s,final_pnl_pct=%s,final_x=%s,closed_at=NOW(),current_price=%s,current_pnl_usd=%s,current_pnl_pct=%s WHERE id=%s", (result, exit_price, pnl_usd, pnl_pct, final_x, exit_price, pnl_usd, pnl_pct, trade_id))
+            cur.execute(
+                """
+                UPDATE demo_accounts
+                SET balance=balance+%s+%s,
+                    total_pnl=COALESCE(total_pnl,0)+%s,
+                    total_pnl_pct=CASE WHEN initial_deposit>0 THEN ((COALESCE(total_pnl,0)+%s)/initial_deposit)*100 ELSE 0 END,
+                    peak_balance=GREATEST(peak_balance,balance+%s+%s),
+                    lowest_balance=LEAST(lowest_balance,balance+%s+%s),
+                    total_trades=total_trades+1,
+                    winning_trades=winning_trades+CASE WHEN %s>0 THEN 1 ELSE 0 END,
+                    losing_trades=losing_trades+CASE WHEN %s<=0 THEN 1 ELSE 0 END
+                WHERE section=%s
+                RETURNING *
+                """,
+                (size, pnl_usd, pnl_usd, pnl_usd, size, pnl_usd, size, pnl_usd, pnl_usd, pnl_usd, tr["section"]),
+            )
+            acct = dict(cur.fetchone() or {})
+        conn.commit()
+    log_demo_transaction(tr["section"], "trade_close", pnl_usd, f"Close demo trade #{trade_id} ({result})")
+    return {**tr, "exit_price": exit_price, "final_pnl_usd": pnl_usd, "final_pnl_pct": pnl_pct, "final_x": final_x, "balance": acct.get("balance")}
+
+
+def get_open_demo_trades(section: str) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM demo_trades WHERE section=%s AND result IS NULL ORDER BY opened_at DESC", (section,))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_demo_trade_history(section: str, limit: int = 50) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM demo_trades WHERE section=%s ORDER BY opened_at DESC LIMIT %s", (section, limit))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_demo_stats(section: str) -> dict:
+    acct = get_demo_account(section)
+    if not acct:
+        return {}
+    total = int(acct.get("total_trades") or 0)
+    win = int(acct.get("winning_trades") or 0)
+    acct["win_rate"] = (win / total * 100) if total else 0
+    return acct

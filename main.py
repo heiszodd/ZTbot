@@ -432,6 +432,9 @@ def main():
     app.add_handler(CommandHandler("home",        commands.start))
     app.add_handler(CommandHandler("perps",       commands.perps_home))
     app.add_handler(CommandHandler("degen",       degen_handler.degen_home))
+    app.add_handler(CommandHandler("demo",        demo_handler.demo_cmd))
+    app.add_handler(CommandHandler("demo_perps",  demo_handler.demo_perps_cmd))
+    app.add_handler(CommandHandler("demo_degen",  demo_handler.demo_degen_cmd))
     app.add_handler(CommandHandler("scan",        commands.scan))
     app.add_handler(CommandHandler("guide",       commands.guide))
     app.add_handler(CommandHandler("stats",       stats.stats_cmd))
@@ -459,6 +462,8 @@ def main():
     app.add_handler(CallbackQueryHandler(news_handler.handle_news_cb, pattern="^news:"))
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_model_cb, pattern="^degen_model:"))
     app.add_handler(CallbackQueryHandler(wallet_handler.handle_wallet_cb, pattern="^wallet:"))
+    app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_cb, pattern="^degen:"))
+    app.add_handler(CallbackQueryHandler(demo_handler.handle_demo_cb, pattern="^demo:"))
     app.add_handler(wallet_handler.build_add_wallet_handler())
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, stats.handle_journal_text))
 
@@ -502,6 +507,7 @@ def main():
     app.job_queue.run_repeating(news_handler.news_briefing_job, interval=60, first=10, name="news_briefing")
     app.job_queue.run_repeating(news_handler.news_signal_job, interval=15, first=5, name="news_signal")
     app.job_queue.run_repeating(wallet_tracker.wallet_monitor_job, interval=120, first=30, name="wallet_monitor")
+    app.job_queue.run_repeating(demo_handler.demo_monitor_job, interval=60, first=20, name="demo_monitor")
 
     log.info("🤖 Bot started — polling")
     app.run_polling(drop_pending_updates=True)

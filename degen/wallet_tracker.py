@@ -252,7 +252,7 @@ async def _send_buy_alert(bot, wallet: dict, tx: dict, intel: dict, risk: dict, 
         "Copy this trade?"
     )
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Copy Trade", callback_data=f"wallet:copy:{tx['tx_hash']}"), InlineKeyboardButton("👀 Watch Token", callback_data=f"wallet:watch:{tx['token_address']}")],
+        [InlineKeyboardButton("✅ Copy Trade", callback_data=f"wallet:copy:{tx['tx_hash']}"), InlineKeyboardButton("🎮 Demo Copy", callback_data=f"wallet:demo_copy:{tx['tx_hash']}")],[InlineKeyboardButton("👀 Watch Token", callback_data=f"wallet:watch:{tx['token_address']}"), InlineKeyboardButton("❌ Ignore", callback_data="wallet:dismiss")],
         [InlineKeyboardButton("🔍 Full Token Report", callback_data=f"wallet:token:{tx['token_address']}"), InlineKeyboardButton("👤 Wallet History", callback_data=f"wallet:history:{wallet['id']}")],
     ])
     await bot.send_message(chat_id=CHAT_ID, text=msg, reply_markup=kb)
