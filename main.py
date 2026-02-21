@@ -183,9 +183,10 @@ def _keep_alive_loop(heartbeat_seconds: int = 1800) -> None:
     Keep the primary process alive for Railway/background environments.
     """
     while True:
-        # RAILWAY FIX: low CPU sleep + periodic proof-of-life log.
+        # RAILWAY FIX: low CPU sleep + optional proof-of-life heartbeat.
         time.sleep(heartbeat_seconds)
-        print(f"Still alive: {_wat_now_str()}")
+        # Uncomment this line if you want a heartbeat every 30 minutes in Railway logs.
+        # print(f"Heartbeat WAT: {_wat_now_str()}")
 
 
 # Backward-compatible alias for any internal calls/tests still using the old name.
@@ -500,7 +501,7 @@ def main():
 
 
 if __name__ == "__main__":
-    print("Script started - main.py")
+    print("ZTbot main.py starting")
 
     if len(sys.argv) > 1 and sys.argv[1].lower() in {"backtest", "--backtest", "-b"}:
         run_backtest()
@@ -509,7 +510,7 @@ if __name__ == "__main__":
     else:
         # Default entrypoint supports local interactive CLI and Railway background mode.
         interactive = sys.stdin.isatty()
-        print("Environment: Local (interactive)" if interactive else "Environment: Railway (background)")
+        print("Env: Local interactive" if interactive else "Env: Railway background")
 
         if interactive:
             show_dashboard()
@@ -517,7 +518,8 @@ if __name__ == "__main__":
             # RAILWAY FIX: non-interactive mode should print once, then block forever.
             try:
                 show_dashboard()
-                print("Dashboard printed - entering keep-alive")
+                print("Background mode - keeping container alive")
+                print("Dashboard printed - now keeping alive forever")
             except Exception as exc:
                 # RAILWAY FIX: keep process alive even if dashboard rendering fails.
                 print(f"Dashboard failed before keep-alive: {exc}")
