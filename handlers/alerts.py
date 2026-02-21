@@ -5,7 +5,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 import db, engine, formatters, prices as px
 from degen.scanner import degen_scan_job
-from config import CHAT_ID, TIER_RISK, CORRELATED_PAIRS
+from config import CHAT_ID, TIER_RISK, CORRELATED_PAIRS, SUPPORTED_PAIRS
 
 log = logging.getLogger(__name__)
 _recent, _pending, _watching = {}, {}, {}
@@ -59,16 +59,17 @@ def check_proximity_alerts(bot, model, price):
                 asyncio.create_task(bot.send_message(chat_id=CHAT_ID, text=f"📍 Price approaching key level [{lv}] on [{model['pair']}] — [{model['name']}] — prepare your checklist", parse_mode="Markdown"))
 
 
-async def _evaluate_and_send(bot, model: dict, force=False):
+async def _evaluate_and_send(bot, model: dict, force=False, pair_override: str | None = None):
     global _circuit_warned_at
     prefs = db.get_user_preferences(CHAT_ID)
     if prefs.get("risk_off_mode"):
         return False
-    pair = model["pair"]
+    pair = pair_override or model["pair"]
+    scan_model = {**model, "pair": pair}
     price = px.get_price(pair)
     if not price:
         return False
-    check_proximity_alerts(bot, model, price)
+    check_proximity_alerts(bot, scan_model, price)
 
     weekly = db.get_weekly_goal() if hasattr(db, "get_weekly_goal") else None
     if weekly and db.update_weekly_achieved() <= float(weekly.get("loss_limit", -3)):
@@ -77,11 +78,11 @@ async def _evaluate_and_send(bot, model: dict, force=False):
         return False
 
     series = px.get_recent_series(pair, days=2)
-    setup = engine.build_live_setup(model, series)
+    setup = engine.build_live_setup(scan_model, series)
     if not setup.get("passed_rule_ids"):
         return False
 
-    scored = engine.score_setup(setup, model)
+    scored = engine.score_setup(setup, scan_model)
     if not scored.get("tier"):
         return False
     if not force and _is_dup(pair, model["id"], scored["tier"]):
@@ -94,9 +95,9 @@ async def _evaluate_and_send(bot, model: dict, force=False):
     db.log_alert(pair, model["id"], model["name"], scored["final_score"], scored["tier"], setup["direction"], price, sl, tp, rr, True)
     _mark(pair, model["id"], scored["tier"])
     key = f"{pair}_{model['id']}_{datetime.now(timezone.utc).strftime('%H%M%S')}"
-    _pending[key] = (setup, model, scored)
+    _pending[key] = (setup, scan_model, scored)
 
-    text = formatters.fmt_alert(setup, model, scored, risk_pct=float(TIER_RISK.get(scored["tier"], 0)), risk_usd=0.0, correlation_warning=_correlation_warning(pair))
+    text = formatters.fmt_alert(setup, scan_model, scored, risk_pct=float(TIER_RISK.get(scored["tier"], 0)), risk_usd=0.0, correlation_warning=_correlation_warning(pair))
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Entered", callback_data=f"alert:entered:{key}"), InlineKeyboardButton("🎮 Demo Entry", callback_data=f"alert:demo:{key}")],[InlineKeyboardButton("❌ Skipped", callback_data=f"alert:skipped:{key}"), InlineKeyboardButton("👀 Watching", callback_data=f"alert:watching:{key}")]])
     await bot.send_message(chat_id=CHAT_ID, text=text, reply_markup=kb, parse_mode="Markdown")
     job = bot._application.job_queue.run_once(_setup_aging_follow_up, when=900, data={"pair": pair, "entry": price}, name=f"aging:{key}")
@@ -106,19 +107,20 @@ async def _evaluate_and_send(bot, model: dict, force=False):
 
 async def run_scanner(context: ContextTypes.DEFAULT_TYPE):
     bot = context.application.bot
-    models = db.get_active_models()
+    models = db.get_all_models()
     sem = asyncio.Semaphore(4)
+    scan_pairs = list(dict.fromkeys(SUPPORTED_PAIRS or []))
 
-    async def _scan_model(m):
+    async def _scan_model_pair(m, pair):
         async with sem:
             try:
-                return await _evaluate_and_send(bot, m)
+                return await _evaluate_and_send(bot, m, pair_override=pair)
             except Exception as e:
                 log.error(f"scanner error {e}")
                 return False
 
-    if models:
-        await asyncio.gather(*[_scan_model(m) for m in models])
+    if models and scan_pairs:
+        await asyncio.gather(*[_scan_model_pair(m, pair) for m in models for pair in scan_pairs])
     try:
         await degen_scan_job(context)
     except Exception as e:
