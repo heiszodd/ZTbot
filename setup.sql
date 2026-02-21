@@ -57,3 +57,17 @@ CREATE TABLE IF NOT EXISTS alert_log (
     reason     TEXT,
     alerted_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS user_preferences (
+    chat_id               BIGINT PRIMARY KEY,
+    account_balance       FLOAT        DEFAULT 10000,
+    daily_loss_limit_pct  FLOAT        DEFAULT 3.0,
+    max_concurrent_trades INT          DEFAULT 3,
+    morning_briefing_time VARCHAR(10)  DEFAULT '07:00',
+    timezone              VARCHAR(50)  DEFAULT 'UTC',
+    preferred_pairs       JSONB        NOT NULL DEFAULT '[]',
+    risk_off_mode         BOOLEAN      DEFAULT FALSE,
+    discipline_score      INT          DEFAULT 100,
+    alert_lock_until      TIMESTAMP    NULL,
+    updated_at            TIMESTAMP    DEFAULT NOW()
+);

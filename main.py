@@ -1,12 +1,13 @@
 import logging
 import sys
+import datetime
 import db
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters
 )
 from config import TOKEN, SCANNER_INTERVAL
-from handlers import commands, alerts, wizard, stats
+from handlers import commands, alerts, wizard, stats, scheduler
 from engine import run_backtest
 
 logging.basicConfig(
@@ -53,6 +54,34 @@ def main():
         interval=SCANNER_INTERVAL,
         first=15,
         name="scanner"
+    )
+
+    app.job_queue.run_daily(
+        scheduler.send_morning_briefing,
+        time=datetime.time(hour=7, minute=0, tzinfo=datetime.timezone.utc),
+        name="morning_briefing",
+    )
+    app.job_queue.run_daily(
+        scheduler.send_session_open,
+        time=datetime.time(hour=8, minute=0, tzinfo=datetime.timezone.utc),
+        name="london_open",
+    )
+    app.job_queue.run_daily(
+        scheduler.send_session_open,
+        time=datetime.time(hour=13, minute=0, tzinfo=datetime.timezone.utc),
+        name="ny_open",
+    )
+    app.job_queue.run_daily(
+        scheduler.send_weekly_review_prompt,
+        time=datetime.time(hour=17, minute=0, tzinfo=datetime.timezone.utc),
+        days=(6,),
+        name="weekly_review",
+    )
+    app.job_queue.run_monthly(
+        scheduler.send_monthly_report,
+        when=datetime.time(hour=0, minute=5, tzinfo=datetime.timezone.utc),
+        day=1,
+        name="monthly_report",
     )
 
     log.info("🤖 Bot started — polling")
