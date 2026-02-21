@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime as dt_datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from pathlib import Path
 
 import db
@@ -176,6 +176,16 @@ def clear_screen() -> None:
     # RAILWAY FIX: avoid os.system('clear') because TERM may be unavailable.
     # Move cursor to home + clear full screen using ANSI escapes.
     print("\033[H\033[J", end="")
+
+
+def _keep_alive_loop(heartbeat_seconds: int = 1800) -> None:
+    """
+    Keep the primary process alive for Railway/background environments.
+    """
+    while True:
+        # RAILWAY FIX: low CPU sleep + periodic proof-of-life log.
+        time.sleep(heartbeat_seconds)
+        print(f"Still alive: {_wat_now_str()}")
 
 
 # Backward-compatible alias for any internal calls/tests still using the old name.
@@ -364,8 +374,6 @@ def show_dashboard() -> None:
     state.setdefault("system_health", system_health)
 
     interactive = sys.stdin.isatty()
-    # RAILWAY FIX: explicit env mode print for easier deploy debugging.
-    print("Environment: Interactive (local)" if interactive else "Environment: Non-interactive (Railway)")
 
     # Optional one-off startup action for non-interactive deploy environments.
     run_backtest_on_boot = os.getenv("RUN_BACKTEST", "").strip().lower() == "true"
@@ -379,7 +387,6 @@ def show_dashboard() -> None:
         _save_dashboard_state(state)
 
     if interactive:
-        print("Interactive mode detected (local run)")
         while True:
             print("Refreshing dashboard...")
             state["system_health"]["api_calls_today"] = int(px.get_api_health().get("api_call_count", 0))
@@ -493,7 +500,7 @@ def main():
 
 
 if __name__ == "__main__":
-    print("Script started")
+    print("Script started - main.py")
 
     if len(sys.argv) > 1 and sys.argv[1].lower() in {"backtest", "--backtest", "-b"}:
         run_backtest()
@@ -502,18 +509,16 @@ if __name__ == "__main__":
     else:
         # Default entrypoint supports local interactive CLI and Railway background mode.
         interactive = sys.stdin.isatty()
-        print("Environment: Interactive (local)" if interactive else "Environment: Non-interactive (Railway)")
+        print("Environment: Local (interactive)" if interactive else "Environment: Railway (background)")
 
         if interactive:
             show_dashboard()
         else:
-            # RAILWAY FIX: no input() loop in Railway non-TTY environment.
-            print("ZTbot background mode started on Railway - no interactive input")
-            show_dashboard()
-            print("Dashboard printed - entering keep-alive loop")
-
-            wat = timezone(timedelta(hours=1))
-            while True:
-                # RAILWAY FIX: keep process alive without busy looping/log flooding.
-                time.sleep(3600)  # 1 hour
-                print("Heartbeat:", dt_datetime.now(wat).strftime("%Y-%m-%d %H:%M:%S WAT"))
+            # RAILWAY FIX: non-interactive mode should print once, then block forever.
+            try:
+                show_dashboard()
+                print("Dashboard printed - entering keep-alive")
+            except Exception as exc:
+                # RAILWAY FIX: keep process alive even if dashboard rendering fails.
+                print(f"Dashboard failed before keep-alive: {exc}")
+            _keep_alive_loop(heartbeat_seconds=1800)
