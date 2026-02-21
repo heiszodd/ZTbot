@@ -41,7 +41,10 @@ BOT_STATE = {
     "active_strategy": "Auto Scanner",
     "last_run_time": None,
     "last_warning": None,
+    "last_price_refresh_ts": 0.0,
 }
+
+PRICE_REFRESH_COOLDOWN_SEC = 12
 
 
 def _utc_now_str() -> str:
@@ -191,9 +194,10 @@ def _render_dashboard(state: dict) -> None:
         print("No open trades.")
     else:
         for t in open_trades[:8]:
+            status = t.get("result") or "OPEN"
             print(
                 f"• {t.get('pair','N/A'):<8} | Entry {px.fmt_price(float(t.get('entry_price', 0) or 0)):<12} "
-                f"| Time {_fmt_datetime(t.get('logged_at')):<16} | Model {t.get('model_id','N/A')}"
+                f"| Time {_fmt_datetime(t.get('logged_at')):<16} | Status {status:<6} | Model {t.get('model_id','N/A')}"
             )
 
     _render_section("Recent Activity")
@@ -255,10 +259,18 @@ def _render_dashboard(state: dict) -> None:
 
 
 def _refresh_specific_pair_price(state: dict) -> None:
+    now = time.time()
+    if now - BOT_STATE["last_price_refresh_ts"] < PRICE_REFRESH_COOLDOWN_SEC:
+        wait_for = int(PRICE_REFRESH_COOLDOWN_SEC - (now - BOT_STATE["last_price_refresh_ts"]))
+        print(f"Please wait {wait_for}s before another manual price refresh (API cooldown).")
+        input("Press Enter to continue...")
+        return
+
     pair = input("Pair (e.g., BTCUSDT): ").strip().upper()
     if not pair:
         return
     fetched = px.fetch_prices([pair])
+    BOT_STATE["last_price_refresh_ts"] = now
     if not fetched:
         print("No price data available.")
     else:
@@ -272,9 +284,17 @@ def _refresh_specific_pair_price(state: dict) -> None:
 
 
 def _refresh_watched_pairs(state: dict) -> None:
+    now = time.time()
+    if now - BOT_STATE["last_price_refresh_ts"] < PRICE_REFRESH_COOLDOWN_SEC:
+        wait_for = int(PRICE_REFRESH_COOLDOWN_SEC - (now - BOT_STATE["last_price_refresh_ts"]))
+        print(f"Please wait {wait_for}s before another manual price refresh (API cooldown).")
+        input("Press Enter to continue...")
+        return
+
     watched = CRYPTO_PAIRS[:3]
     print(f"Refreshing watched pairs once: {', '.join(watched)}")
     fetched = px.fetch_prices(watched)
+    BOT_STATE["last_price_refresh_ts"] = now
     if not fetched:
         print("No watched pair prices returned.")
     else:
@@ -283,14 +303,14 @@ def _refresh_watched_pairs(state: dict) -> None:
             price = fetched.get(pair)
             if price is None:
                 continue
-            close_series = px.get_recent_series(pair, days=1, interval="1h")
-            approx_vol = sum(close_series[-6:]) / 6 if len(close_series) >= 6 else (close_series[-1] if close_series else 0.0)
+            previous_vol_proxy = (snap.get(pair) or {}).get("approx_volume_proxy")
             snap[pair] = {
                 "price": price,
-                "approx_volume_proxy": round(approx_vol, 3),
+                "approx_volume_proxy": previous_vol_proxy,
                 "refreshed_at": _utc_now_str(),
             }
-            print(f"• {pair:<8} | close {px.fmt_price(price):<12} | vol-proxy {approx_vol:.2f}")
+            vol_text = f"{previous_vol_proxy:.2f}" if isinstance(previous_vol_proxy, (int, float)) else "N/A"
+            print(f"• {pair:<8} | close {px.fmt_price(price):<12} | vol-proxy {vol_text}")
     input("Press Enter to continue...")
 
 
