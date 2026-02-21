@@ -496,6 +496,26 @@ def set_model_status(model_id, status):
             cur.execute("UPDATE models SET status=%s WHERE id=%s", (status, model_id))
         conn.commit()
 
+
+def update_model_fields(model_id, fields: dict):
+    allowed = {"pair", "timeframe", "session", "bias", "name", "tier_a", "tier_b", "tier_c", "rules"}
+    clean = {k: v for k, v in (fields or {}).items() if k in allowed}
+    if not clean:
+        return False
+
+    if "rules" in clean and isinstance(clean["rules"], list):
+        clean["rules"] = json.dumps(clean["rules"])
+
+    set_clause = ", ".join([f"{k}=%s" for k in clean.keys()])
+    values = list(clean.values()) + [model_id]
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE models SET {set_clause} WHERE id=%s", values)
+            updated = cur.rowcount > 0
+        conn.commit()
+    return updated
+
 def delete_model(model_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
