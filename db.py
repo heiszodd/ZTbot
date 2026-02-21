@@ -186,6 +186,7 @@ def setup_db():
     ALTER TABLE models ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS key_levels JSONB NOT NULL DEFAULT '[]';
 
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
     ALTER TABLE news_events ADD COLUMN IF NOT EXISTS suppressed BOOLEAN DEFAULT FALSE;
     """
