@@ -260,7 +260,63 @@ async def handle_backtest_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
+    if context.args:
+        await _run_backtest_command(update.message.reply_text, context.args)
+        return
     await _send_backtest_entry(update.message.reply_text)
+
+
+async def _run_backtest_command(reply, args: list[str]):
+    if len(args) < 2:
+        await reply(
+            "❌ Usage: `/backtest <model_id> <days>` (example: `/backtest model_abc 30`)\n"
+            "You can also use the Backtest screen to autofill this command.",
+            parse_mode="Markdown",
+            reply_markup=_backtest_screen_kb(),
+        )
+        return
+
+    model_id = args[0].strip()
+    model = db.get_model(model_id)
+    if not model:
+        await reply("❌ Model not found. Choose one from the Backtest screen.", reply_markup=_backtest_screen_kb())
+        return
+
+    try:
+        days = int(args[1])
+    except Exception:
+        await reply("❌ Days must be a whole number, e.g. `/backtest model_abc 30`.", parse_mode="Markdown")
+        return
+
+    if days < 1 or days > 90:
+        await reply("❌ Days must be between 1 and 90.")
+        return
+
+    series = px.get_recent_series(model["pair"], days=days)
+    if len(series) < 40:
+        await reply(
+            "⚠️ Not enough price data was returned for this pair/range. Try a longer range.",
+            reply_markup=_backtest_screen_kb(),
+        )
+        return
+
+    result = engine.backtest_model(model, series)
+    trades = int(result.get("trades") or 0)
+    wins = int(result.get("wins") or 0)
+    losses = int(result.get("losses") or 0)
+    win_rate = float(result.get("win_rate") or 0)
+    avg_rr = float(result.get("avg_rr") or 0)
+
+    msg = (
+        f"🧪 *Backtest — {model['name']}*\n"
+        f"Pair: `{model['pair']}`\n"
+        f"Range: `{days}d`\n"
+        f"Trades: `{trades}`\n"
+        f"Wins/Losses: `{wins}/{losses}`\n"
+        f"Win rate: `{win_rate:.2f}%`\n"
+        f"Avg R/R: `{avg_rr:+.2f}R`"
+    )
+    await reply(msg, parse_mode="Markdown", reply_markup=_backtest_screen_kb())
 
 
 def _backtest_screen_kb() -> InlineKeyboardMarkup:
