@@ -52,6 +52,7 @@ def _default_model_data(name: str):
 
 
 async def start_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["in_conversation"] = True
     context.user_data.clear()
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="degen_wiz:cancel")]])
     target = update.message.reply_text if update.message else update.callback_query.message.reply_text
@@ -312,13 +313,15 @@ async def confirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await start_wizard(update, context)
     if action == "cancel":
         await q.message.reply_text("Cancelled.")
-        return ConversationHandler.END
+        context.user_data.pop("in_conversation", None)
+    return ConversationHandler.END
 
     model = {k: context.user_data.get(k) for k in _default_model_data("x").keys() if k != "id"}
     model["id"] = str(uuid.uuid4())[:12]
     db.insert_degen_model(model)
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Activate Now", callback_data=f"degen_model:toggle:{model['id']}"), InlineKeyboardButton("⚙️ View Models", callback_data="degen_model:list")], [InlineKeyboardButton("🎰 Degen Home", callback_data="degen:home")]])
     await q.message.reply_text(f"✅ Degen Model Saved\n━━━━━━━━━━━━━━━━━━━━━━━━\n📌 {model['name']}\n🆔 {model['id']}\n⚡ Status: Inactive\n\nActivate it to start scanning.", reply_markup=kb)
+    context.user_data.pop("in_conversation", None)
     return ConversationHandler.END
 
 
@@ -326,6 +329,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.message.reply_text("Cancelled.")
+    context.user_data.pop("in_conversation", None)
     return ConversationHandler.END
 
 

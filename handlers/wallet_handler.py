@@ -92,6 +92,7 @@ async def wallet_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, wall
 
 
 async def add_wallet_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["in_conversation"] = True
     q = update.callback_query
     await q.answer()
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("Solana", callback_data="wallet:chain:SOL"), InlineKeyboardButton("Ethereum", callback_data="wallet:chain:ETH")], [InlineKeyboardButton("BSC", callback_data="wallet:chain:BSC"), InlineKeyboardButton("Base", callback_data="wallet:chain:BASE")]])
@@ -122,10 +123,12 @@ async def add_wallet_address(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ADD_ADDRESS
     if chain in {"ETH", "BASE", "BSC"} and not (ETHERSCAN_KEY or BSCSCAN_KEY):
         await update.message.reply_text("EVM tracking requires an Etherscan/BSCScan API key. Add ETHERSCAN_KEY to your environment variables.")
-        return ConversationHandler.END
+        context.user_data.pop("in_conversation", None)
+    return ConversationHandler.END
     if db.get_tracked_wallet_by_address(address, chain):
         await update.message.reply_text("Already tracking this wallet.")
-        return ConversationHandler.END
+        context.user_data.pop("in_conversation", None)
+    return ConversationHandler.END
     data["address"] = address
     await update.message.reply_text("🔍 Analysing wallet... this takes a few seconds")
     profile = await wallet_tracker.score_whale_reputation(address, chain)
@@ -203,13 +206,15 @@ async def add_wallet_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await q.answer()
     if q.data == "wallet:cancel":
         await q.message.reply_text("Cancelled.", reply_markup=commands.degen_keyboard())
-        return ConversationHandler.END
+        context.user_data.pop("in_conversation", None)
+    return ConversationHandler.END
     data = context.user_data.get("new_wallet", {})
     wallet_id = db.add_tracked_wallet(data)
     txs = await wallet_tracker.get_recent_transactions(data["address"], data["chain"], limit=1)
     if txs:
         db.update_wallet_last_tx(wallet_id, txs[0]["tx_hash"])
     await q.message.reply_text("✅ Wallet added to tracker.", reply_markup=commands.degen_keyboard())
+    context.user_data.pop("in_conversation", None)
     return ConversationHandler.END
 
 
@@ -303,7 +308,8 @@ async def _finalize_copy_trade(update: Update, context: ContextTypes.DEFAULT_TYP
     if not item:
         target = update.callback_query.message.reply_text if update.callback_query else update.message.reply_text
         await target("Trade context expired.")
-        return ConversationHandler.END
+        context.user_data.pop("in_conversation", None)
+    return ConversationHandler.END
     tx = item["tx"]
     entry = float(tx.get("price_per_token") or 0)
     trade_id = db.log_copy_trade({
@@ -314,6 +320,7 @@ async def _finalize_copy_trade(update: Update, context: ContextTypes.DEFAULT_TYP
     db.log_trade({"pair": tx.get("token_symbol", "COPY"), "model_id": "wallet_copy", "tier": "C", "direction": "BUY", "entry_price": entry, "sl": entry * 0.85, "tp": entry * 2, "rr": 2.0, "session": "Degen", "score": 0, "risk_pct": pct, "violation": None, "source": "copy_trade"})
     target = update.callback_query.message.reply_text if update.callback_query else update.message.reply_text
     await target("✅ Copy trade logged to wallet_copy_trades, degen_trades, and trade_log.\n📸 Don't forget to share screenshot reminder.")
+    context.user_data.pop("in_conversation", None)
     return ConversationHandler.END
 
 
