@@ -34,6 +34,10 @@ CRYPTOCOMPARE_API_KEY = os.getenv("CRYPTOCOMPARE_API_KEY", "")
 CRYPTOCOMPARE_BASE_URL = os.getenv("CRYPTOCOMPARE_BASE_URL", "https://min-api.cryptocompare.com")
 CRYPTOCOMPARE_EXTRA_PARAMS = os.getenv("CRYPTOCOMPARE_EXTRA_PARAMS", "ztbot")
 
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
+ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY", "")
+BSCSCAN_KEY = os.getenv("BSCSCAN_KEY", "")
+
 # ── Tier risk sizing ──────────────────────────────────
 TIER_RISK = {"A": 2.0, "B": 1.0, "C": 0.5}
 

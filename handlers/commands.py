@@ -18,32 +18,59 @@ def _guard(update: Update) -> bool:
     return update.effective_chat and update.effective_chat.id == CHAT_ID
 
 
-def main_kb():
+def landing_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📈 Perps Trading", callback_data="nav:perps_home")],
+        [InlineKeyboardButton("🎰 Degen Zone", callback_data="nav:degen_home")],
+        [InlineKeyboardButton("⚡ System Status", callback_data="nav:status")],
+    ])
+
+
+def perps_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="nav:models")],
         [InlineKeyboardButton("📊 Stats", callback_data="nav:stats"), InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline")],
-        [InlineKeyboardButton("📋 Alerts", callback_data="nav:alerts"), InlineKeyboardButton("💹 Prices", callback_data="nav:prices")],
-        [InlineKeyboardButton("📰 News", callback_data="nav:news"), InlineKeyboardButton("🎯 Goal", callback_data="nav:goal")],
-        [InlineKeyboardButton("💰 Budget", callback_data="nav:budget")],
-        [InlineKeyboardButton("📓 Journal", callback_data="nav:journal"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
-        [InlineKeyboardButton("➕ New Model", callback_data="wiz:start")],
+        [InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts"), InlineKeyboardButton("🔍 Scan", callback_data="nav:scan")],
+        [InlineKeyboardButton("🎯 Goal", callback_data="nav:goal"), InlineKeyboardButton("💰 Budget", callback_data="nav:budget")],
+        [InlineKeyboardButton("📓 Journal", callback_data="nav:journal"), InlineKeyboardButton("📰 News", callback_data="nav:news")],
+        [InlineKeyboardButton("➕ New Model", callback_data="wiz:start"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
+        [InlineKeyboardButton("🎰 Go to Degen", callback_data="nav:degen_home")],
     ])
+
+
+def degen_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="degen_model:list")],
+        [InlineKeyboardButton("🆕 Latest Finds", callback_data="wallet:activity"), InlineKeyboardButton("👀 Watchlist", callback_data="wallet:list")],
+        [InlineKeyboardButton("🐋 Wallets", callback_data="wallet:dash"), InlineKeyboardButton("📰 News Trades", callback_data="nav:news")],
+        [InlineKeyboardButton("📊 Degen Stats", callback_data="wallet:calls"), InlineKeyboardButton("🔍 Search Token", callback_data="wallet:activity")],
+        [InlineKeyboardButton("➕ New Model", callback_data="degen_model:new"), InlineKeyboardButton("⚙️ Scanner Settings", callback_data="nav:status")],
+        [InlineKeyboardButton("📈 Go to Perps", callback_data="nav:perps_home")],
+    ])
+
+
+def main_kb():
+    return perps_keyboard()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
-    await update.message.reply_text(
-        formatters.fmt_home(db.get_active_models(), db.get_recent_alerts(hours=2, limit=5)),
-        parse_mode="Markdown",
-        reply_markup=main_kb(),
-    )
+    await update.message.reply_text(formatters.fmt_landing(), reply_markup=landing_keyboard())
+
+
+async def perps_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _guard(update):
+        return
+    active = db.get_active_models()
+    recent = db.get_recent_alerts(hours=2, limit=3)
+    await update.message.reply_text(formatters.fmt_perps_home(active, recent, engine.get_session(), formatters._wat_now().strftime("%H:%M")), reply_markup=perps_keyboard())
 
 
 async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
-    await update.message.reply_text(formatters.fmt_help(), parse_mode="Markdown", reply_markup=main_kb())
+    await update.message.reply_text(formatters.fmt_help(), parse_mode="Markdown", reply_markup=perps_keyboard())
 
 
 async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -51,7 +78,14 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     dest = q.data.split(":")[1]
     if dest == "home":
-        await q.message.reply_text(formatters.fmt_home(db.get_active_models(), db.get_recent_alerts(hours=2, limit=5)), parse_mode="Markdown", reply_markup=main_kb())
+        await q.message.reply_text(formatters.fmt_landing(), reply_markup=landing_keyboard())
+    elif dest == "perps_home":
+        active = db.get_active_models()
+        recent = db.get_recent_alerts(hours=2, limit=3)
+        await q.message.reply_text(formatters.fmt_perps_home(active, recent, engine.get_session(), formatters._wat_now().strftime("%H:%M")), reply_markup=perps_keyboard())
+    elif dest == "degen_home":
+        from handlers import degen_handler
+        await degen_handler.degen_home(update, context)
     elif dest == "models":
         await _render_models(q)
     elif dest == "stats":
@@ -85,6 +119,9 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(formatters.fmt_heatmap(db.get_hourly_breakdown()), parse_mode="Markdown")
     elif dest == "rolling10":
         await q.message.reply_text(formatters.fmt_rolling_10(db.get_rolling_10()), parse_mode="Markdown")
+    elif dest == "scan":
+        pairs = [[InlineKeyboardButton(p, callback_data=f"scan:{p}")] for p in SUPPORTED_PAIRS]
+        await q.message.reply_text("Choose pair to scan", reply_markup=InlineKeyboardMarkup(pairs))
 
 
 async def _render_models(q):

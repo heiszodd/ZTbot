@@ -10,6 +10,22 @@ from degen.rule_library import RULES_BY_ID
 from degen.templates import TEMPLATES
 
 
+
+
+async def degen_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    active = db.get_active_degen_models()
+    wallets = db.get_tracked_wallets(active_only=True)
+    finds_today = len(db.get_recent_degen_tokens(limit=500))
+    alerts_today = len(db.get_recent_wallet_alerts(hours=24))
+    scanner_active = True
+    txt = __import__("formatters").fmt_degen_home(active, wallets, scanner_active, finds_today, alerts_today)
+    kb = __import__("handlers.commands", fromlist=["degen_keyboard"]).degen_keyboard()
+    sender = update.callback_query.message.reply_text if update.callback_query else update.message.reply_text
+    if update.callback_query:
+        await update.callback_query.answer()
+    await sender(txt, reply_markup=kb)
+
+
 def degen_dashboard_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⚙️ Models", callback_data="degen_model:list")],
@@ -82,7 +98,7 @@ async def handle_degen_model_cb(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton("⏸ Deactivate" if model["status"] == "active" else "✅ Activate", callback_data=f"degen_model:toggle:{model_id}")],
             [InlineKeyboardButton("✏️ Edit Model", callback_data=f"degen_model:edit:{model_id}"), InlineKeyboardButton("📋 Clone", callback_data=f"degen_model:clone:{model_id}")],
             [InlineKeyboardButton("📜 Version History", callback_data=f"degen_model:versions:{model_id}"), InlineKeyboardButton("📊 Rule Performance", callback_data=f"degen_model:rule_perf:{model_id}")],
-            [InlineKeyboardButton("🗑 Delete", callback_data=f"degen_model:delete_confirm:{model_id}")], [InlineKeyboardButton("« Back", callback_data="degen_model:list")]
+            [InlineKeyboardButton("🗑 Delete", callback_data=f"degen_model:delete_confirm:{model_id}")], [InlineKeyboardButton("« Back", callback_data="nav:degen_home")]
         ])
         await q.message.reply_text(_detail_text(model), reply_markup=kb)
     elif action == "toggle":
