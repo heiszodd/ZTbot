@@ -172,8 +172,20 @@ def _compute_performance(recent_trades: list[dict]) -> dict:
     }
 
 
-def _clear_screen() -> None:
-    os.system("cls" if os.name == "nt" else "clear")
+def clear_screen() -> None:
+    """
+    Clear the terminal in a TERM-safe way.
+
+    Railway services run in non-interactive containers where shelling out to
+    `clear` / `cls` can emit noisy warnings like: "TERM environment variable not set".
+    ANSI escape sequences are silent and broadly compatible.
+    """
+    # Move cursor to home + clear full screen.
+    print("\033[H\033[J", end="")
+
+
+# Backward-compatible alias for any internal calls/tests still using the old name.
+_clear_screen = clear_screen
 
 
 def _render_section(title: str) -> None:
@@ -181,7 +193,7 @@ def _render_section(title: str) -> None:
 
 
 def _render_dashboard(state: dict) -> None:
-    _clear_screen()
+    clear_screen()
     now = time.time()
     status = state.get("bot_status", bot_status)
     uptime = _fmt_duration(now - float(status.get("started_at", now)))
@@ -308,7 +320,7 @@ def _refresh_specific_pair_price(state: dict) -> None:
         log.info("One-time manual price refresh: %s => %s", pair, value)
         # Brief display, then clear so prices never persist on dashboard by default.
         time.sleep(2)
-        _clear_screen()
+        clear_screen()
     input("Press Enter to continue...")
 
 
@@ -356,37 +368,66 @@ def show_dashboard() -> None:
     state = _load_dashboard_state()
     state.setdefault("bot_status", bot_status)
     state.setdefault("system_health", system_health)
-    while True:
-        state["system_health"]["api_calls_today"] = int(px.get_api_health().get("api_call_count", 0))
-        state["bot_status"]["last_activity"] = _wat_now_str()
-        _render_dashboard(state)
-        choice = input("\nChoose action: ").strip()
 
-        if choice == "1":
-            print("Checking cache before backtest fetch...")
-            print("Skipping fetch — using cache when available (engine uses use_cache=True).")
-            log.info("Backtest requested from dashboard")
-            summary = run_backtest()
-            if summary:
-                state["backtest_summary"] = summary
-                state["recent_trades"] = state.get("recent_trades", [])
-                log.info("Backtest summary updated: %s", summary)
-            input("Backtest finished. Press Enter to continue...")
-        elif choice == "2":
-            _refresh_specific_pair_price(state)
-        elif choice == "3":
-            _toggle_model()
-        elif choice == "4":
-            _show_recent_logs(state)
-        elif choice == "5":
-            _save_dashboard_state(state)
-            print("Exiting dashboard.")
-            return
-        else:
-            print("Unknown choice.")
-            time.sleep(0.6)
+    interactive = sys.stdin.isatty()
+    print(f"Interactive mode: {'Yes' if interactive else 'No'}")
 
+    # Optional one-off startup action for non-interactive deploy environments.
+    run_backtest_on_boot = os.getenv("RUN_BACKTEST", "").strip().lower() == "true"
+    if run_backtest_on_boot:
+        print("RUN_BACKTEST=true detected: running one startup backtest...")
+        log.info("RUN_BACKTEST=true -> executing one startup backtest")
+        summary = run_backtest()
+        if summary:
+            state["backtest_summary"] = summary
+            log.info("Startup backtest summary updated: %s", summary)
         _save_dashboard_state(state)
+
+    if interactive:
+        print("Interactive mode detected (local run)")
+        while True:
+            print("Refreshing dashboard...")
+            state["system_health"]["api_calls_today"] = int(px.get_api_health().get("api_call_count", 0))
+            state["bot_status"]["last_activity"] = _wat_now_str()
+            _render_dashboard(state)
+            choice = input("\nChoose action: ").strip()
+
+            if choice == "1":
+                print("Checking cache before backtest fetch...")
+                print("Skipping fetch — using cache when available (engine uses use_cache=True).")
+                log.info("Backtest requested from dashboard")
+                summary = run_backtest()
+                if summary:
+                    state["backtest_summary"] = summary
+                    state["recent_trades"] = state.get("recent_trades", [])
+                    log.info("Backtest summary updated: %s", summary)
+                input("Backtest finished. Press Enter to continue...")
+            elif choice == "2":
+                _refresh_specific_pair_price(state)
+            elif choice == "3":
+                _toggle_model()
+            elif choice == "4":
+                _show_recent_logs(state)
+            elif choice == "5":
+                _save_dashboard_state(state)
+                print("Exiting dashboard.")
+                return
+            else:
+                print("Unknown choice.")
+                time.sleep(0.6)
+
+            _save_dashboard_state(state)
+    else:
+        print("Running in background mode - no input")
+        while True:
+            print("Refreshing dashboard...")
+            state["system_health"]["api_calls_today"] = int(px.get_api_health().get("api_call_count", 0))
+            state["bot_status"]["last_activity"] = _wat_now_str()
+            _render_dashboard(state)
+            print("Interactive actions disabled (stdin is not a TTY).")
+            _save_dashboard_state(state)
+            print("Sleeping 60s on Railway...")
+            time.sleep(60)
 
 
 def main():
@@ -466,5 +507,6 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1].lower() in {"bot", "--bot"}:
         main()
     else:
-        # Default entrypoint for local interactive usage.
+        # Default entrypoint now supports both local interactive CLI and
+        # non-interactive Railway-style background refresh mode.
         show_dashboard()
