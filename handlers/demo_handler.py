@@ -76,6 +76,62 @@ async def open_demo_from_signal(context: ContextTypes.DEFAULT_TYPE, section: str
     return True, f"🎮 DEMO — Demo trade opened! ID: #{tid}"
 
 
+async def handle_demo_risk_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payload = context.user_data.get("demo_alert_trade")
+    if not payload:
+        return
+
+    raw = (update.message.text or "").strip().replace("$", "").replace(",", "")
+    try:
+        risk_amount = float(raw)
+    except Exception:
+        await update.message.reply_text("Enter a valid USD amount (e.g. 25).")
+        return
+
+    if risk_amount <= 0:
+        await update.message.reply_text("Risk amount must be greater than 0.")
+        return
+
+    balance = float(payload.get("balance") or 0)
+    risk_amount = min(risk_amount, balance)
+    entry = float(payload.get("entry_price") or 0)
+    sl = float(payload.get("sl") or 0)
+    tp = float(payload.get("tp") or 0)
+    direction = str(payload.get("direction") or "BUY").upper()
+
+    if entry <= 0 or sl <= 0:
+        context.user_data.pop("demo_alert_trade", None)
+        await update.message.reply_text("Could not open demo trade: invalid alert entry/SL values.")
+        return
+
+    sl_distance_pct = abs((entry - sl) / entry)
+    position = (risk_amount / sl_distance_pct) if sl_distance_pct > 0 else risk_amount
+    tp1 = tp if tp > 0 else (entry * (1.01 if direction in {"BUY", "LONG"} else 0.99))
+    tp2 = entry + (tp1 - entry) * 1.5
+    tp3 = entry + (tp1 - entry) * 2.0
+
+    ok, msg = await open_demo_from_signal(context, "perps", {
+        "pair": payload.get("pair"),
+        "direction": payload.get("direction"),
+        "entry_price": entry,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
+        "position_size_usd": max(0, position),
+        "risk_amount_usd": risk_amount,
+        "risk_pct": (risk_amount / balance * 100) if balance else 0,
+        "model_id": payload.get("model_id"),
+        "model_name": payload.get("model_name"),
+        "tier": payload.get("tier"),
+        "score": payload.get("score"),
+        "source": "alert_demo_entry",
+        "notes": "Demo entry from alert with user-defined risk",
+    })
+    context.user_data.pop("demo_alert_trade", None)
+    await update.message.reply_text(msg)
+
+
 async def handle_demo_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
