@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 
 import prices as px
-from config import TOKEN, SCANNER_INTERVAL
+from config import SCANNER_INTERVAL
 from handlers import commands, alerts, wizard, stats, scheduler
 from engine import run_backtest
 
@@ -430,14 +430,21 @@ def show_dashboard() -> None:
 
 
 def main():
-    # Ensure DB tables exist on startup
+    for var in ["BOT_TOKEN", "CHAT_ID", "DB_URL"]:
+        if not os.getenv(var):
+            print(f"FATAL: {var} is not set", flush=True)
+            sys.exit(1)
+
+    print("ZTbot main.py starting", flush=True)
+
     try:
         db.setup_db()
         log.info("DB ready")
     except Exception as e:
         log.error(f"DB setup failed: {e}")
+        raise
 
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
 
     # ── Core navigation ───────────────────────────────
     app.add_handler(CommandHandler("start",       commands.start))
@@ -501,29 +508,8 @@ def main():
 
 
 if __name__ == "__main__":
-    print("ZTbot main.py starting", flush=True)
     try:
-        if len(sys.argv) > 1 and sys.argv[1].lower() in {"backtest", "--backtest", "-b"}:
-            run_backtest()
-        elif len(sys.argv) > 1 and sys.argv[1].lower() in {"bot", "--bot"}:
-            main()
-        else:
-            # Default entrypoint supports local interactive CLI and Railway background mode.
-            interactive = sys.stdin.isatty()
-            print("Env: Local interactive" if interactive else "Env: Railway background", flush=True)
-
-            if interactive:
-                show_dashboard()
-            else:
-                # RAILWAY FIX: non-interactive mode should print once, then block forever.
-                try:
-                    show_dashboard()
-                    print("Background mode - keeping container alive", flush=True)
-                    print("Dashboard printed - now keeping alive forever", flush=True)
-                except Exception as exc:
-                    # RAILWAY FIX: keep process alive even if dashboard rendering fails.
-                    print(f"Dashboard failed before keep-alive: {exc}", flush=True)
-                _keep_alive_loop(heartbeat_seconds=1800)
+        main()
     except Exception:
         print("FATAL: Bot crashed — full traceback below", flush=True)
         import traceback
