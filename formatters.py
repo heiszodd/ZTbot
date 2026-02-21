@@ -114,3 +114,60 @@ def fmt_heatmap(hourly_data):
         icon = '🔥' if h in top else '❄️' if h in bot else '•'
         out.append(f"`{h:02d}` {icon} WR `{wr}%` | R `{r:+.2f}`")
     return "\n".join(out)
+
+
+def fmt_landing() -> str:
+    return (
+        "👋 Welcome to ZTbot\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Your personal trading intelligence system.\n\n"
+        "Choose your section:"
+    )
+
+
+def fmt_perps_home(active_models: list, recent_setups: list, session: str, time_wat: str) -> str:
+    lines = [
+        "📈 Perps Trading",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"🕐 {time_wat} WAT   📡 {session}",
+        "",
+        f"⚙️ Active Models ({len(active_models)})",
+    ]
+    if active_models:
+        for m in active_models[:5]:
+            lines.append(f"• {m.get('name')} — {m.get('pair')} {m.get('timeframe')}")
+    else:
+        lines.append("No active models — tap Models to create one")
+    lines.append("")
+    lines.append(f"🚨 Recent Setups ({len(recent_setups)} in last 2h)")
+    if recent_setups:
+        for a in recent_setups[:3]:
+            lines.append(f"• {a.get('pair')} {a.get('tier')} {a.get('direction')} {a.get('alerted_at')}")
+    else:
+        lines.append("No setups in the last 2 hours")
+    return "\n".join(lines)
+
+
+def fmt_degen_home(active_models: list, tracked_wallets: list, scanner_active: bool, finds_today: int, alerts_today: int) -> str:
+    lines = [
+        "🎰 Degen Zone",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "⚠️ High risk — only use what you can lose",
+        "",
+        f"📡 Scanner: {'🟢 Active' if scanner_active else '⚫ Inactive'}",
+        f"⚙️ Active Degen Models ({len(active_models)})",
+    ]
+    if active_models:
+        for m in active_models[:3]:
+            lines.append(f"• {m.get('name')}")
+    else:
+        lines.append("No models active — tap Models to create one")
+    lines.extend(["", f"🐋 Tracking {len(tracked_wallets)} Wallets"])
+    if tracked_wallets:
+        for w in tracked_wallets[:3]:
+            label = w.get('label') or f"{w.get('address','')[:6]}...{w.get('address','')[-4:]}"
+            lines.append(f"• {w.get('tier_label','🔍')} {label}")
+    else:
+        lines.append("No wallets tracked — tap Wallets to add one")
+    lines.extend(["", f"🆕 New Finds Today: {finds_today} tokens scanned", f"🚨 Alerts Today: {alerts_today} degen alerts sent"])
+    return "\n".join(lines)
