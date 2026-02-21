@@ -511,3 +511,33 @@ CREATE TABLE IF NOT EXISTS demo_transactions (
     description TEXT,
     created_at  TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS ca_monitors (
+    id              SERIAL PRIMARY KEY,
+    address         VARCHAR(100) NOT NULL,
+    symbol          VARCHAR(20),
+    name            VARCHAR(100),
+    chain           VARCHAR(20),
+    price_at_add    FLOAT,
+    price_alert_pct FLOAT DEFAULT 5.0,
+    initial_holders INT,
+    initial_risk    INT,
+    trade_id        INT REFERENCES demo_trades(id),
+    active          BOOLEAN DEFAULT TRUE,
+    added_at        TIMESTAMP DEFAULT NOW(),
+    last_checked_at TIMESTAMP,
+    UNIQUE(address)
+);
+
+CREATE TABLE IF NOT EXISTS degen_watchlist (
+    id SERIAL PRIMARY KEY,
+    address VARCHAR(100) UNIQUE,
+    symbol VARCHAR(20),
+    name VARCHAR(100),
+    chain VARCHAR(20),
+    added_at TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS remaining_size_usd FLOAT;
+ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS partial_closes JSONB DEFAULT '[]';
+ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS time_stop_minutes INT DEFAULT 30;

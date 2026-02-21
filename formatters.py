@@ -251,3 +251,109 @@ def fmt_pending_setup(setup: dict, classification: dict, score_result: dict) -> 
         "⏳ Monitoring... updates every 30s",
     ])
     return "\n".join(lines)
+def _fmt_age(minutes: int) -> str:
+    m = int(minutes or 0)
+    if m < 60:
+        return f"{m} min"
+    if m < 1440:
+        return f"{m/60:.1f} hours"
+    return f"{m/1440:.1f} days"
+
+
+def fmt_ca_report(token_data, risk, moon, dev, curve, auth, nlp, net) -> str:
+    if token_data.get("not_found"):
+        return (
+            "⚠️ Token not found on any DEX\n"
+            "This token may be:\n"
+            "• Too new to have a pair created yet\n"
+            "• Not yet listed on any DEX\n"
+            "• An invalid contract address\n"
+            "• A scam with no liquidity\n\n"
+            "RugCheck data shown if available."
+        )
+    name = token_data.get("name") or "Unknown"
+    symbol = token_data.get("symbol") or "?"
+    addr = token_data.get("address") or "N/A"
+    chain = token_data.get("chain") or token_data.get("chain_guess") or "unknown"
+    curve_line = ""
+    if curve.get("is_pumpfun"):
+        bars = "█" * int((curve.get("curve_pct", 0) / 10)) + "░" * (10 - int(curve.get("curve_pct", 0) / 10))
+        curve_line = f"\n🌱 Pump.fun bonding curve: [{bars}] {curve.get('curve_pct',0):.1f}%"
+    flags = risk.get("risk_flags") or []
+    green = moon.get("bull_factors") or []
+    exits = moon.get("smart_exits") or {}
+    links = [f"[DexScreener]({token_data.get('url')})" if token_data.get("url") else None, f"[RugCheck](https://rugcheck.xyz/tokens/{addr})"]
+    if token_data.get("pump_url"):
+        links.append(f"[Pump.fun]({token_data.get('pump_url')})")
+    if token_data.get("twitter"):
+        links.append(f"[Twitter]({token_data.get('twitter')})")
+    if token_data.get("telegram"):
+        links.append(f"[Telegram]({token_data.get('telegram')})")
+    links = " | ".join([x for x in links if x])
+    return (
+        f"[{risk.get('risk_level','RISK')}] CA REPORT\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🪙 *{name}* ({symbol})\n"
+        f"📋 `{addr}`\n"
+        f"🔗 Chain: {chain}   DEX: {token_data.get('dex') or 'Not listed'}\n"
+        f"⏱ Age: {_fmt_age(token_data.get('token_age_minutes') or 0)}{curve_line}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💰 *Market Data*\n"
+        f"   Price:        {fmt_price(token_data.get('price_usd') or 0)}\n"
+        f"   Market Cap:   ${float(token_data.get('mcap') or 0):,.0f}\n"
+        f"   Liquidity:    ${float(token_data.get('liquidity_usd') or 0):,.0f}\n"
+        f"   FDV:          ${float(token_data.get('fdv') or 0):,.0f}\n"
+        f"   Volume 1h:    ${float(token_data.get('volume_1h') or 0):,.0f}\n"
+        f"   1h Change:    {float(token_data.get('price_change_1h') or 0):+.2f}%\n"
+        f"   24h Change:   {float(token_data.get('price_change_24h') or 0):+.2f}%\n"
+        f"   Buys/Sells:   {int(token_data.get('buys_1h') or 0)}/{int(token_data.get('sells_1h') or 0)} last hour\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "👥 *Holders*\n"
+        f"   Count:         {int(token_data.get('holder_count') or 0)}\n"
+        f"   Top holder:    {float(token_data.get('top1_holder_pct') or 0):.2f}%\n"
+        f"   Top 5 total:   {float(token_data.get('top5_holders_pct') or 0):.2f}%\n"
+        "\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔐 *Contract Safety*\n"
+        f"   Mint revoked:    {'✅ Yes' if token_data.get('mint_revoked') else '❌ NO — devs can print'}\n"
+        f"   Freeze revoked:  {'✅ Yes' if token_data.get('freeze_revoked') else '❌ NO — devs can freeze'}\n"
+        f"   LP locked:       {float(token_data.get('lp_locked_pct') or 0):.1f}%\n"
+        f"   LP burned:       {'✅ Yes' if token_data.get('lp_burned') else '❌ No'}\n"
+        f"   Verified:        {'✅ Yes' if token_data.get('verified') else '❌ No'}\n"
+        f"   Honeypot:        {'💀 DETECTED' if token_data.get('is_honeypot') else '✅ Safe'}\n"
+        f"   RugCheck score:  {int(token_data.get('rugcheck_score') or 0)}/1000\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "👨‍💻 *Developer*\n"
+        f"   Wallet:      `{(token_data.get('dev_wallet') or 'N/A')[:8]}...`\n"
+        f"   Age:         {int(token_data.get('dev_wallet_age_days') or 0)} days\n"
+        f"   Reputation:  {dev.get('reputation_label')}\n"
+        f"   Supply held: {dev.get('supply_held_pct',0):.2f}%\n"
+        f"   Past rugs:   {dev.get('past_rugs',0)}\n"
+        f"   Network:     {net.get('network_label')}\n\n"
+        "📝 *Description Analysis*\n"
+        f"   Quality:   {nlp.get('description_quality')}\n"
+        f"   {', '.join(nlp.get('red_flags') or ['No text red flags'])}\n\n"
+        "📊 *Volume Authenticity*\n"
+        f"   {auth.get('authenticity_label') or auth.get('label') or 'N/A'}\n\n"
+        f"⚠️ *Risk Factors* ({len(flags)} triggered)\n"
+        f"{' ; '.join(flags) if flags else 'None'}\n\n"
+        f"✅ *Green Flags* ({len(green)} found)\n"
+        f"{' ; '.join(green) if green else 'None'}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🎯 *Scores*\n"
+        f"   🛡️ Risk Score:  {risk.get('risk_score')}/100   {risk.get('risk_level')}\n"
+        f"   🚀 Moon Score:  {moon.get('moon_score')}/100   {moon.get('label')}\n"
+        f"   📊 Confluence:  {(moon.get('confluence') or {}).get('contributing_categories',0)}/6 categories\n\n"
+        "💡 *Verdict*\n"
+        "   High-volatility degen setup. Size carefully and respect exits.\n"
+        "   Allocation recommendation: keep risk small and predefined.\n\n"
+        "🎯 *If entering:*\n"
+        f"   Entry:   {fmt_price(token_data.get('price_usd') or 0)}\n"
+        f"   SL:      {fmt_price(exits.get('sl') or 0)}\n"
+        f"   TP1:     {fmt_price(exits.get('tp1') or 0)}\n"
+        f"   TP2:     {fmt_price(exits.get('tp2') or 0)}\n"
+        f"   TP3:     {fmt_price(exits.get('tp3') or 0)}\n"
+        f"   ⏰ Time stop: exit if no move in {int(exits.get('time_stop_minutes') or 30)} minutes\n\n"
+        f"🔗 {links}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚠️ DEGEN — high risk only"
+    )

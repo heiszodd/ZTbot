@@ -557,6 +557,33 @@ def setup_db():
                 opened_at TIMESTAMP DEFAULT NOW(),
                 closed_at TIMESTAMP
             );
+            ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS remaining_size_usd FLOAT;
+            ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS partial_closes JSONB DEFAULT '[]';
+            ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS time_stop_minutes INT DEFAULT 30;
+            CREATE TABLE IF NOT EXISTS degen_watchlist (
+                id SERIAL PRIMARY KEY,
+                address VARCHAR(100) UNIQUE,
+                symbol VARCHAR(20),
+                name VARCHAR(100),
+                chain VARCHAR(20),
+                added_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS ca_monitors (
+                id              SERIAL PRIMARY KEY,
+                address         VARCHAR(100) NOT NULL,
+                symbol          VARCHAR(20),
+                name            VARCHAR(100),
+                chain           VARCHAR(20),
+                price_at_add    FLOAT,
+                price_alert_pct FLOAT DEFAULT 5.0,
+                initial_holders INT,
+                initial_risk    INT,
+                trade_id        INT REFERENCES demo_trades(id),
+                active          BOOLEAN DEFAULT TRUE,
+                added_at        TIMESTAMP DEFAULT NOW(),
+                last_checked_at TIMESTAMP,
+                UNIQUE(address)
+            );
             CREATE TABLE IF NOT EXISTS demo_transactions (
                 id SERIAL PRIMARY KEY,
                 section VARCHAR(10),
@@ -2276,3 +2303,121 @@ def get_pending_setups_for_model(model_id: str) -> list:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM pending_setups WHERE model_id=%s ORDER BY last_updated_at DESC", (model_id,))
             return [_pending_row_to_dict(r) for r in cur.fetchall()]
+def add_degen_watchlist(token_data: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO degen_watchlist (address,symbol,name,chain)
+                VALUES (%s,%s,%s,%s)
+                ON CONFLICT (address) DO UPDATE SET symbol=EXCLUDED.symbol,name=EXCLUDED.name,chain=EXCLUDED.chain
+                RETURNING id
+                """,
+                (token_data.get("address"), token_data.get("symbol"), token_data.get("name"), token_data.get("chain") or "SOL"),
+            )
+            rid = int(cur.fetchone()["id"])
+        conn.commit()
+    return rid
+
+
+def add_ca_monitor(token_data: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ca_monitors (address,symbol,name,chain,price_at_add,initial_holders,initial_risk,active,last_checked_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,TRUE,NOW())
+                ON CONFLICT (address) DO UPDATE SET
+                    symbol=EXCLUDED.symbol,
+                    name=EXCLUDED.name,
+                    chain=EXCLUDED.chain,
+                    price_at_add=EXCLUDED.price_at_add,
+                    initial_holders=EXCLUDED.initial_holders,
+                    initial_risk=EXCLUDED.initial_risk,
+                    active=TRUE,
+                    last_checked_at=NOW()
+                RETURNING id
+                """,
+                (
+                    token_data.get("address"),
+                    token_data.get("symbol"),
+                    token_data.get("name"),
+                    token_data.get("chain") or "SOL",
+                    float(token_data.get("price_usd") or 0),
+                    int(token_data.get("holder_count") or 0),
+                    int(token_data.get("risk_score") or 0),
+                ),
+            )
+            rid = int(cur.fetchone()["id"])
+        conn.commit()
+    return rid
+
+
+def get_active_ca_monitors() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM ca_monitors WHERE active=TRUE ORDER BY added_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def remove_ca_monitor(address: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE ca_monitors SET active=FALSE WHERE address=%s", (address,))
+        conn.commit()
+
+
+def update_ca_monitor_check(address: str, price: float, holders: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE ca_monitors SET last_checked_at=NOW(),price_at_add=COALESCE(price_at_add,%s),initial_holders=COALESCE(initial_holders,%s) WHERE address=%s", (price, holders, address))
+        conn.commit()
+
+
+def link_ca_monitor_trade(address: str, trade_id: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE ca_monitors SET trade_id=%s WHERE address=%s", (trade_id, address))
+        conn.commit()
+
+
+def get_demo_trade_by_id(trade_id: int) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM demo_trades WHERE id=%s", (trade_id,))
+            r = cur.fetchone()
+            return dict(r) if r else None
+
+
+def partial_close_demo_trade(trade_id: int, fraction: float = 0.5) -> dict | None:
+    fraction = max(0.01, min(0.99, float(fraction)))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM demo_trades WHERE id=%s", (trade_id,))
+            tr = dict(cur.fetchone() or {})
+            if not tr or tr.get("result"):
+                return None
+            remaining = float(tr.get("remaining_size_usd") or tr.get("position_size_usd") or 0)
+            close_size = remaining * fraction
+            new_remaining = remaining - close_size
+            pnl_pct = float(tr.get("current_pnl_pct") or 0)
+            realized = close_size * pnl_pct / 100
+            cur.execute(
+                "UPDATE demo_accounts SET balance=balance+%s+%s,total_pnl=COALESCE(total_pnl,0)+%s WHERE section=%s",
+                (close_size, realized, realized, tr.get("section")),
+            )
+            partials = _decode_json_field(tr.get("partial_closes"), [])
+            partials.append({"ts": int(time.time()), "fraction": fraction, "size": close_size, "price": tr.get("current_price"), "pnl_usd": realized})
+            cur.execute(
+                "UPDATE demo_trades SET remaining_size_usd=%s, partial_closes=%s, sl=entry_price WHERE id=%s",
+                (new_remaining, json.dumps(partials), trade_id),
+            )
+        conn.commit()
+    return get_demo_trade_by_id(trade_id)
+
+
+def extend_demo_trade_time_stop(trade_id: int, minutes: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE demo_trades SET time_stop_minutes=COALESCE(time_stop_minutes,30)+%s WHERE id=%s", (int(minutes), trade_id))
+        conn.commit()
