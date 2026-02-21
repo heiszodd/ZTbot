@@ -47,9 +47,11 @@ def fmt_welcome(active_count: int, alert_count: int) -> str:
 
 # ── Dashboard ─────────────────────────────────────────
 def fmt_dashboard(active_models: list, live_alerts: list, prices: dict) -> str:
+    updated_at = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
     lines = [
         "📊  *Mission Control Dashboard*",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"_Updated: {updated_at}_",
         "",
     ]
 
