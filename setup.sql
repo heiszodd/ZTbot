@@ -151,3 +151,42 @@ CREATE TABLE IF NOT EXISTS weekly_reviews (
     note TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+
+CREATE TABLE IF NOT EXISTS news_events (
+    id              SERIAL PRIMARY KEY,
+    event_name      VARCHAR(200),
+    pair            VARCHAR(20),
+    event_time_utc  TIMESTAMP,
+    impact          VARCHAR(10),
+    forecast        VARCHAR(50),
+    previous        VARCHAR(50),
+    actual          VARCHAR(50),
+    direction       VARCHAR(10),
+    confidence      VARCHAR(10),
+    reasoning       TEXT,
+    signal_sent     BOOLEAN DEFAULT FALSE,
+    briefing_sent   BOOLEAN DEFAULT FALSE,
+    suppressed      BOOLEAN DEFAULT FALSE,
+    source          VARCHAR(50),
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS news_trades (
+    id              SERIAL PRIMARY KEY,
+    news_event_id   INT REFERENCES news_events(id),
+    pair            VARCHAR(20),
+    direction       VARCHAR(5),
+    entry_price     FLOAT,
+    sl              FLOAT,
+    tp1             FLOAT,
+    tp2             FLOAT,
+    tp3             FLOAT,
+    rr              FLOAT,
+    pre_news_price  FLOAT,
+    signal_sent_at  TIMESTAMP DEFAULT NOW(),
+    result          VARCHAR(5),
+    closed_at       TIMESTAMP
+);
+
+ALTER TABLE news_events ADD COLUMN IF NOT EXISTS suppressed BOOLEAN DEFAULT FALSE;

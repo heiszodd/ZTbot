@@ -23,7 +23,8 @@ def main_kb():
         [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="nav:models")],
         [InlineKeyboardButton("📊 Stats", callback_data="nav:stats"), InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline")],
         [InlineKeyboardButton("📋 Alerts", callback_data="nav:alerts"), InlineKeyboardButton("💹 Prices", callback_data="nav:prices")],
-        [InlineKeyboardButton("🎯 Goal", callback_data="nav:goal"), InlineKeyboardButton("💰 Budget", callback_data="nav:budget")],
+        [InlineKeyboardButton("📰 News", callback_data="nav:news"), InlineKeyboardButton("🎯 Goal", callback_data="nav:goal")],
+        [InlineKeyboardButton("💰 Budget", callback_data="nav:budget")],
         [InlineKeyboardButton("📓 Journal", callback_data="nav:journal"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
         [InlineKeyboardButton("➕ New Model", callback_data="wiz:start")],
     ])
@@ -75,6 +76,9 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("\n".join(lines), parse_mode="Markdown")
     elif dest == "status":
         await q.message.reply_text(formatters.fmt_status(engine.get_session(), True, len(db.get_active_models()), True), parse_mode="Markdown")
+    elif dest == "news":
+        from handlers import news_handler
+        await news_handler._send_news_screen(q.message.reply_text)
     elif dest == "journal":
         await journal_cmd_like(q.message.reply_text)
     elif dest == "heatmap":
