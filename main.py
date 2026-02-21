@@ -299,33 +299,16 @@ def _render_dashboard(state: dict) -> None:
 
     _render_section("📋 Menu Options")
     print("1) Run Backtest")
-    print("2) Refresh Specific Pair Price")
+    print("2) Price Check (disabled in dashboard mode)")
     print("3) Toggle Model")
     print("4) View Logs")
     print("5) Exit")
 
 
 def _refresh_specific_pair_price(state: dict) -> None:
-    # CRITICAL RULE: no live price fetch on dashboard render.
-    # This path is the ONLY explicit one-shot live fetch entrypoint.
-    pair = input("Pair (e.g., BTCUSDT): ").strip().upper()
-    if not pair:
-        return
-    print("Checking cache before one-time fetch...")
-    log.info("Checking cache for manual pair refresh: %s", pair)
-    fetched = px.fetch_prices([pair])
-    if not fetched:
-        print("No price data available.")
-        log.warning("Manual pair refresh failed for %s", pair)
-    else:
-        value = fetched.get(pair)
-        system = state.setdefault("system_health", system_health.copy())
-        system["api_calls_today"] = int(px.get_api_health().get("api_call_count", 0))
-        print(f"{pair} => {px.fmt_price(value)}")
-        log.info("One-time manual price refresh: %s => %s", pair, value)
-        # Brief display, then clear so prices never persist on dashboard by default.
-        time.sleep(2)
-        clear_screen()
+    _ = state
+    print("Live price checks are disabled in dashboard mode.")
+    print("Use the dedicated Prices screen in Telegram for on-demand quotes.")
     input("Press Enter to continue...")
 
 

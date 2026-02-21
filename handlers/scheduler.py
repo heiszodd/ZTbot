@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from telegram.ext import ContextTypes
-import db, engine, prices as px
+import db, engine
 from config import CHAT_ID
 
 
@@ -27,10 +27,7 @@ async def send_morning_briefing(context: ContextTypes.DEFAULT_TYPE):
 async def send_session_open(context: ContextTypes.DEFAULT_TYPE):
     active = db.get_active_models()
     pairs = sorted({m["pair"] for m in active})
-    bias_lines = []
-    for pair in pairs[:8]:
-        p = px.get_price(pair)
-        bias_lines.append(f"{pair}: {px.fmt_price(p) if p else 'n/a'}")
+    bias_lines = [f"{pair}: monitoring active" for pair in pairs[:8]]
     text = "✅ *Session Open*\n" + "\n".join(bias_lines or ["No active pairs."])
     await context.application.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown")
 
