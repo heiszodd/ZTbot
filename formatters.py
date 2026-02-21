@@ -38,7 +38,7 @@ def fmt_model_detail(m, price=None):
     return f"⚙️ *{m['name']}*\nPair `{m['pair']}` TF `{m['timeframe']}`\nPrice `{fmt_price(price) if price else '-'}`\n{rules}`"
 
 
-def fmt_alert(setup, model, scored, risk_pct, risk_usd, at_capacity=False, max_concurrent=3, correlation_warning=None, reentry=False):
+def fmt_alert(setup, model, scored, risk_pct, risk_usd, at_capacity=False, max_concurrent=3, correlation_warning=None, reentry=False, pending_duration=None, pending_checks=None):
     passed, failed = scored.get('passed_rules', []), scored.get('failed_rules', [])
     lines = ["🚨 *Setup Alert*", "━━━━━━━━━━━━━━━━━━━━━━━━", f"📌 *{model['name']}* · `{setup['pair']}`", f"🧭 {_direction_icon(setup.get('direction', 'BUY'))}", f"💹 Entry `{fmt_price(setup.get('entry'))}`", f"🛑 SL `{fmt_price(setup.get('sl'))}` · 🎯 TP `{fmt_price(setup.get('tp'))}`", "", "🧠 *Confluence*"]
     if scored.get('htf_conflict'): lines.insert(2, "⚠️ *HTF Conflict: Score reduced by `-1.5`*")
@@ -60,6 +60,9 @@ def fmt_alert(setup, model, scored, risk_pct, risk_usd, at_capacity=False, max_c
     if correlation_warning: lines.append(correlation_warning)
     if at_capacity: lines.append(f"⚠️ Max concurrent trades reached ({max_concurrent}).")
     if reentry: lines.append("♻️ Re-entry zone revisited after prior skip.")
+    if pending_duration is not None:
+        checks = pending_checks if pending_checks is not None else 0
+        lines.append(f"⏳ Watched for {pending_duration} before confirming — {checks} criteria checks passed")
     return "\n".join(lines)
 
 
@@ -125,7 +128,8 @@ def fmt_landing() -> str:
     )
 
 
-def fmt_perps_home(active_models: list, recent_setups: list, session: str, time_wat: str) -> str:
+def fmt_perps_home(active_models: list, recent_setups: list, session: str, time_wat: str, pending_setups: list | None = None) -> str:
+    pending_setups = pending_setups or []
     lines = [
         "📈 Perps Trading",
         "━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -138,6 +142,16 @@ def fmt_perps_home(active_models: list, recent_setups: list, session: str, time_
             lines.append(f"• {m.get('name')} — {m.get('pair')} {m.get('timeframe')}")
     else:
         lines.append("No active models — tap Models to create one")
+
+    lines.extend(["", f"⏳ *Pending Setups* ({len(pending_setups)})"])
+    if not pending_setups:
+        lines.append("No setups building right now")
+    else:
+        for p in pending_setups[:5]:
+            pct = float(p.get('score_pct') or 0)
+            bar = _bar(min(100, pct), 100, 10)
+            lines.append(f"• {p.get('pair')} {p.get('timeframe')} [{bar}] {pct:.0f}%")
+
     lines.append("")
     lines.append(f"🚨 Recent Setups ({len(recent_setups)} in last 2h)")
     if recent_setups:
@@ -170,4 +184,70 @@ def fmt_degen_home(active_models: list, tracked_wallets: list, scanner_active: b
     else:
         lines.append("No wallets tracked — tap Wallets to add one")
     lines.extend(["", f"🆕 New Finds Today: {finds_today} tokens scanned", f"🚨 Alerts Today: {alerts_today} degen alerts sent"])
+    return "\n".join(lines)
+
+
+def fmt_pending_setup(setup: dict, classification: dict, score_result: dict) -> str:
+    score_pct = float(classification.get("score_pct", 0) or 0)
+    filled = round(max(0, min(100, score_pct)) / 10)
+    bar = "█" * filled + "░" * (10 - filled)
+    passed = classification.get("passed_rules", []) or []
+    failed = classification.get("failed_rules", []) or []
+    mandatory_failed = classification.get("mandatory_failed", []) or []
+    closest = classification.get("closest_rules", []) or []
+    trend = setup.get("trend", "➡️ Score unchanged")
+    levels = setup.get("levels", {})
+
+    lines = [
+        "⏳ *PENDING SETUP*",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"⚙️ Model:  {setup.get('model_name', '-')}",
+        f"🪙 Pair:   {setup.get('pair', '-')}   {setup.get('timeframe', '-')}",
+        f"📊 Bias:   {'📈 Bullish' if (setup.get('direction') or '').upper() == 'BUY' else '📉 Bearish'}",
+        f"⏰ First seen: {setup.get('first_seen_label', '-')}",
+        f"🔄 Last check: {setup.get('last_check_label', '-')}  (check #{setup.get('check_count', 1)})",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "📊 *Score Progress*",
+        f"   [{bar}] {score_pct:.0f}% of threshold",
+        f"   Score:     {score_result.get('score', score_result.get('final_score', 0)):.2f} / {setup.get('min_score_threshold', 0):.2f}",
+        f"   Missing:   {classification.get('missing_score', 0):.2f} more points needed",
+        f"   Rules:     {classification.get('rules_passed_count', len(passed))}/{classification.get('rules_total_count', len(passed)+len(failed))} passing",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"✅ *Criteria Met* ({len(passed)})",
+    ]
+    for r in passed:
+        lines.append(f"   ✅ {r.get('name')}   +{r.get('weight', 0)}pts")
+
+    lines.extend(["", "━━━━━━━━━━━━━━━━━━━━━━━━", f"❌ *Criteria Missing* ({len(failed)})"])
+    for r in failed:
+        lines.append(f"   ❌ {r.get('name')}   ({r.get('weight', 0)}pts missing)")
+
+    if mandatory_failed:
+        lines.extend(["", "🔒 *Required Rules Not Met*"])
+        for r in mandatory_failed:
+            nm = r.get('name') if isinstance(r, dict) else r
+            lines.append(f"   🔒 {nm} — REQUIRED — setup cannot complete without this")
+
+    lines.extend(["", "━━━━━━━━━━━━━━━━━━━━━━━━", "👀 *Watch For*", "These rules would complete the setup:"])
+    for r in closest[:3]:
+        lines.append(f"   ⚡ {r.get('name')}   +{r.get('weight', 0)}pts  needs to flip to pass")
+
+    lines.extend([
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "💹 *Current Levels*",
+        f"   Price:  ${levels.get('price', setup.get('entry_price', 0))}",
+        f"   Entry:  ${setup.get('entry_price', levels.get('entry', 0))}",
+        f"   SL:     ${setup.get('sl', 0)}",
+        f"   TP1:    ${setup.get('tp1', 0)}",
+        f"   TP2:    ${setup.get('tp2', 0)}",
+        f"   TP3:    ${setup.get('tp3', 0)}",
+        "",
+        trend,
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "⏳ Monitoring... updates every 30s",
+    ])
     return "\n".join(lines)

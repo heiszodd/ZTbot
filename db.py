@@ -254,6 +254,65 @@ def setup_db():
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
     ALTER TABLE news_events ADD COLUMN IF NOT EXISTS suppressed BOOLEAN DEFAULT FALSE;
+    CREATE TABLE IF NOT EXISTS pending_setups (
+        id                  SERIAL PRIMARY KEY,
+        model_id            VARCHAR(50) NOT NULL,
+        model_name          VARCHAR(100),
+        pair                VARCHAR(20) NOT NULL,
+        timeframe           VARCHAR(10),
+        direction           VARCHAR(10),
+        entry_price         FLOAT,
+        sl                  FLOAT,
+        tp1                 FLOAT,
+        tp2                 FLOAT,
+        tp3                 FLOAT,
+        current_score       FLOAT,
+        max_possible_score  FLOAT,
+        score_pct           FLOAT,
+        min_score_threshold FLOAT,
+        passed_rules        JSONB,
+        failed_rules        JSONB,
+        mandatory_passed    JSONB,
+        mandatory_failed    JSONB,
+        rule_snapshots      JSONB,
+        telegram_message_id BIGINT,
+        telegram_chat_id    BIGINT,
+        status              VARCHAR(20) DEFAULT 'pending',
+        first_detected_at   TIMESTAMP DEFAULT NOW(),
+        last_updated_at     TIMESTAMP DEFAULT NOW(),
+        promoted_at         TIMESTAMP,
+        expired_at          TIMESTAMP,
+        check_count         INT DEFAULT 1,
+        peak_score_pct      FLOAT,
+        UNIQUE(model_id, pair, timeframe)
+    );
+
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS direction VARCHAR(10);
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS entry_price FLOAT;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS sl FLOAT;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS tp1 FLOAT;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS tp2 FLOAT;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS tp3 FLOAT;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS current_score FLOAT;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS max_possible_score FLOAT;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS score_pct FLOAT;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS min_score_threshold FLOAT;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS passed_rules JSONB;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS failed_rules JSONB;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS mandatory_passed JSONB;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS mandatory_failed JSONB;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS rule_snapshots JSONB;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS telegram_message_id BIGINT;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS telegram_chat_id BIGINT;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending';
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS first_detected_at TIMESTAMP DEFAULT NOW();
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS last_updated_at TIMESTAMP DEFAULT NOW();
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMP;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS expired_at TIMESTAMP;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS check_count INT DEFAULT 1;
+    ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS peak_score_pct FLOAT;
+
     """
     degen_sql = """
     CREATE TABLE IF NOT EXISTS degen_tokens (
@@ -2089,3 +2148,131 @@ def get_demo_stats(section: str) -> dict:
     win = int(acct.get("winning_trades") or 0)
     acct["win_rate"] = (win / total * 100) if total else 0
     return acct
+
+
+# ── Pending Setups ───────────────────────────────────
+def _pending_row_to_dict(row):
+    if not row:
+        return None
+    d = dict(row)
+    for k in ("passed_rules", "failed_rules", "mandatory_passed", "mandatory_failed", "rule_snapshots"):
+        if d.get(k) is None:
+            d[k] = [] if k != "rule_snapshots" else {}
+    return d
+
+
+def save_pending_setup(setup: dict) -> int:
+    payload = dict(setup or {})
+    for key in ("passed_rules", "failed_rules", "mandatory_passed", "mandatory_failed", "rule_snapshots"):
+        payload[key] = json.dumps(payload.get(key, [] if key != "rule_snapshots" else {}))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO pending_setups (
+                    model_id, model_name, pair, timeframe, direction,
+                    entry_price, sl, tp1, tp2, tp3, current_score, max_possible_score,
+                    score_pct, min_score_threshold, passed_rules, failed_rules,
+                    mandatory_passed, mandatory_failed, rule_snapshots,
+                    telegram_message_id, telegram_chat_id, status,
+                    first_detected_at, last_updated_at, check_count, peak_score_pct
+                ) VALUES (
+                    %(model_id)s, %(model_name)s, %(pair)s, %(timeframe)s, %(direction)s,
+                    %(entry_price)s, %(sl)s, %(tp1)s, %(tp2)s, %(tp3)s, %(current_score)s, %(max_possible_score)s,
+                    %(score_pct)s, %(min_score_threshold)s, %(passed_rules)s::jsonb, %(failed_rules)s::jsonb,
+                    %(mandatory_passed)s::jsonb, %(mandatory_failed)s::jsonb, %(rule_snapshots)s::jsonb,
+                    %(telegram_message_id)s, %(telegram_chat_id)s, %(status)s,
+                    COALESCE(%(first_detected_at)s, NOW()), NOW(), COALESCE(%(check_count)s, 1), %(peak_score_pct)s
+                )
+                ON CONFLICT (model_id, pair, timeframe) DO UPDATE SET
+                    model_name=EXCLUDED.model_name,
+                    direction=EXCLUDED.direction,
+                    entry_price=EXCLUDED.entry_price,
+                    sl=EXCLUDED.sl,
+                    tp1=EXCLUDED.tp1,
+                    tp2=EXCLUDED.tp2,
+                    tp3=EXCLUDED.tp3,
+                    current_score=EXCLUDED.current_score,
+                    max_possible_score=EXCLUDED.max_possible_score,
+                    score_pct=EXCLUDED.score_pct,
+                    min_score_threshold=EXCLUDED.min_score_threshold,
+                    passed_rules=EXCLUDED.passed_rules,
+                    failed_rules=EXCLUDED.failed_rules,
+                    mandatory_passed=EXCLUDED.mandatory_passed,
+                    mandatory_failed=EXCLUDED.mandatory_failed,
+                    rule_snapshots=EXCLUDED.rule_snapshots,
+                    telegram_message_id=COALESCE(EXCLUDED.telegram_message_id, pending_setups.telegram_message_id),
+                    telegram_chat_id=COALESCE(EXCLUDED.telegram_chat_id, pending_setups.telegram_chat_id),
+                    status=EXCLUDED.status,
+                    last_updated_at=NOW(),
+                    check_count=COALESCE(pending_setups.check_count, 0) + 1,
+                    peak_score_pct=GREATEST(COALESCE(pending_setups.peak_score_pct, 0), COALESCE(EXCLUDED.score_pct, 0))
+                RETURNING id
+            """, payload)
+            row = cur.fetchone()
+        conn.commit()
+    return int(row["id"])
+
+
+def get_pending_setup(model_id: str, pair: str, timeframe: str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM pending_setups WHERE model_id=%s AND pair=%s AND timeframe=%s", (model_id, pair, timeframe))
+            return _pending_row_to_dict(cur.fetchone())
+
+
+def get_all_pending_setups(status: str = 'pending') -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM pending_setups WHERE status=%s ORDER BY score_pct DESC NULLS LAST, last_updated_at DESC", (status,))
+            return [_pending_row_to_dict(r) for r in cur.fetchall()]
+
+
+def update_pending_setup(id: int, fields: dict) -> None:
+    if not fields:
+        return
+    data = dict(fields)
+    for key in ("passed_rules", "failed_rules", "mandatory_passed", "mandatory_failed", "rule_snapshots"):
+        if key in data:
+            data[key] = json.dumps(data[key])
+    keys = list(data.keys())
+    sets = ", ".join([f"{k}=%s" + ("::jsonb" if k in ("passed_rules", "failed_rules", "mandatory_passed", "mandatory_failed", "rule_snapshots") else "") for k in keys])
+    vals = [data[k] for k in keys]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE pending_setups SET {sets} WHERE id=%s", (*vals, id))
+        conn.commit()
+
+
+def promote_pending_setup(id: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE pending_setups SET status='promoted', promoted_at=NOW(), last_updated_at=NOW() WHERE id=%s", (id,))
+        conn.commit()
+
+
+def expire_pending_setup(id: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE pending_setups SET status='expired', expired_at=NOW(), last_updated_at=NOW() WHERE id=%s", (id,))
+        conn.commit()
+
+
+def delete_pending_setup(id: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM pending_setups WHERE id=%s", (id,))
+        conn.commit()
+
+
+def delete_old_expired_setups(hours: int = 24) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM pending_setups WHERE status='expired' AND expired_at < NOW() - make_interval(hours => %s)", (hours,))
+        conn.commit()
+
+
+def get_pending_setups_for_model(model_id: str) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM pending_setups WHERE model_id=%s ORDER BY last_updated_at DESC", (model_id,))
+            return [_pending_row_to_dict(r) for r in cur.fetchall()]

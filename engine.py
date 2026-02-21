@@ -598,3 +598,71 @@ def check_volume_spike(candles, threshold=2.0):
         return False, 0.0
     mult = cur / avg
     return mult >= threshold, round(mult, 2)
+
+
+def classify_score_result(score_result: dict, model: dict) -> dict:
+    min_score = float(model.get("min_score") or model.get("tier_c") or 1.0)
+    score_value = float(score_result.get("score", score_result.get("final_score", 0.0)) or 0.0)
+    score_pct = (score_value / min_score * 100) if min_score else 0.0
+
+    rules = model.get("rules", []) or []
+    passed_rules = score_result.get("passed_rules", []) or []
+    failed_rules = score_result.get("failed_rules", []) or []
+    mandatory_failed = score_result.get("mandatory_failed", []) or []
+
+    passed_names = {r.get("name") if isinstance(r, dict) else r for r in passed_rules}
+    mandatory_passed = [
+        r.get("name")
+        for r in rules
+        if r.get("mandatory") and r.get("name") in passed_names
+    ]
+
+    rules_passed_count = len(passed_rules)
+    rules_total_count = len(rules)
+    rules_pct = (rules_passed_count / max(rules_total_count, 1)) * 100
+    mandatory_all_passed = len(mandatory_failed) == 0
+
+    invalidated = bool(score_result.get("invalidated")) or (score_result.get("valid") is False)
+    reason = score_result.get("invalidation_reason") or score_result.get("invalid_reason")
+
+    if invalidated:
+        classification = "INVALIDATED"
+    elif score_pct >= 100 and mandatory_all_passed:
+        classification = "FULL_ALERT"
+    elif score_pct >= 50 or rules_pct >= 50:
+        classification = "PENDING"
+    else:
+        classification = "INSUFFICIENT"
+
+    failed_sorted = sorted(
+        [r for r in failed_rules if isinstance(r, dict)],
+        key=lambda x: float(x.get("weight", 0) or 0),
+        reverse=True,
+    )
+    closest_rules = failed_sorted[:3]
+
+    missing_score = max(0.0, min_score - score_value)
+    running = 0.0
+    missing_rules = []
+    for rule in failed_sorted:
+        missing_rules.append(rule)
+        running += float(rule.get("weight", 0) or 0)
+        if running >= missing_score:
+            break
+
+    return {
+        "classification": classification,
+        "reason": reason,
+        "score_pct": round(score_pct, 2),
+        "rules_pct": round(rules_pct, 2),
+        "rules_passed_count": rules_passed_count,
+        "rules_total_count": rules_total_count,
+        "mandatory_all_passed": mandatory_all_passed,
+        "mandatory_passed": mandatory_passed,
+        "mandatory_failed": mandatory_failed,
+        "passed_rules": passed_rules,
+        "failed_rules": failed_rules,
+        "missing_score": round(missing_score, 2),
+        "missing_rules": missing_rules,
+        "closest_rules": closest_rules,
+    }
