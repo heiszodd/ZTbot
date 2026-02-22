@@ -86,14 +86,10 @@ async def send_monthly_report(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_end_of_day_summary(context: ContextTypes.DEFAULT_TYPE):
-    with db.get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) c FROM alert_log WHERE alerted_at::date=NOW()::date")
-            setups = int(cur.fetchone()['c'] or 0)
-            cur.execute("SELECT COUNT(*) c, COALESCE(SUM(rr),0) r FROM trade_log WHERE logged_at::date=NOW()::date")
-            row = cur.fetchone()
-            trades = int(row['c'] or 0)
-            r = float(row['r'] or 0)
+    counts = db.get_end_of_day_counts()
+    setups = counts["setups"]
+    trades = counts["trades"]
+    r = counts["total_r"]
     score = db.get_user_preferences(CHAT_ID).get('discipline_score', 100)
     streak = db.get_losing_streak()
     mot = "Great execution today." if r > 0 else "Flat day, stay consistent." if r == 0 else "Protect capital and review mistakes."

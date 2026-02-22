@@ -34,10 +34,7 @@ async def result_cmd(update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Usage: `/result <trade_id> TP` or `/result <trade_id> SL`", parse_mode="Markdown")
     trade_id, result = int(args[0]), args[1].upper()
     db.update_trade_result(trade_id, result)
-    with db.get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT model_id, pair FROM trade_log WHERE id=%s", (trade_id,))
-            tr = dict(cur.fetchone() or {})
+    tr = db.get_trade_model_pair(trade_id)
     if tr.get("model_id"):
         if result == "SL":
             streak = db.increment_consecutive_losses(tr["model_id"])

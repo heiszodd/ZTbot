@@ -327,55 +327,99 @@ async def handle_wizard_cb(update, context):
 async def handle_confirm_save(update, context):
     query = update.callback_query
     await query.answer("Saving...")
+
     try:
-        model_id = context.user_data.get("model_id") or f"model_{int(datetime.utcnow().timestamp())}"
-        name = context.user_data.get("model_name", "Unnamed Model")
-        pair = context.user_data.get("model_pair", "BTCUSDT")
+        import time
+        model_id = (
+            context.user_data.get("model_id")
+            or f"model_{int(time.time())}"
+        )
+        name      = context.user_data.get("model_name", "Unnamed Model")
+        pair      = context.user_data.get("model_pair", "BTCUSDT")
         timeframe = context.user_data.get("model_timeframe", "1h")
-        session = context.user_data.get("model_session", "Any")
-        bias = context.user_data.get("model_bias", "Both")
-        rules = context.user_data.get("model_rules", [])
+        session   = context.user_data.get("model_session", "Any")
+        bias      = context.user_data.get("model_bias", "Both")
+        rules     = context.user_data.get("model_rules", [])
+        desc      = context.user_data.get("model_description", "")
+
         if not rules:
-            await query.answer("❌ No rules added — go back and add rules first", show_alert=True)
-            return WIZARD_RULES
+            await query.answer(
+                "❌ No rules added — go back and add rules first",
+                show_alert=True
+            )
+            return
+
         max_score = sum(r.get("weight", 1.0) for r in rules)
+
         model = {
-            "id": model_id,
-            "name": name,
-            "pair": pair,
-            "timeframe": timeframe,
-            "session": session,
-            "bias": bias,
-            "status": "inactive",
-            "rules": rules,
-            "tier_a_threshold": round(max_score * 0.80, 2),
-            "tier_b_threshold": round(max_score * 0.65, 2),
-            "tier_c_threshold": round(max_score * 0.50, 2),
-            "min_score": round(max_score * 0.50, 2),
-            "description": context.user_data.get("model_description", ""),
+            "id":                model_id,
+            "name":              name,
+            "pair":              pair,
+            "timeframe":         timeframe,
+            "session":           session,
+            "bias":              bias,
+            "status":            "inactive",
+            "rules":             rules,
+            "tier_a_threshold":  round(max_score * 0.80, 2),
+            "tier_b_threshold":  round(max_score * 0.65, 2),
+            "tier_c_threshold":  round(max_score * 0.50, 2),
+            "min_score":         round(max_score * 0.50, 2),
+            "description":       desc,
         }
+
+        # This is the ONLY db call needed — everything
+        # else happens inside db.save_model()
         saved_id = db.save_model(model)
-        for key in [k for k in list(context.user_data) if k.startswith("model_")]:
+
+        # Clear wizard state
+        for key in [k for k in context.user_data
+                    if k.startswith("model_")]:
             context.user_data.pop(key, None)
         context.user_data.pop("in_conversation", None)
+
         await query.message.edit_text(
-            f"✅ *Model Saved Successfully*\n━━━━━━━━━━━━━━━━━━━━━━━━\n⚙️ {name}\n🪙 {pair}   {timeframe}\n📊 Bias:   {fmt_bias(bias)}\n📋 Rules:  {len(rules)}\n🏆 Min score: {model['min_score']}\n\nModel saved as inactive.\nActivate it to start receiving alerts.",
+            f"✅ *Model Saved*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚙️ {name}\n"
+            f"🪙 {pair}   {timeframe}\n"
+            f"📊 Bias:   {fmt_bias(bias)}\n"
+            f"📋 Rules:  {len(rules)}\n"
+            f"🏆 Min score: {model['min_score']}\n\n"
+            f"Model saved as inactive.\n"
+            f"Activate it to start receiving alerts.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("▶️ Activate Now", callback_data=f"model:toggle:{saved_id}")],
-                [InlineKeyboardButton("⚙️ View All Models", callback_data="nav:models")],
-                [InlineKeyboardButton("🏠 Perps Home", callback_data="nav:perps_home")],
-            ]),
+                [InlineKeyboardButton(
+                    "▶️ Activate Now",
+                    callback_data=f"model:toggle:{saved_id}"
+                )],
+                [InlineKeyboardButton(
+                    "⚙️ View All Models",
+                    callback_data="nav:models"
+                )],
+                [InlineKeyboardButton(
+                    "🏠 Perps Home",
+                    callback_data="nav:perps_home"
+                )]
+            ])
         )
         return ConversationHandler.END
+
     except Exception as e:
-        log.error(f"Wizard save failed: {type(e).__name__}: {e}")
+        import traceback
+        log.error(f"Save model failed: {traceback.format_exc()}")
         await query.message.edit_text(
-            f"❌ *Save failed*\n\n`{type(e).__name__}: {str(e)[:200]}`\n\nYour model data is still in memory.\nTap Retry to try again.",
+            f"❌ *Save failed*\n\n"
+            f"`{type(e).__name__}: {str(e)[:300]}`\n\n"
+            f"Tap retry to try again.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Retry Save", callback_data="wizard:confirm_save")]]),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "🔄 Retry",
+                    callback_data="wizard:confirm_save"
+                )
+            ]])
         )
-        return WIZARD_REVIEW
 
 
 async def handle_wizard_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
