@@ -250,6 +250,11 @@ def setup_db():
     ALTER TABLE models ADD COLUMN IF NOT EXISTS auto_deactivate_threshold INT DEFAULT 5;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS key_levels JSONB NOT NULL DEFAULT '[]';
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS description TEXT;
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS min_score FLOAT;
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_a_threshold FLOAT;
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_b_threshold FLOAT;
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_c_threshold FLOAT;
 
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
