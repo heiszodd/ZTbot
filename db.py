@@ -72,8 +72,16 @@ def get_conn():
 
 
 def release_conn(conn):
-    if _pool is not None and conn is not None:
-        _pool.putconn(conn)
+    if _pool is None or conn is None:
+        return
+    raw_conn = getattr(conn, "_conn", conn)
+    try:
+        _pool.putconn(raw_conn)
+    except Exception:
+        try:
+            raw_conn.close()
+        except Exception:
+            pass
 
 
 def setup_db():
@@ -701,7 +709,7 @@ def save_model(model: dict) -> str:
     _ensure_pool()
     conn = None
     try:
-        conn = get_conn()
+        conn = acquire_conn()
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO models
@@ -1562,7 +1570,7 @@ def save_degen_model(model: dict) -> str:
     _ensure_pool()
     conn = None
     try:
-        conn = get_conn()
+        conn = acquire_conn()
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO degen_models
@@ -1635,7 +1643,7 @@ def get_trade_model_pair(trade_id: int) -> dict:
 def activate_all_master_models() -> int:
     conn = None
     try:
-        conn = get_conn()
+        conn = acquire_conn()
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE models
@@ -1654,7 +1662,7 @@ def activate_all_master_models() -> int:
 def activate_master_models_by_category(cat_key: str) -> int:
     conn = None
     try:
-        conn = get_conn()
+        conn = acquire_conn()
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE models
