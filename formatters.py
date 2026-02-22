@@ -35,7 +35,8 @@ def fmt_models(models):
 
 def fmt_model_detail(m, price=None):
     rules = "\n".join([f"• {'🔒' if r.get('mandatory') else '🔓'} {r['name']} +{r['weight']}" for r in m.get('rules', [])])
-    return f"⚙️ *{m['name']}*\nPair `{m['pair']}` TF `{m['timeframe']}`\nPrice `{fmt_price(price) if price else '-'}`\n{rules}`"
+    badge = "🏆 *MASTER MODEL*\n" if str(m.get("id", "")).startswith("MM_") else ""
+    return f"{badge}⚙️ *{m['name']}*\nPair `{m['pair']}` TF `{m['timeframe']}`\nPrice `{fmt_price(price) if price else '-'}`\n{rules}`"
 
 
 def fmt_alert(setup, model, scored, risk_pct, risk_usd, at_capacity=False, max_concurrent=3, correlation_warning=None, reentry=False, pending_duration=None, pending_checks=None):

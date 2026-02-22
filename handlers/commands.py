@@ -11,6 +11,42 @@ from config import CHAT_ID, SUPPORTED_PAIRS, SUPPORTED_TIMEFRAMES, SUPPORTED_SES
 
 log = logging.getLogger(__name__)
 
+MASTER_CATEGORY_LABELS = {
+    "TC": "📈 Trend Continuation",
+    "REV": "🔄 Reversal",
+    "LIQ": "💧 Liquidity Grab",
+    "OB": "📦 Order Block",
+    "FVG": "⚡ Fair Value Gap",
+    "SES": "⏰ Session-Specific",
+    "MP": "🌐 Multi-Pair",
+    "HTF": "📊 HTF Swing",
+    "FX": "💱 Forex",
+    "ADV": "🧠 Advanced Concepts",
+}
+
+QUICK_DEPLOY_PACKS = {
+    "ICT_CORE": {
+        "name": "Starter Pack 1 — ICT Core",
+        "description": "The essential ICT concepts — OB, FVG, liquidity grabs",
+        "models": ["MM_LIQ_01", "MM_LIQ_02", "MM_OB_01", "MM_OB_02", "MM_FVG_01", "MM_FVG_02"],
+    },
+    "LONDON": {
+        "name": "Starter Pack 2 — London Specialist",
+        "description": "All London session models for peak-hour trading",
+        "models": ["MM_SES_01", "MM_SES_02", "MM_LIQ_03", "MM_LIQ_04", "MM_ADV_05", "MM_ADV_03"],
+    },
+    "SWING": {
+        "name": "Starter Pack 4 — Swing Trader",
+        "description": "Daily and 4H models for swing positions",
+        "models": ["MM_HTF_01", "MM_HTF_02", "MM_HTF_03", "MM_REV_03", "MM_REV_04"],
+    },
+    "ADV": {
+        "name": "Starter Pack 5 — Advanced ICT",
+        "description": "All advanced ICT concept models",
+        "models": [f"MM_ADV_0{i}" for i in range(1, 9)],
+    },
+}
+
 GOAL_SELECT, GOAL_MANUAL = range(2)
 BUDGET_TARGET_SELECT, BUDGET_TARGET_MANUAL, BUDGET_LOSS_SELECT, BUDGET_LOSS_MANUAL, BUDGET_CONFIRM = range(10, 15)
 
@@ -204,9 +240,65 @@ def _model_edit_value_kb(model_id: str, field: str, options: list[str]) -> Inlin
 async def _render_models(q):
     models = db.get_all_models()
     rows = [[InlineKeyboardButton(f"{'🟢' if m['status'] == 'active' else '⚫'} {m['name']} ({m['pair']})", callback_data=f"model:detail:{m['id']}")] for m in models]
+    rows.append([InlineKeyboardButton("🏆 Master Models", callback_data="model:master")])
     rows.append([InlineKeyboardButton("🗑 Delete All Models", callback_data="model:delete_all_confirm")])
     rows.append([InlineKeyboardButton("🏠 Home", callback_data="nav:home")])
     await q.message.reply_text(formatters.fmt_models(models), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+
+
+def _master_models_grouped(models):
+    grouped = {k: [] for k in MASTER_CATEGORY_LABELS.keys()}
+    for m in models:
+        if not str(m.get("id", "")).startswith("MM_"):
+            continue
+        key = m["id"].split("_")[1]
+        if key in grouped:
+            grouped[key].append(m)
+    return grouped
+
+
+async def _render_master_models(q):
+    grouped = _master_models_grouped(db.get_all_models())
+    text = [
+        "🏆 *MASTER MODELS*",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "Pre-built professional trading models.",
+        "Activate any model to start scanning.",
+        "",
+    ]
+    rows = []
+    for key, label in MASTER_CATEGORY_LABELS.items():
+        n = len(grouped[key])
+        text.append(f"{label} ({n} models)")
+        rows.append([InlineKeyboardButton(f"{label} ({n})", callback_data=f"model:mastercat:{key}")])
+    rows.append([InlineKeyboardButton("⚡ Quick Deploy", callback_data="model:quickdeploy")])
+    rows.append([InlineKeyboardButton("« Back", callback_data="nav:models")])
+    await q.message.reply_text("\n".join(text), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def _render_master_category(q, category):
+    grouped = _master_models_grouped(db.get_all_models())
+    models = grouped.get(category, [])
+    rows = [[InlineKeyboardButton(f"{'🟢' if m['status']=='active' else '⚫'} {m['name']} · {m['pair']} {m['timeframe']} {m['session']} {m['bias']}", callback_data=f"model:detail:{m['id']}")] for m in models]
+    rows.append([InlineKeyboardButton("« Back", callback_data="model:master")])
+    await q.message.reply_text(f"{MASTER_CATEGORY_LABELS.get(category, category)}\nSelect model:", reply_markup=InlineKeyboardMarkup(rows))
+
+
+def _pack_btc_all(models):
+    return [m["id"] for m in models if m.get("id", "").startswith("MM_") and m.get("pair") == "BTCUSDT" and m.get("timeframe") in {"1h", "4h"}]
+
+
+async def _render_quick_deploy(q):
+    models = db.get_all_models()
+    packs = dict(QUICK_DEPLOY_PACKS)
+    packs["BTC_ALL"] = {
+        "name": "Starter Pack 3 — BTC All Scenarios",
+        "description": "Every BTC model — bullish and bearish coverage",
+        "models": _pack_btc_all(models),
+    }
+    rows = [[InlineKeyboardButton(p["name"], callback_data=f"model:deploy:{k}")] for k, p in packs.items()]
+    rows.append([InlineKeyboardButton("« Back", callback_data="model:master")])
+    await q.message.reply_text("⚡ *Quick Deploy*\nChoose a starter pack:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -223,6 +315,38 @@ async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🗑 Yes, Delete All", callback_data="model:delete_all")],
                 [InlineKeyboardButton("Cancel", callback_data="nav:models")],
             ]),
+        )
+        return
+    if action == "master":
+        await _render_master_models(q)
+        return
+    if action == "mastercat" and len(parts) > 2:
+        await _render_master_category(q, parts[2])
+        return
+    if action == "quickdeploy":
+        await _render_quick_deploy(q)
+        return
+    if action == "deploy" and len(parts) > 2:
+        key = parts[2]
+        packs = dict(QUICK_DEPLOY_PACKS)
+        packs["BTC_ALL"] = {
+            "name": "Starter Pack 3 — BTC All Scenarios",
+            "description": "Every BTC model — bullish and bearish coverage",
+            "models": _pack_btc_all(db.get_all_models()),
+        }
+        pack = packs.get(key)
+        if not pack:
+            await q.message.reply_text("❌ Unknown pack")
+            return
+        activated = []
+        for model_id in pack["models"]:
+            m = db.get_model(model_id)
+            if m:
+                db.set_model_status(model_id, "active")
+                activated.append(model_id)
+        await q.message.reply_text(
+            f"✅ {pack['name']} deployed\n{pack['description']}\n\nActive models:\n" + "\n".join([f"• {x}" for x in activated]),
+            parse_mode="Markdown",
         )
         return
     if action == "delete_all":
