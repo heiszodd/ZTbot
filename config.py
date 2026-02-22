@@ -3,10 +3,6 @@ import os
 import sys
 import logging
 from dotenv import load_dotenv
-try:
-    import google.generativeai as genai
-except Exception:
-    genai = None
 
 load_dotenv()
 log = logging.getLogger(__name__)
@@ -46,20 +42,36 @@ HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
 ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY", "")
 BSCSCAN_KEY = os.getenv("BSCSCAN_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = None
+
+# Do NOT store model as a module-level variable.
+# Store it in a mutable container so all imports
+# see the same object after init_gemini() runs.
+_gemini_state = {"model": None, "initialised": False}
 
 
 def init_gemini():
-    global GEMINI_MODEL
+    """
+    Initialise Gemini. Safe to call multiple times.
+    Returns the model on success, None on failure.
+    """
+    if _gemini_state["initialised"] and _gemini_state["model"] is not None:
+        return _gemini_state["model"]
+
     if not GEMINI_API_KEY:
-        log.warning("GEMINI_API_KEY not set — chart analysis will be unavailable")
+        log.error(
+            "GEMINI_API_KEY is not set in environment. "
+            "Chart analysis will not work. "
+            "Add GEMINI_API_KEY to Railway Variables."
+        )
+        _gemini_state["initialised"] = True
         return None
-    if genai is None:
-        log.warning("google-generativeai package not installed — chart analysis will be unavailable")
-        return None
+
     try:
+        import google.generativeai as genai
+
         genai.configure(api_key=GEMINI_API_KEY)
-        GEMINI_MODEL = genai.GenerativeModel(
+
+        model = genai.GenerativeModel(
             model_name="gemini-1.5-flash",
             generation_config=genai.types.GenerationConfig(
                 temperature=0.1,
@@ -67,13 +79,49 @@ def init_gemini():
                 max_output_tokens=2048,
             ),
         )
-        GEMINI_MODEL.generate_content("ping")
-        log.info("✅ Gemini connection verified")
-        return GEMINI_MODEL
-    except Exception as e:
-        log.error(f"Gemini init failed: {e}")
-        GEMINI_MODEL = None
+
+        # Verify with a lightweight test call
+        test = model.generate_content("Hi")
+        if not test or not test.text:
+            raise ValueError("Empty test response")
+
+        _gemini_state["model"] = model
+        _gemini_state["initialised"] = True
+        log.info("✅ Gemini 1.5 Flash connected and verified")
+        return model
+
+    except ImportError:
+        log.error(
+            "google-generativeai package not installed. "
+            "Run: pip install google-generativeai"
+        )
+        _gemini_state["initialised"] = True
         return None
+
+    except Exception as e:
+        log.error(
+            f"Gemini init failed: {type(e).__name__}: {e}\n"
+            f"Check GEMINI_API_KEY is correct in Railway."
+        )
+        _gemini_state["initialised"] = True
+        return None
+
+
+def get_gemini_model():
+    """
+    Always returns the current Gemini model.
+    Tries to initialise if not already done.
+    Use this instead of importing GEMINI_MODEL directly.
+    """
+    if _gemini_state["model"] is None:
+        return init_gemini()
+    return _gemini_state["model"]
+
+
+# Keep GEMINI_MODEL as an alias for backwards compat
+# but it will always be None at import time.
+# Code must use get_gemini_model() instead.
+GEMINI_MODEL = None
 
 # ── Tier risk sizing ──────────────────────────────────
 TIER_RISK = {"A": 2.0, "B": 1.0, "C": 0.5}

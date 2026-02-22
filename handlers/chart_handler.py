@@ -44,33 +44,46 @@ def make_image_part(image_bytes: bytes) -> dict:
 
 
 async def call_gemini(parts: list, retries: int = 3) -> str:
-    from config import GEMINI_MODEL, init_gemini
+    import google.generativeai as genai  # noqa: F401
+    from config import get_gemini_model
 
-    model = GEMINI_MODEL or init_gemini()
+    # Use get_gemini_model() — never import GEMINI_MODEL
+    # directly because it is always None at import time.
+    model = get_gemini_model()
     if model is None:
-        raise RuntimeError("Gemini not available — check GEMINI_API_KEY")
+        raise RuntimeError(
+            "Gemini not available — GEMINI_API_KEY may be "
+            "wrong or missing. Check Railway Variables."
+        )
     last_error = None
     for attempt in range(retries):
         try:
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, lambda: model.generate_content(parts))
             if not response or not response.text:
-                raise ValueError("Empty response from Gemini")
+                raise ValueError("Empty Gemini response")
             return response.text
         except Exception as e:
             last_error = e
             err = str(e).lower()
             if "429" in err or "quota" in err:
                 wait = 30 * (attempt + 1)
-                log.warning("Gemini rate limited. Waiting %ss (attempt %s)", wait, attempt + 1)
+                log.warning(
+                    f"Gemini rate limited - waiting {wait}s "
+                    f"(attempt {attempt + 1}/{retries})"
+                )
                 await asyncio.sleep(wait)
-            elif "api_key" in err or "401" in err:
-                raise RuntimeError("Invalid Gemini API key. Check GEMINI_API_KEY in Railway.")
+            elif "api_key" in err or "401" in err or "invalid" in err:
+                raise RuntimeError(
+                    "Gemini API key rejected. "
+                    "Regenerate at aistudio.google.com "
+                    "and update GEMINI_API_KEY in Railway."
+                )
             elif attempt < retries - 1:
                 await asyncio.sleep(5)
             else:
                 raise
-    raise last_error or RuntimeError("Gemini failed")
+    raise last_error or RuntimeError("Gemini call failed")
 
 
 async def analyse_single_chart(image_bytes: bytes, context) -> dict:

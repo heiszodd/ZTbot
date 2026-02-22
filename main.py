@@ -12,7 +12,7 @@ from telegram.ext import (
 )
 
 import prices as px
-from config import SCANNER_INTERVAL, WAT, init_gemini
+from config import SCANNER_INTERVAL, WAT
 from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler, simulator_handler
 from engine import phase_engine, session_journal
 from degen import wallet_tracker
@@ -420,11 +420,46 @@ async def keepalive_job(context):
         log.warning(f"Keepalive failed: {e}")
 
 
+async def post_init(application):
+    import config
+
+    log.info("━━━━━━━━━━━━━━━━━━━━━━━━")
+    log.info("Bot starting up...")
+
+    gemini = config.init_gemini()
+    if gemini:
+        log.info("✅ Gemini: connected")
+    else:
+        log.warning("⚠️ Gemini: NOT available - chart analysis disabled")
+
+    if config.CRYPTOCOMPARE_API_KEY:
+        log.info("✅ CryptoCompare: key loaded")
+    else:
+        log.warning("⚠️ CryptoCompare: no key set")
+
+    if config.CRYPTOPANIC_TOKEN:
+        log.info("✅ CryptoPanic: token loaded")
+    else:
+        log.info("ℹ️ CryptoPanic: not set (optional)")
+
+    try:
+        db._ensure_pool()
+        log.info("✅ Database: connected")
+    except Exception as e:
+        log.error(f"❌ Database: {e}")
+
+    log.info("━━━━━━━━━━━━━━━━━━━━━━━━")
+    log.info("Bot ready.")
+
+
 def main():
-    for var in ["BOT_TOKEN", "CHAT_ID", "DB_URL"]:
+    for var in ["BOT_TOKEN", "CHAT_ID"]:
         if not os.getenv(var):
             print(f"FATAL: {var} is not set", flush=True)
             sys.exit(1)
+    if not (os.getenv("DB_URL") or os.getenv("DATABASE_URL")):
+        print("FATAL: DB_URL or DATABASE_URL is not set", flush=True)
+        sys.exit(1)
 
     print("ZTbot main.py starting", flush=True)
 
@@ -436,14 +471,12 @@ def main():
         log.error(f"DB setup failed: {e}")
         raise
 
-    try:
-        import config
-        config.GEMINI_MODEL = init_gemini()
-        log.info("Gemini vision model ready")
-    except Exception as exc:
-        log.warning(f"Gemini init skipped: {exc}")
-
-    app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
+    app = (
+        Application.builder()
+        .token(os.getenv("BOT_TOKEN"))
+        .post_init(post_init)
+        .build()
+    )
 
     # ── Core navigation ───────────────────────────────
     app.add_handler(CommandHandler("start",       commands.start))
