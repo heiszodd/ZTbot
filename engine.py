@@ -158,6 +158,131 @@ def build_live_setup(model: dict, prices_series: list[float]) -> dict:
     }
 
 
+def _sma(values: list[float], period: int) -> float | None:
+    if len(values) < period or period <= 0:
+        return None
+    sample = values[-period:]
+    return sum(sample) / period
+
+
+def _rsi(values: list[float], period: int = 14) -> float:
+    if len(values) < period + 1:
+        return 50.0
+    gains, losses = [], []
+    for i in range(len(values) - period, len(values)):
+        delta = values[i] - values[i - 1]
+        gains.append(max(delta, 0.0))
+        losses.append(max(-delta, 0.0))
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _atr(candles: list[dict], period: int = 14) -> float:
+    if len(candles) < period + 1:
+        return 0.0
+    tr = []
+    for i in range(1, len(candles)):
+        hi, lo = candles[i]["high"], candles[i]["low"]
+        prev_close = candles[i - 1]["close"]
+        tr.append(max(hi - lo, abs(hi - prev_close), abs(lo - prev_close)))
+    sample = tr[-period:] if len(tr) >= period else tr
+    return (sum(sample) / len(sample)) if sample else 0.0
+
+
+def _trend_label(closes: list[float]) -> str:
+    sma20 = _sma(closes, 20)
+    sma50 = _sma(closes, 50)
+    if sma20 is None or sma50 is None:
+        return "Neutral"
+    if closes[-1] > sma20 > sma50:
+        return "Bullish"
+    if closes[-1] < sma20 < sma50:
+        return "Bearish"
+    return "Neutral"
+
+
+def _evaluate_rule(rule_name: str, direction: str, candles: list[dict], stats: dict[str, float | str]) -> bool:
+    n = rule_name.lower()
+    close = candles[-1]["close"]
+    open_ = candles[-1]["open"]
+    high = candles[-1]["high"]
+    low = candles[-1]["low"]
+    prev_high = candles[-2]["high"]
+    prev_low = candles[-2]["low"]
+    prev_close = candles[-2]["close"]
+    prev_open = candles[-2]["open"]
+
+    bullish = direction == "BUY"
+    trend_up = stats["trend"] == "Bullish"
+    trend_down = stats["trend"] == "Bearish"
+    rsi = float(stats["rsi"])
+    vol_ratio = float(stats["volume_ratio"])
+
+    if "engulf" in n:
+        if bullish:
+            return close > open_ and prev_close < prev_open and close > prev_open and open_ <= prev_close
+        return close < open_ and prev_close > prev_open and close < prev_open and open_ >= prev_close
+    if "trend" in n or "structure" in n or "higher highs" in n or "lower highs" in n:
+        return trend_up if bullish else trend_down
+    if "rsi below" in n or "discount" in n or "pullback" in n:
+        return rsi < 45 if bullish else rsi > 55
+    if "rsi above" in n or "premium" in n or "bounce" in n:
+        return rsi > 55 if bullish else rsi < 45
+    if "volume" in n and ("spike" in n or "above" in n or "breakout" in n):
+        return vol_ratio >= 1.2
+    if "volume" in n and ("declining" in n or "lower" in n):
+        return vol_ratio <= 0.95
+    if "liquidity sweep" in n or "sweep" in n:
+        return low < prev_low and close > prev_low if bullish else high > prev_high and close < prev_high
+    if "fvg" in n or "fair value gap" in n:
+        return candles[-3]["high"] < low if bullish else candles[-3]["low"] > high
+    if "session" in n or "london" in n or "ny" in n or "asia" in n:
+        return True
+    if "ob" in n or "order block" in n or "demand" in n or "supply" in n:
+        body_mid = (open_ + close) / 2
+        return low <= body_mid <= high
+
+    # Fallback: directional close and volatility sanity
+    return (close >= open_) if bullish else (close <= open_)
+
+
+def build_live_setup_from_ohlcv(model: dict, candles: list[dict]) -> dict:
+    if len(candles) < 60:
+        return {"pair": model["pair"], "passed_rule_ids": []}
+    closes = [c["close"] for c in candles]
+    volumes = [c["volume"] for c in candles]
+    atr = _atr(candles, 14)
+    atr_ratio = atr / closes[-1] if closes[-1] else 0.0
+    direction = "BUY" if model.get("bias") != "Bearish" else "SELL"
+    if model.get("bias") == "Both":
+        direction = "BUY" if closes[-1] >= closes[-6] else "SELL"
+
+    stats = {
+        "trend": _trend_label(closes),
+        "rsi": _rsi(closes, 14),
+        "volume_ratio": (volumes[-1] / (sum(volumes[-20:]) / 20)) if len(volumes) >= 20 and sum(volumes[-20:]) > 0 else 1.0,
+    }
+
+    passed = []
+    for rule in model.get("rules", []):
+        if _evaluate_rule(rule.get("name", ""), direction, candles, stats):
+            passed.append(rule["id"])
+
+    return {
+        "pair": model["pair"],
+        "passed_rule_ids": passed,
+        "atr_ratio": 1.0 + min(atr_ratio * 100, 1.5),
+        "htf_1h": stats["trend"],
+        "htf_4h": stats["trend"],
+        "news_minutes": None,
+        "direction": direction,
+    }
+
+
 def backtest_model(model: dict, prices_series: list[float]) -> dict:
     """Simple bar-by-bar backtest returning win-rate and sample stats."""
     if len(prices_series) < 40:
@@ -213,14 +338,23 @@ def backtest_model(model: dict, prices_series: list[float]) -> dict:
 
 def _score_direction(pair: str, timeframe: str, model: dict, direction: str) -> dict | None:
     scan_model = {**model, "pair": pair, "timeframe": timeframe, "bias": direction}
-    series = px.get_recent_series(pair, days=2)
-    if not series:
+    try:
+        candles_raw = px.fetch_cryptocompare_ohlcv(
+            pair,
+            timeframe.lower(),
+            int((datetime.now(timezone.utc).timestamp() - (7 * 24 * 3600)) * 1000),
+            use_cache=True,
+        )
+    except Exception:
         return None
-    setup = build_live_setup(scan_model, series)
+    candles = [{"open": float(c.open), "high": float(c.high), "low": float(c.low), "close": float(c.close), "volume": float(c.volume)} for c in candles_raw]
+    if not candles:
+        return None
+    setup = build_live_setup_from_ohlcv(scan_model, candles)
     if not setup:
         return None
     scored = score_setup(setup, scan_model)
-    atr = px.estimate_atr(series[-30:]) if series else None
+    atr = _atr(candles[-40:], 14)
     price = px.get_price(pair)
     if not price:
         return None
