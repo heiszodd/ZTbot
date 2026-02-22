@@ -98,6 +98,7 @@ def setup_db():
         tier_a     FLOAT        DEFAULT 9.5,
         tier_b     FLOAT        DEFAULT 7.5,
         tier_c     FLOAT        DEFAULT 5.5,
+        rr_target  FLOAT        DEFAULT 2.0,
         rules      JSONB        NOT NULL DEFAULT '[]',
         created_at TIMESTAMP    DEFAULT NOW(),
         updated_at TIMESTAMP    DEFAULT NOW()
@@ -265,6 +266,7 @@ def setup_db():
     ALTER TABLE models ADD COLUMN IF NOT EXISTS key_levels JSONB NOT NULL DEFAULT '[]';
     ALTER TABLE models ADD COLUMN IF NOT EXISTS description TEXT;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS min_score FLOAT;
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS rr_target FLOAT DEFAULT 2.0;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_a_threshold FLOAT;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_b_threshold FLOAT;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_c_threshold FLOAT;
@@ -645,7 +647,7 @@ def get_all_models():
             cur.execute("""
                 SELECT id, name, pair, timeframe, session,
                        bias, status, rules, phase_timeframes, tier_a_threshold,
-                       tier_b_threshold, tier_c_threshold,
+                       tier_b_threshold, tier_c_threshold, rr_target,
                        min_score, description, created_at,
                        tier_a, tier_b, tier_c
                 FROM models
@@ -682,7 +684,7 @@ def get_active_models():
             cur.execute("""
                 SELECT id, name, pair, timeframe, session,
                        bias, status, rules, phase_timeframes, tier_a_threshold,
-                       tier_b_threshold, tier_c_threshold,
+                       tier_b_threshold, tier_c_threshold, rr_target,
                        min_score, description, created_at,
                        tier_a, tier_b, tier_c
                 FROM models
@@ -722,10 +724,10 @@ def save_model(model: dict) -> str:
                 INSERT INTO models
                     (id, name, pair, timeframe, session, bias,
                      status, rules, phase_timeframes, tier_a_threshold,
-                     tier_b_threshold, tier_c_threshold,
+                     tier_b_threshold, tier_c_threshold, rr_target,
                      min_score, description, created_at, updated_at)
                 VALUES
-                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     name             = EXCLUDED.name,
                     pair             = EXCLUDED.pair,
@@ -737,6 +739,7 @@ def save_model(model: dict) -> str:
                     tier_a_threshold = EXCLUDED.tier_a_threshold,
                     tier_b_threshold = EXCLUDED.tier_b_threshold,
                     tier_c_threshold = EXCLUDED.tier_c_threshold,
+                    rr_target        = EXCLUDED.rr_target,
                     min_score        = EXCLUDED.min_score,
                     description      = EXCLUDED.description,
                     updated_at       = NOW()
@@ -754,6 +757,7 @@ def save_model(model: dict) -> str:
                 model.get("tier_a_threshold", 0),
                 model.get("tier_b_threshold", 0),
                 model.get("tier_c_threshold", 0),
+                model.get("rr_target", 2.0),
                 model.get("min_score", 0),
                 model.get("description", ""),
             ))
@@ -782,7 +786,7 @@ def set_model_status(model_id, status):
 
 
 def update_model_fields(model_id, fields: dict):
-    allowed = {"pair", "timeframe", "session", "bias", "name", "tier_a", "tier_b", "tier_c", "min_score", "rules"}
+    allowed = {"pair", "timeframe", "session", "bias", "name", "tier_a", "tier_b", "tier_c", "min_score", "rr_target", "rules"}
     clean = {k: v for k, v in (fields or {}).items() if k in allowed}
     if not clean:
         return False

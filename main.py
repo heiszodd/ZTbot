@@ -13,7 +13,7 @@ from telegram.ext import (
 
 import prices as px
 from config import SCANNER_INTERVAL, WAT, init_gemini
-from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler
+from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler, simulator_handler
 from engine import phase_engine, session_journal
 from degen import wallet_tracker
 from engine import run_backtest
@@ -464,6 +464,7 @@ def main():
     app.add_handler(CommandHandler("journal",     commands.journal_cmd))
     app.add_handler(CommandHandler("news",        news_handler.news_cmd))
     app.add_handler(CommandHandler("charttest",   chart_handler.chart_api_test_cmd))
+    app.add_handler(CommandHandler("simulator",   simulator_handler.simulator_cmd))
 
     # ── Conversations (must be before generic callback routers) ──
     chart_conv = ConversationHandler(
@@ -493,6 +494,7 @@ def main():
 
     # ── Callback routers ──────────────────────────────
     app.add_handler(CallbackQueryHandler(commands.handle_nav, pattern="^nav:"), group=0)
+    app.add_handler(CallbackQueryHandler(simulator_handler.handle_sim_cb, pattern="^sim:"), group=0)
     app.add_handler(CallbackQueryHandler(commands.handle_model_cb, pattern="^model:"), group=0)
     app.add_handler(CallbackQueryHandler(chart_handler.handle_chart_cb, pattern="^chart:"), group=0)
     app.add_handler(CallbackQueryHandler(alerts.handle_pending_cb, pattern="^pending:"), group=0)

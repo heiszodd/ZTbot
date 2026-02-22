@@ -610,15 +610,16 @@ def estimate_atr(prices: list[float], window: int = 14) -> float:
     return mean(sample) if sample else 0.0
 
 
-def calc_sl_tp(price: float, direction: str, atr: float | None = None):
+def calc_sl_tp(price: float, direction: str, atr: float | None = None, rr_target: float = 2.0):
     atr = atr if atr is not None and atr > 0 else max(price * 0.003, 0.0001)
+    rr_target = max(1.0, float(rr_target or 2.0))
     if direction == "BUY":
         sl = round(price - atr * 1.5, 6)
-        tp = round(price + atr * 3.0, 6)
+        tp = round(price + atr * 1.5 * rr_target, 6)
     else:
         sl = round(price + atr * 1.5, 6)
-        tp = round(price - atr * 3.0, 6)
-    return sl, tp, 2.0
+        tp = round(price - atr * 1.5 * rr_target, 6)
+    return sl, tp, rr_target
 
 
 def fmt_price(price: float | None) -> str:

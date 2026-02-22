@@ -10,7 +10,7 @@ def r(mid, i, name, w, m=False):
     return {"id": f"{mid}_rule_{i}", "name": name, "weight": float(w), "mandatory": bool(m), "description": name}
 
 
-def model(mid, name, pair, tf, session, bias, desc, rulespec):
+def model(mid, name, pair, tf, session, bias, desc, rulespec, rr_target=2.0):
     rules = [r(mid, i + 1, *row) for i, row in enumerate(rulespec)]
     total = sum(x["weight"] for x in rules)
     a, b, c = total * 0.8, total * 0.65, total * 0.5
@@ -18,7 +18,7 @@ def model(mid, name, pair, tf, session, bias, desc, rulespec):
         "id": mid, "name": name, "pair": "ALL", "timeframe": tf, "session": session, "bias": "Both",
         "status": "inactive", "rules": rules,
         "tier_a_threshold": a, "tier_b_threshold": b, "tier_c_threshold": c, "min_score": c,
-        "description": desc, "tier_a": a, "tier_b": b, "tier_c": c,
+        "description": desc, "tier_a": a, "tier_b": b, "tier_c": c, "rr_target": float(rr_target),
     }
 
 
@@ -87,6 +87,7 @@ model("MM_ADV_05","MASTER MODEL — Judas Swing Bullish (15M)","XAUUSD","15m","L
 model("MM_ADV_06","MASTER MODEL — Silver Bullet Bullish (5M)","BTCUSDT","5m","NY","Bullish","ICT Silver Bullet — 10:00-11:00 AM NY time FVG entry for precision 5-minute scalp longs.",[("Time between 15:00-16:00 UTC (10-11 AM NY)",3.5,True),("5M bullish FVG forms in this window",3.5,True),("Price pulls back to fill the FVG",2.5,False),("4H and 1H bias both bullish",2.5,False),("5M bullish OB within or at FVG",2.0,False),("NY session volume above average",1.5,False)]),
 model("MM_ADV_07","MASTER MODEL — Silver Bullet Bearish (5M)","BTCUSDT","5m","NY","Bearish","ICT Silver Bullet bearish — 10-11 AM NY bearish FVG for precision short scalps.",[("Time between 15:00-16:00 UTC",3.5,True),("5M bearish FVG forms in this window",3.5,True),("Price bounces to fill the FVG",2.5,False),("4H and 1H bias both bearish",2.5,False),("5M bearish OB within or at FVG",2.0,False),("NY session volume above average",1.5,False)]),
 model("MM_ADV_08","MASTER MODEL — Midnight Open Bullish (1H)","BTCUSDT","1h","Any","Bullish","Midnight NY open creates a key reference point — price returns to midnight open level for long entries.",[("Midnight NY open level identified (00:00 EST)",3.0,True),("Price pulls back to midnight open level",3.0,True),("1H bullish OB at midnight open",2.5,False),("Daily bias is bullish",2.5,False),("1H FVG near midnight open level",2.0,False),("Prior price action shows midnight level as key",1.5,False),("1H bullish reaction at the level",1.5,False)]),
+model("MM_ADV_09","MASTER MODEL — HTF Bias LTF Expansion 3R (5M)","BTCUSDT","5m","Any","Bullish","High-selectivity 3R model: trades only with clear HTF trend context and LTF momentum expansion after pullback.",[("HTF 4H trend clearly aligned",3.5,True),("HTF 1H structure confirms trend continuation",3.0,True),("LTF 5M pullback into premium/discount zone complete",2.5,True),("LTF 5M displacement candle closes beyond structure",3.5,True),("Liquidity sweep occurs before expansion",2.5,False),("Volume expansion above average on trigger candle",2.5,False),("Fresh OB/FVG confluence at entry",2.0,False),("Session overlap or NY volatility window",1.5,False)], rr_target=3.0),
 ]
 
 
@@ -102,7 +103,8 @@ def ensure_schema(cur):
     ADD COLUMN IF NOT EXISTS tier_c_threshold FLOAT,
     ADD COLUMN IF NOT EXISTS tier_a FLOAT DEFAULT 0,
     ADD COLUMN IF NOT EXISTS tier_b FLOAT DEFAULT 0,
-    ADD COLUMN IF NOT EXISTS tier_c FLOAT DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS tier_c FLOAT DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS rr_target FLOAT DEFAULT 2.0;
     """)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS model_rules (
@@ -160,18 +162,19 @@ def run():
             model["tier_b_threshold"],
             model["tier_c_threshold"],
             model["min_score"],
-            model["description"],
-            model["tier_a"],
-            model["tier_b"],
-            model["tier_c"],
-        )
+                model["description"],
+                model["tier_a"],
+                model["tier_b"],
+                model["tier_c"],
+                model.get("rr_target", 2.0),
+            )
         try:
             cur.execute("""
                 INSERT INTO models
                 (id, name, pair, timeframe, session, bias, status,
                  rules, tier_a_threshold, tier_b_threshold,
-                 tier_c_threshold, min_score, description, tier_a, tier_b, tier_c)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s)
+                 tier_c_threshold, min_score, description, tier_a, tier_b, tier_c, rr_target)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
                     pair = EXCLUDED.pair,
@@ -187,7 +190,8 @@ def run():
                     description = EXCLUDED.description,
                     tier_a = EXCLUDED.tier_a,
                     tier_b = EXCLUDED.tier_b,
-                    tier_c = EXCLUDED.tier_c
+                    tier_c = EXCLUDED.tier_c,
+                    rr_target = EXCLUDED.rr_target
             """, values)
             conn.commit()
             inserted += 1

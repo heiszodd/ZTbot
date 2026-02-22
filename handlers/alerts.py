@@ -132,7 +132,7 @@ async def _evaluate_and_send(bot, model: dict, force=False, pair_override: str |
         return False
 
     atr = px.estimate_atr(series[-30:]) if series else None
-    sl, tp, rr = px.calc_sl_tp(price, setup["direction"], atr=atr)
+    sl, tp, rr = px.calc_sl_tp(price, setup["direction"], atr=atr, rr_target=float(scan_model.get("rr_target") or 2.0))
     setup.update({"entry": price, "sl": sl, "tp": tp, "rr": rr})
 
     db.log_alert(pair, model["id"], model["name"], scored["final_score"], scored["tier"], setup["direction"], price, sl, tp, rr, True)

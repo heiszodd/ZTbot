@@ -67,6 +67,7 @@ def perps_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="nav:models")],
         [InlineKeyboardButton("🧪 Backtest", callback_data="backtest:start"), InlineKeyboardButton("📊 Stats", callback_data="nav:stats")],
+        [InlineKeyboardButton("🧪 Pro Simulator", callback_data="nav:simulator")],
         [InlineKeyboardButton("⏳ Pending", callback_data="nav:pending"), InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline")],
         [InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts"), InlineKeyboardButton("🔍 Scan", callback_data="nav:scan")],
         [InlineKeyboardButton("📓 Journal", callback_data="nav:journal"), InlineKeyboardButton("📊 Charts", callback_data="nav:charts")],
@@ -150,6 +151,9 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await degen_handler.degen_home(update, context)
     elif dest == "models":
         await handle_models_list(update, context)
+    elif dest == "simulator":
+        from handlers import simulator_handler
+        await simulator_handler.show_simulator_home(q.message.reply_text)
     elif dest == "stats":
         row, tiers, sessions = db.get_stats_30d(), db.get_tier_breakdown(), db.get_session_breakdown()
         conv = db.get_conversion_stats()

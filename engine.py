@@ -296,6 +296,9 @@ def backtest_model(model: dict, prices_series: list[float]) -> dict:
 
     wins = losses = 0
     rr_values = []
+    rr_target = max(1.0, float(model.get("rr_target") or 2.0))
+    sl_pct = 0.003
+    tp_pct = sl_pct * rr_target
 
     for i in range(30, len(prices_series) - 8, 3):
         window = prices_series[: i + 1]
@@ -308,17 +311,17 @@ def backtest_model(model: dict, prices_series: list[float]) -> dict:
         if setup["direction"] == "BUY":
             future_max = max(prices_series[i + 1 : i + 7])
             future_min = min(prices_series[i + 1 : i + 7])
-            hit_tp = (future_max - entry) / entry >= 0.006
-            hit_sl = (entry - future_min) / entry >= 0.003
+            hit_tp = (future_max - entry) / entry >= tp_pct
+            hit_sl = (entry - future_min) / entry >= sl_pct
         else:
             future_max = max(prices_series[i + 1 : i + 7])
             future_min = min(prices_series[i + 1 : i + 7])
-            hit_tp = (entry - future_min) / entry >= 0.006
-            hit_sl = (future_max - entry) / entry >= 0.003
+            hit_tp = (entry - future_min) / entry >= tp_pct
+            hit_sl = (future_max - entry) / entry >= sl_pct
 
         if hit_tp and not hit_sl:
             wins += 1
-            rr_values.append(2.0)
+            rr_values.append(rr_target)
         elif hit_sl:
             losses += 1
             rr_values.append(-1.0)
