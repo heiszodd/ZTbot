@@ -41,7 +41,7 @@ async def start_model_create(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await q.answer()
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Quick Deploy — use a preset", callback_data="degen_model:quick_pick")],
-        [InlineKeyboardButton("🔧 Custom Build — full wizard", callback_data="degen_wiz:start")],
+        [InlineKeyboardButton("🔧 Custom Build — full wizard", callback_data="dgwiz:start")],
     ])
     await q.message.reply_text("➕ Create Degen Model\n━━━━━━━━━━━━━━━━━━━━━━━━\nHow do you want to start?", reply_markup=kb)
 
@@ -150,7 +150,7 @@ async def handle_degen_model_cb(update: Update, context: ContextTypes.DEFAULT_TY
         await q.message.reply_text("\n".join(lines) or "No performance data")
     elif action == "edit":
         db.save_degen_model_version(model_id)
-        await q.message.reply_text("Edit via wizard currently starts over.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Start Wizard", callback_data="degen_wiz:start")]]))
+        await q.message.reply_text("Edit via wizard currently starts over.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Start Wizard", callback_data="dgwiz:start")]]))
 
 from degen.narrative_tracker import detect_narrative, get_cold_narratives, get_hot_narratives
 

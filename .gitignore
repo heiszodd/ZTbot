@@ -1,0 +1,87 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+# ENVIRONMENT — NEVER COMMIT
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+.env
+.env.local
+.env.production
+.env.staging
+.env.development
+.env.*
+!.env.example
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+# PYTHON
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+MANIFEST
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+# VIRTUAL ENVIRONMENTS
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+venv/
+env/
+.venv/
+ENV/
+virtualenv/
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+# IDE
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+# LOGS
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+*.log
+logs/
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+# DATABASE
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+*.db
+*.sqlite
+*.sqlite3
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+# BOT SESSIONS
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+*.session
+sessions/
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+# KEYS AND CERTS
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+*.pem
+*.key
+*.cert
+*.crt
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+# TEMP FILES
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+tmp/
+temp/
+*.tmp
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+# TEST OUTPUT
+# ━━━━━━━━━━━━━━━━━━━━━━━━
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
