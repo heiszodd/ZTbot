@@ -764,7 +764,11 @@ def save_model(model: dict) -> str:
             row = cur.fetchone()
             conn.commit()
             _cache_clear("active_models")
-            return row[0] if row else model["id"]
+            if not row:
+                return model["id"]
+            if isinstance(row, dict):
+                return row.get("id", model["id"])
+            return row[0]
     except Exception as e:
         if conn:
             try:
@@ -1632,7 +1636,11 @@ def save_degen_model(model: dict) -> str:
             row = cur.fetchone()
             conn.commit()
             _cache_clear("active_degen_models")
-            return row[0] if row else model["id"]
+            if not row:
+                return model["id"]
+            if isinstance(row, dict):
+                return row.get("id", model["id"])
+            return row[0]
     except Exception as e:
         if conn:
             try:
