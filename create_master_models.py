@@ -1,5 +1,9 @@
 import json
+
+import psycopg2
+
 import db
+from config import DB_URL
 
 
 def r(mid, i, name, w, m=False):
@@ -90,10 +94,15 @@ def ensure_schema(cur):
     cur.execute("""
     ALTER TABLE models
     ADD COLUMN IF NOT EXISTS description TEXT,
+    ADD COLUMN IF NOT EXISTS session VARCHAR(20) DEFAULT 'Any',
+    ADD COLUMN IF NOT EXISTS bias VARCHAR(10) DEFAULT 'Bullish',
     ADD COLUMN IF NOT EXISTS min_score FLOAT,
     ADD COLUMN IF NOT EXISTS tier_a_threshold FLOAT,
     ADD COLUMN IF NOT EXISTS tier_b_threshold FLOAT,
-    ADD COLUMN IF NOT EXISTS tier_c_threshold FLOAT;
+    ADD COLUMN IF NOT EXISTS tier_c_threshold FLOAT,
+    ADD COLUMN IF NOT EXISTS tier_a FLOAT DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS tier_b FLOAT DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS tier_c FLOAT DEFAULT 0;
     """)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS model_rules (
@@ -108,23 +117,107 @@ def ensure_schema(cur):
 
 
 def run():
+    conn_check = db.get_conn()
+    try:
+        with conn_check.cursor() as cur_check:
+            cur_check.execute("SELECT COUNT(*) FROM models")
+            count = cur_check.fetchone()[0]
+            print(f"Connected. models table has {count} existing rows.")
+
+            cur_check.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'models'
+                ORDER BY ordinal_position
+            """)
+            columns = [row[0] for row in cur_check.fetchall()]
+            print(f"Table columns: {columns}")
+    finally:
+        db.release_conn(conn_check)
+
+    conn = psycopg2.connect(DB_URL)
+    conn.autocommit = False
+    cur = conn.cursor()
+    ensure_schema(cur)
+    conn.commit()
+
     inserted = 0
-    with db.get_conn() as conn:
-        with conn.cursor() as cur:
-            ensure_schema(cur)
-            for m in MODELS:
-                cur.execute("""
-                INSERT INTO models (id, name, pair, timeframe, session,
-                bias, status, rules, tier_a_threshold, tier_b_threshold,
-                tier_c_threshold, min_score, description, tier_a, tier_b, tier_c)
+    for model in MODELS:
+        values = (
+            model["id"],
+            model["name"],
+            model["pair"],
+            model["timeframe"],
+            model["session"],
+            model["bias"],
+            model["status"],
+            json.dumps(model["rules"]),
+            model["tier_a_threshold"],
+            model["tier_b_threshold"],
+            model["tier_c_threshold"],
+            model["min_score"],
+            model["description"],
+            model["tier_a"],
+            model["tier_b"],
+            model["tier_c"],
+        )
+        try:
+            cur.execute("""
+                INSERT INTO models
+                (id, name, pair, timeframe, session, bias, status,
+                 rules, tier_a_threshold, tier_b_threshold,
+                 tier_c_threshold, min_score, description, tier_a, tier_b, tier_c)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (id) DO NOTHING
-                """, (m["id"],m["name"],m["pair"],m["timeframe"],m["session"],m["bias"],m["status"],json.dumps(m["rules"]),m["tier_a_threshold"],m["tier_b_threshold"],m["tier_c_threshold"],m["min_score"],m["description"],m["tier_a"],m["tier_b"],m["tier_c"]))
-                inserted += cur.rowcount
-                for rule in m["rules"]:
-                    cur.execute("INSERT INTO model_rules (id, model_id, name, weight, mandatory, description) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING", (rule["id"],m["id"],rule["name"],rule["weight"],rule["mandatory"],rule["description"]))
-                cur.execute("INSERT INTO model_versions (model_id, version, snapshot) SELECT %s,1,%s::jsonb WHERE NOT EXISTS (SELECT 1 FROM model_versions WHERE model_id=%s AND version=1)", (m["id"], json.dumps(m), m["id"]))
-        conn.commit()
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    pair = EXCLUDED.pair,
+                    timeframe = EXCLUDED.timeframe,
+                    session = EXCLUDED.session,
+                    bias = EXCLUDED.bias,
+                    status = EXCLUDED.status,
+                    rules = EXCLUDED.rules,
+                    tier_a_threshold = EXCLUDED.tier_a_threshold,
+                    tier_b_threshold = EXCLUDED.tier_b_threshold,
+                    tier_c_threshold = EXCLUDED.tier_c_threshold,
+                    min_score = EXCLUDED.min_score,
+                    description = EXCLUDED.description,
+                    tier_a = EXCLUDED.tier_a,
+                    tier_b = EXCLUDED.tier_b,
+                    tier_c = EXCLUDED.tier_c
+            """, values)
+            conn.commit()
+            inserted += 1
+            print(f"✅ Inserted: {model['id']}")
+            for rule in model["rules"]:
+                cur.execute(
+                    """
+                    INSERT INTO model_rules (id, model_id, name, weight, mandatory, description)
+                    VALUES (%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        weight = EXCLUDED.weight,
+                        mandatory = EXCLUDED.mandatory,
+                        description = EXCLUDED.description
+                    """,
+                    (rule["id"], model["id"], rule["name"], rule["weight"], rule["mandatory"], rule["description"]),
+                )
+            cur.execute(
+                """
+                INSERT INTO model_versions (model_id, version, snapshot)
+                SELECT %s,1,%s::jsonb
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM model_versions WHERE model_id=%s AND version=1
+                )
+                """,
+                (model["id"], json.dumps(model), model["id"]),
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"❌ FAILED: {model['id']} — {e}")
+            print(f"   Values: {values}")
+
+    cur.close()
+    conn.close()
 
     print("✅ MASTER MODELS created:")
     print("Category 1 — Trend Continuation: 6 models")

@@ -622,7 +622,17 @@ def setup_db():
 def get_all_models():
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM models ORDER BY created_at DESC")
+            cur.execute("""
+                SELECT id, name, pair, timeframe, session,
+                       bias, status, rules, tier_a_threshold,
+                       tier_b_threshold, tier_c_threshold,
+                       min_score, description, created_at,
+                       tier_a, tier_b, tier_c
+                FROM models
+                ORDER BY
+                    CASE WHEN id LIKE 'MM_%' THEN 0 ELSE 1 END,
+                    created_at DESC
+            """)
             rows = cur.fetchall()
     result = []
     for r in rows:
@@ -647,7 +657,16 @@ def get_active_models():
         return cached
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM models WHERE status='active'")
+            cur.execute("""
+                SELECT id, name, pair, timeframe, session,
+                       bias, status, rules, tier_a_threshold,
+                       tier_b_threshold, tier_c_threshold,
+                       min_score, description, created_at,
+                       tier_a, tier_b, tier_c
+                FROM models
+                WHERE status='active'
+                ORDER BY created_at DESC
+            """)
             rows = cur.fetchall()
     result = []
     for r in rows:
