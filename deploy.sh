@@ -58,6 +58,10 @@ echo "  1. Edit .env:  nano $BOT_DIR/.env"
 echo "     BOT_TOKEN=..."
 echo "     CHAT_ID=..."
 echo "     DB_URL=postgresql://tradingbot:changeme_strong_password@localhost/tradingbot"
+echo "     GEMINI_API_KEY=..."
 echo ""
 echo "  2. Start:  systemctl start tradingbot"
 echo "  3. Logs:   journalctl -u tradingbot -f"
+
+
+echo "Railway checklist: BOT_TOKEN, CHAT_ID, DB_URL, GEMINI_API_KEY must be set."

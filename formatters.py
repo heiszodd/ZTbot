@@ -357,3 +357,318 @@ def fmt_ca_report(token_data, risk, moon, dev, curve, auth, nlp, net) -> str:
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "⚠️ DEGEN — high risk only"
     )
+
+
+def fmt_chart_analysis_single(result: dict) -> str:
+    if not result.get("chart_detected"):
+        reason = result.get("reason", result.get("error", "Unknown error"))
+        return f"❌ *Chart not detected*\n{reason}\n\nPlease send a clear candlestick chart screenshot."
+
+    bias = result.get("bias", {})
+    setup = result.get("setup", {})
+    structure = result.get("market_structure", {})
+    trend = result.get("trend", {})
+    liq = result.get("liquidity", {})
+    ctx = result.get("current_price_context", {})
+
+    action_emoji = {
+        "buy": "📈", "sell": "📉", "wait": "⏳", "avoid": "🚫"
+    }.get(result.get("action", "wait"), "⏳")
+
+    bias_emoji = "📈" if bias.get("direction") == "bullish" else "📉" if bias.get("direction") == "bearish" else "➡️"
+    confidence_emoji = "🟢" if bias.get("confidence") == "high" else "🟡" if bias.get("confidence") == "medium" else "🔴"
+
+    confluence = int(result.get("confluence_score", 0) or 0)
+    confluence = max(0, min(10, confluence))
+    confluence_bar = "█" * confluence + "░" * (10 - confluence)
+
+    lines = [
+        f"📊 *CHART ANALYSIS*",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    if result.get("pair_estimate") and result["pair_estimate"] != "unknown":
+        lines.append(f"🪙 *{result['pair_estimate']}*   ⏱ {result.get('timeframe_estimate', 'Unknown TF')}")
+    else:
+        lines.append(f"⏱ Timeframe: {result.get('timeframe_estimate', 'Unknown')}")
+
+    lines += [
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📈 *Trend*",
+        f"   Direction:  {trend.get('direction','').capitalize()}",
+        f"   Strength:   {trend.get('strength','').capitalize()}",
+        f"   {trend.get('description','')}",
+        f"",
+        f"🏗️ *Market Structure*",
+        f"   Type:       {structure.get('type','').replace('_',' ').capitalize()}",
+    ]
+
+    if structure.get("structure_break"):
+        lines.append(f"   ⚡ Structure Break: {structure.get('structure_break_direction','').capitalize()}")
+
+    lines.append(f"   {structure.get('description','')}")
+
+    key_levels = result.get("key_levels", [])
+    if key_levels:
+        lines += [f"", f"🎯 *Key Levels*"]
+        for level in key_levels[:5]:
+            icon = "🔴" if level.get("type") == "resistance" else "🟢" if level.get("type") == "support" else "🔵"
+            lines.append(f"   {icon} {level.get('type','').replace('_',' ').capitalize()}: {level.get('price','')}  ({level.get('strength','')})")
+            if level.get("description"):
+                lines.append(f"      _{level['description']}_")
+
+    obs = result.get("order_blocks", [])
+    if obs:
+        lines += [f"", f"📦 *Order Blocks*"]
+        for ob in obs[:3]:
+            icon = "🟢" if ob.get("direction") == "bullish" else "🔴"
+            respected = "✅ Respected" if ob.get("respected") else "❓ Untested"
+            lines.append(f"   {icon} {ob.get('direction','').capitalize()} OB — {ob.get('price_zone','')}  {respected}")
+
+    fvgs = result.get("fair_value_gaps", [])
+    if fvgs:
+        lines += [f"", f"⚡ *Fair Value Gaps*"]
+        for fvg in fvgs[:3]:
+            icon = "🟢" if fvg.get("direction") == "bullish" else "🔴"
+            filled = "✅ Filled" if fvg.get("filled") else "⬜ Open"
+            lines.append(f"   {icon} {fvg.get('direction','').capitalize()} FVG — {fvg.get('price_zone','')}  {filled}")
+
+    if liq:
+        lines += [
+            f"",
+            f"💧 *Liquidity*",
+            f"   Buy side:   {liq.get('buy_side','')}",
+            f"   Sell side:  {liq.get('sell_side','')}",
+        ]
+        if liq.get("recent_sweep"):
+            lines.append(f"   ⚡ Recent sweep: {liq.get('sweep_direction','').capitalize()} side swept")
+
+    lines += [
+        f"",
+        f"📍 *Price Context*",
+        f"   Zone:       {ctx.get('in_premium_or_discount','').capitalize()}",
+        f"   Near level: {'Yes' if ctx.get('near_key_level') else 'No'}",
+    ]
+    if ctx.get("key_level_description"):
+        lines.append(f"   {ctx['key_level_description']}")
+
+    lines += [
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"{bias_emoji} *Bias*",
+        f"   Direction:   {bias.get('direction','').capitalize()}",
+        f"   Confidence:  {confidence_emoji} {bias.get('confidence','').capitalize()}",
+        f"   {bias.get('reasoning','')}",
+    ]
+
+    if setup.get("setup_present"):
+        lines += [
+            f"",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"🎯 *Setup Detected*",
+            f"   Type:       {setup.get('setup_type','')}",
+            f"   Entry zone: {setup.get('entry_zone','')}",
+            f"   Condition:  {setup.get('entry_condition','')}",
+            f"",
+            f"💹 *Levels*",
+            f"   SL:   {setup.get('stop_loss','')}",
+            f"   TP1:  {setup.get('take_profit_1','')}",
+            f"   TP2:  {setup.get('take_profit_2','')}",
+            f"   TP3:  {setup.get('take_profit_3','')}",
+            f"   RR:   {setup.get('risk_reward','')}",
+            f"",
+            f"❌ Invalidation: {setup.get('invalidation','')}",
+        ]
+    else:
+        lines += [
+            f"",
+            f"⏳ *No complete setup detected*",
+            f"   Wait for: {setup.get('entry_condition', 'Clearer price action')}",
+        ]
+
+    confluence_factors = result.get("confluence_factors", [])
+    lines += [
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📊 *Confluence: {confluence}/10*",
+        f"[{confluence_bar}]",
+    ]
+    for factor in confluence_factors:
+        lines.append(f"   ✅ {factor}")
+
+    warnings = result.get("warnings", [])
+    if warnings:
+        lines += [f"", f"⚠️ *Warnings*"]
+        for w in warnings:
+            lines.append(f"   ⚠️ {w}")
+
+    lines += [
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"💡 *Summary*",
+        f"{result.get('summary','')}",
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"{action_emoji} *Action: {result.get('action','wait').upper()}*",
+    ]
+
+    return "\n".join(lines)
+
+
+def fmt_chart_analysis_mtf(result: dict) -> str:
+    if not result.get("htf") or not result.get("ltf"):
+        return "❌ *MTF analysis failed* — could not read both charts."
+
+    htf = result["htf"]
+    ltf = result["ltf"]
+    alignment = result.get("alignment", {})
+    setup = result.get("setup", {})
+
+    align_emoji = {
+        "perfect": "🟢", "good": "🟡", "partial": "🟡", "conflicting": "🔴"
+    }.get(alignment.get("alignment_quality", "partial"), "🟡")
+
+    action_emoji = {
+        "buy": "📈", "sell": "📉", "wait": "⏳", "avoid": "🚫"
+    }.get(result.get("action", "wait"), "⏳")
+
+    urgency_emoji = {
+        "immediate": "🚨", "prepare": "⚡", "watch": "👀", "ignore": "😴"
+    }.get(result.get("urgency", "watch"), "👀")
+
+    quality_emoji = {
+        "A+": "🌕", "A": "⭐", "B": "👍", "C": "👎", "wait": "⏳"
+    }.get(setup.get("setup_quality", "wait"), "⏳")
+
+    confluence = int(result.get("confluence_score", 0) or 0)
+    confluence = max(0, min(10, confluence))
+    confluence_bar = "█" * confluence + "░" * (10 - confluence)
+
+    lines = [
+        f"📐 *MULTI-TIMEFRAME ANALYSIS*",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"",
+        f"🔭 *HTF — {htf.get('timeframe_estimate','Higher TF')}*",
+        f"   Trend:      {'📈' if htf.get('trend_direction')=='bullish' else '📉'} {htf.get('trend_direction','').capitalize()}  ({htf.get('trend_strength','')})",
+        f"   Structure:  {htf.get('market_structure','').replace('_',' ').capitalize()}",
+        f"   Bias:       {'📈' if htf.get('bias')=='bullish' else '📉'} {htf.get('bias','').capitalize()}",
+        f"   Zone:       {htf.get('premium_discount','').capitalize()}",
+        f"   {htf.get('bias_reasoning','')}",
+    ]
+
+    htf_levels = htf.get("key_levels", [])
+    if htf_levels:
+        lines.append(f"")
+        lines.append(f"   📌 Key HTF Levels:")
+        for level in htf_levels[:4]:
+            icon = "🔴" if level.get("type") == "resistance" else "🟢" if level.get("type") == "support" else "🔵"
+            lines.append(f"   {icon} {level.get('type','').replace('_',' ').capitalize()}: {level.get('price','')}  ({level.get('strength','')})")
+
+    lines += [
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"🔬 *LTF — {ltf.get('timeframe_estimate','Lower TF')}*",
+        f"   Trend:      {'📈' if ltf.get('trend_direction')=='bullish' else '📉'} {ltf.get('trend_direction','').capitalize()}",
+        f"   Structure:  {ltf.get('market_structure','').replace('_',' ').capitalize()}",
+    ]
+
+    if ltf.get("structure_break"):
+        lines.append(f"   ⚡ Structure Break: {ltf.get('structure_break_direction','').capitalize()}")
+
+    ltf_obs = ltf.get("order_blocks", [])
+    if ltf_obs:
+        lines.append(f"")
+        lines.append(f"   📦 LTF Order Blocks:")
+        for ob in ltf_obs[:3]:
+            icon = "🟢" if ob.get("direction") == "bullish" else "🔴"
+            respected = "✅" if ob.get("respected") else "❓"
+            lines.append(f"   {icon} {ob.get('direction','').capitalize()} OB — {ob.get('price_zone','')} {respected}")
+
+    ltf_fvgs = ltf.get("fair_value_gaps", [])
+    if ltf_fvgs:
+        lines.append(f"")
+        lines.append(f"   ⚡ LTF Fair Value Gaps:")
+        for fvg in ltf_fvgs[:3]:
+            icon = "🟢" if fvg.get("direction") == "bullish" else "🔴"
+            filled = "✅ Filled" if fvg.get("filled") else "⬜ Open"
+            lines.append(f"   {icon} {fvg.get('direction','').capitalize()} FVG — {fvg.get('price_zone','')} {filled}")
+
+    if ltf.get("current_pattern"):
+        lines.append(f"")
+        lines.append(f"   🕯️ Current Pattern: {ltf['current_pattern']}")
+    if ltf.get("entry_trigger"):
+        lines.append(f"   ⚡ Entry Trigger: {ltf['entry_trigger']}")
+
+    lines += [
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"{align_emoji} *HTF/LTF Alignment: {alignment.get('alignment_quality','').capitalize()}*",
+        f"{'✅ Aligned' if alignment.get('htf_ltf_aligned') else '❌ Not Aligned'}",
+        f"{alignment.get('alignment_description','')}",
+    ]
+
+    lines += [
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"🎯 *Setup: {quality_emoji} {setup.get('setup_quality','N/A')}*",
+    ]
+
+    if setup.get("setup_present"):
+        dir_emoji = "📈" if setup.get("direction") == "long" else "📉"
+        lines += [
+            f"   {dir_emoji} {setup.get('setup_type','')}",
+            f"   Direction:  {setup.get('direction','').upper()}",
+            f"   Entry zone: {setup.get('entry_zone','')}",
+            f"   Condition:  {setup.get('entry_condition','')}",
+            f"",
+            f"💹 *Levels*",
+            f"   SL:   {setup.get('stop_loss','')}",
+            f"   Why:  {setup.get('stop_loss_reasoning','')}",
+            f"   TP1:  {setup.get('take_profit_1','')}",
+            f"   TP2:  {setup.get('take_profit_2','')}",
+            f"   TP3:  {setup.get('take_profit_3','')}",
+            f"   RR:   {setup.get('risk_reward','')}",
+            f"",
+            f"✅ Ideal entry: {setup.get('ideal_entry_description','')}",
+            f"❌ Invalidation: {setup.get('invalidation','')}",
+        ]
+    else:
+        lines.append(f"   ⏳ No complete setup — {setup.get('entry_condition','Wait for confirmation')}")
+
+    factors = result.get("confluence_factors", [])
+    missing = result.get("missing_confluence", [])
+    lines += [
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📊 *Confluence: {confluence}/10*",
+        f"[{confluence_bar}]",
+    ]
+    for factor in factors:
+        lines.append(f"   ✅ {factor}")
+    if missing:
+        lines.append(f"")
+        lines.append(f"   *Missing:*")
+        for m in missing[:3]:
+            lines.append(f"   ❌ {m}")
+
+    warnings = result.get("warnings", [])
+    if warnings:
+        lines += [f"", f"⚠️ *Warnings*"]
+        for w in warnings:
+            lines.append(f"   ⚠️ {w}")
+
+    lines += [
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"🔭 HTF: {result.get('htf_summary','')}",
+        f"",
+        f"🔬 LTF: {result.get('ltf_summary','')}",
+        f"",
+        f"💡 {result.get('overall_summary','')}",
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"{action_emoji} *Action: {result.get('action','wait').upper()}*   {urgency_emoji} {result.get('urgency','watch').capitalize()}",
+    ]
+
+    return "\n".join(lines)

@@ -541,3 +541,24 @@ CREATE TABLE IF NOT EXISTS degen_watchlist (
 ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS remaining_size_usd FLOAT;
 ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS partial_closes JSONB DEFAULT '[]';
 ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS time_stop_minutes INT DEFAULT 30;
+
+CREATE TABLE IF NOT EXISTS chart_analyses (
+    id               SERIAL PRIMARY KEY,
+    analysis_type    VARCHAR(10),
+    pair_estimate    VARCHAR(20),
+    timeframe        VARCHAR(20),
+    action           VARCHAR(10),
+    bias_direction   VARCHAR(10),
+    confluence_score INT,
+    setup_present    BOOLEAN,
+    setup_type       VARCHAR(100),
+    entry_zone       VARCHAR(50),
+    stop_loss        VARCHAR(50),
+    take_profit_1    VARCHAR(50),
+    take_profit_2    VARCHAR(50),
+    take_profit_3    VARCHAR(50),
+    risk_reward      VARCHAR(20),
+    full_result      JSONB,
+    demo_trade_id    INT REFERENCES demo_trades(id),
+    analysed_at      TIMESTAMP DEFAULT NOW()
+);

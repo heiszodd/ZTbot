@@ -12,8 +12,8 @@ from telegram.ext import (
 )
 
 import prices as px
-from config import SCANNER_INTERVAL, WAT
-from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler
+from config import SCANNER_INTERVAL, WAT, init_gemini
+from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler
 from degen import wallet_tracker
 from engine import run_backtest
 
@@ -435,6 +435,13 @@ def main():
         log.error(f"DB setup failed: {e}")
         raise
 
+    try:
+        import config
+        config.GEMINI_MODEL = init_gemini()
+        log.info("Gemini vision model ready")
+    except Exception as exc:
+        log.warning(f"Gemini init skipped: {exc}")
+
     app = Application.builder().token(os.getenv("BOT_TOKEN")).build()
 
     # ── Core navigation ───────────────────────────────
@@ -476,8 +483,10 @@ def main():
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_cb, pattern="^degen:"))
     app.add_handler(CallbackQueryHandler(demo_handler.handle_demo_cb, pattern="^demo:"))
     app.add_handler(CallbackQueryHandler(ca_handler.handle_ca_cb, pattern="^ca:"))
+    app.add_handler(CallbackQueryHandler(chart_handler.handle_chart_cb, pattern="^chart:"))
     app.add_handler(wallet_handler.build_add_wallet_handler())
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, demo_handler.handle_demo_risk_input))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, chart_handler.handle_chart_image), group=2)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ca_handler.handle_ca_message), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, stats.handle_journal_text))
 

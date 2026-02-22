@@ -1,6 +1,7 @@
 from datetime import timezone, timedelta
 import os
 import sys
+import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -37,6 +38,22 @@ CRYPTOCOMPARE_EXTRA_PARAMS = os.getenv("CRYPTOCOMPARE_EXTRA_PARAMS", "ztbot")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
 ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY", "")
 BSCSCAN_KEY = os.getenv("BSCSCAN_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = None
+
+
+def init_gemini():
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY not set")
+    genai.configure(api_key=GEMINI_API_KEY)
+    return genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        generation_config={
+            "temperature": 0.1,
+            "top_p": 0.95,
+            "max_output_tokens": 2048,
+        }
+    )
 
 # ── Tier risk sizing ──────────────────────────────────
 TIER_RISK = {"A": 2.0, "B": 1.0, "C": 0.5}

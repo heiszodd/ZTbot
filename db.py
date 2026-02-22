@@ -254,6 +254,7 @@ def setup_db():
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
     ALTER TABLE news_events ADD COLUMN IF NOT EXISTS suppressed BOOLEAN DEFAULT FALSE;
+
     CREATE TABLE IF NOT EXISTS pending_setups (
         id                  SERIAL PRIMARY KEY,
         model_id            VARCHAR(50) NOT NULL,
@@ -560,6 +561,26 @@ def setup_db():
             ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS remaining_size_usd FLOAT;
             ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS partial_closes JSONB DEFAULT '[]';
             ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS time_stop_minutes INT DEFAULT 30;
+            CREATE TABLE IF NOT EXISTS chart_analyses (
+                id               SERIAL PRIMARY KEY,
+                analysis_type    VARCHAR(10),
+                pair_estimate    VARCHAR(20),
+                timeframe        VARCHAR(20),
+                action           VARCHAR(10),
+                bias_direction   VARCHAR(10),
+                confluence_score INT,
+                setup_present    BOOLEAN,
+                setup_type       VARCHAR(100),
+                entry_zone       VARCHAR(50),
+                stop_loss        VARCHAR(50),
+                take_profit_1    VARCHAR(50),
+                take_profit_2    VARCHAR(50),
+                take_profit_3    VARCHAR(50),
+                risk_reward      VARCHAR(20),
+                full_result      JSONB,
+                demo_trade_id    INT REFERENCES demo_trades(id),
+                analysed_at      TIMESTAMP DEFAULT NOW()
+            );
             CREATE TABLE IF NOT EXISTS degen_watchlist (
                 id SERIAL PRIMARY KEY,
                 address VARCHAR(100) UNIQUE,
@@ -2420,4 +2441,57 @@ def extend_demo_trade_time_stop(trade_id: int, minutes: int) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE demo_trades SET time_stop_minutes=COALESCE(time_stop_minutes,30)+%s WHERE id=%s", (int(minutes), trade_id))
+        conn.commit()
+
+
+def save_chart_analysis(result: dict) -> int:
+    setup = result.get("setup", {}) or {}
+    bias = result.get("bias", {}) or {}
+    htf = result.get("htf", {}) or {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO chart_analyses (
+                    analysis_type, pair_estimate, timeframe, action, bias_direction,
+                    confluence_score, setup_present, setup_type, entry_zone, stop_loss,
+                    take_profit_1, take_profit_2, take_profit_3, risk_reward, full_result, analysed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s::timestamp, NOW()))
+                RETURNING id
+                """,
+                (
+                    result.get("analysis_type", "single"),
+                    result.get("pair_estimate") or htf.get("pair_estimate") or "unknown",
+                    result.get("timeframe_estimate") or htf.get("timeframe_estimate") or "unknown",
+                    result.get("action", "wait"),
+                    bias.get("direction") or htf.get("bias") or "neutral",
+                    int(result.get("confluence_score", 0) or 0),
+                    bool(setup.get("setup_present")),
+                    setup.get("setup_type"),
+                    str(setup.get("entry_zone") or "")[:50],
+                    str(setup.get("stop_loss") or "")[:50],
+                    str(setup.get("take_profit_1") or "")[:50],
+                    str(setup.get("take_profit_2") or "")[:50],
+                    str(setup.get("take_profit_3") or "")[:50],
+                    str(setup.get("risk_reward") or "")[:20],
+                    json.dumps(result),
+                    result.get("analysed_at"),
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return int(row["id"])
+
+
+def get_chart_analyses(limit: int = 20) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM chart_analyses ORDER BY analysed_at DESC LIMIT %s", (max(1, int(limit)),))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def link_chart_to_demo_trade(analysis_id: int, trade_id: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE chart_analyses SET demo_trade_id=%s WHERE id=%s", (trade_id, analysis_id))
         conn.commit()
