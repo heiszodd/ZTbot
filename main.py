@@ -466,25 +466,30 @@ def main():
     # ── Conversations (must be before generic callback routers) ──
     app.add_handler(wizard.build_wizard_handler(), group=0)
     app.add_handler(CallbackQueryHandler(degen_wizard.start_wizard, pattern="^dgwiz:start$"), group=0)
+
+    # Degen wizard callbacks
     app.add_handler(CallbackQueryHandler(degen_wizard.handle_degen_wizard_cb, pattern="^dgwiz:"), group=0)
+    # Perps wizard callbacks
+    app.add_handler(CallbackQueryHandler(wizard.handle_wizard_cb, pattern="^wizard:"), group=0)
+
     app.add_handler(commands.build_goal_handler())
     app.add_handler(commands.build_budget_handler())
 
     # ── Callback routers ──────────────────────────────
-    app.add_handler(CallbackQueryHandler(commands.handle_nav,       pattern="^nav:"))
-    app.add_handler(CallbackQueryHandler(commands.handle_model_cb,  pattern="^model:"))
-    app.add_handler(CallbackQueryHandler(commands.handle_scan_cb,   pattern="^scan:"))
+    app.add_handler(CallbackQueryHandler(commands.handle_nav, pattern="^nav:"), group=0)
+    app.add_handler(CallbackQueryHandler(commands.handle_model_cb, pattern="^model:"), group=0)
+    app.add_handler(CallbackQueryHandler(chart_handler.handle_chart_cb, pattern="^chart:"), group=0)
+    app.add_handler(CallbackQueryHandler(alerts.handle_pending_cb, pattern="^pending:"), group=0)
+    app.add_handler(CallbackQueryHandler(demo_handler.handle_demo_cb, pattern="^demo:"), group=0)
+    app.add_handler(CallbackQueryHandler(ca_handler.handle_ca_cb, pattern="^ca:"), group=0)
+    app.add_handler(CallbackQueryHandler(commands.handle_scan_cb, pattern="^scan:"))
     app.add_handler(CallbackQueryHandler(commands.handle_backtest_cb, pattern="^backtest:"))
     app.add_handler(CallbackQueryHandler(alerts.handle_alert_response, pattern="^alert:"))
-    app.add_handler(CallbackQueryHandler(alerts.handle_pending_cb, pattern="^pending:"))
     app.add_handler(CallbackQueryHandler(stats.handle_journal_cb, pattern="^journal:"))
     app.add_handler(CallbackQueryHandler(news_handler.handle_news_cb, pattern="^news:"))
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_model_cb, pattern="^degen_model:"))
     app.add_handler(CallbackQueryHandler(wallet_handler.handle_wallet_cb, pattern="^wallet:"))
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_cb, pattern="^degen:"))
-    app.add_handler(CallbackQueryHandler(demo_handler.handle_demo_cb, pattern="^demo:"))
-    app.add_handler(CallbackQueryHandler(ca_handler.handle_ca_cb, pattern="^ca:"))
-    app.add_handler(CallbackQueryHandler(chart_handler.handle_chart_cb, pattern="^chart:"))
     app.add_handler(wallet_handler.build_add_wallet_handler())
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, degen_wizard.handle_degen_name), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, demo_handler.handle_demo_risk_input))
