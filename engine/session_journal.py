@@ -8,7 +8,7 @@ log = logging.getLogger(__name__)
 
 
 async def record_session_data(context):
-    pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XAUUSD"]
+    pairs = ["BTCUSDT", "SOLUSDT"]
     cache = {}
     for pair in pairs:
         try:

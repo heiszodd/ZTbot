@@ -336,6 +336,58 @@ def backtest_model(model: dict, prices_series: list[float]) -> dict:
     }
 
 
+def optimize_model_for_pair(model: dict, pair: str, days: int = 30) -> dict:
+    """
+    Lightweight threshold optimization for a specific pair.
+    Chooses tier/min-score settings with the best blend of avg_rr and winrate.
+    """
+    series = px.get_recent_series(pair, days=days)
+    if len(series) < 40:
+        return {"optimized": False, "reason": "insufficient_data"}
+
+    base = dict(model)
+    base["pair"] = pair
+    max_score = float(sum(float(r.get("weight", 0) or 0) for r in base.get("rules", [])) or 0)
+    if max_score <= 0:
+        return {"optimized": False, "reason": "no_rules"}
+
+    candidates = [
+        (0.82, 0.68, 0.52),
+        (0.80, 0.65, 0.50),
+        (0.78, 0.62, 0.48),
+        (0.75, 0.60, 0.45),
+    ]
+
+    best = None
+    best_meta = None
+    for a_pct, b_pct, c_pct in candidates:
+        trial = dict(base)
+        trial["tier_a"] = round(max_score * a_pct, 2)
+        trial["tier_b"] = round(max_score * b_pct, 2)
+        trial["tier_c"] = round(max_score * c_pct, 2)
+        trial["min_score"] = trial["tier_c"]
+        result = backtest_model(trial, series)
+        trades = int(result.get("trades") or 0)
+        avg_rr = float(result.get("avg_rr") or 0.0)
+        win_rate = float(result.get("win_rate") or 0.0)
+        score = (avg_rr * 100.0) + win_rate + (trades * 0.2)
+        meta = {
+            "tier_a": trial["tier_a"],
+            "tier_b": trial["tier_b"],
+            "tier_c": trial["tier_c"],
+            "min_score": trial["min_score"],
+            "result": result,
+            "objective": round(score, 2),
+        }
+        if best is None or score > best:
+            best = score
+            best_meta = meta
+
+    if not best_meta:
+        return {"optimized": False, "reason": "no_candidate"}
+    return {"optimized": True, **best_meta}
+
+
 def _score_direction(pair: str, timeframe: str, model: dict, direction: str) -> dict | None:
     scan_model = {**model, "pair": pair, "timeframe": timeframe, "bias": direction}
     try:

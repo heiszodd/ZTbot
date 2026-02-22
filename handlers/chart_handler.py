@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import json
 import logging
@@ -141,16 +142,15 @@ async def chart_received_first(update, context):
     context.user_data["in_conversation"] = True
     context.job_queue.run_once(expire_htf_image, when=300, chat_id=update.effective_chat.id, data={"chat_id": update.effective_chat.id}, name=f"expire_htf_{update.effective_chat.id}")
     await update.message.reply_text(
-        "📊 *Chart received!*\n\nIs this your *HTF (Higher Timeframe)* chart?\n_(4H, Daily, Weekly — for context)_",
+        "✅ *HTF chart saved.*\n\nNow send your *LTF (Lower Timeframe)* chart.\n_(1H, 15M, 5M — for entry timing)_",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("✅ Yes — this is my HTF", callback_data="chart:htf_yes"), InlineKeyboardButton("📊 Analyse this one only", callback_data="chart:single")],
                 [InlineKeyboardButton("❌ Cancel", callback_data="chart:cancel")],
             ]
         ),
     )
-    return CHART_WAITING_HTF_CONFIRM
+    return CHART_WAITING_LTF
 
 
 async def handle_chart_type_choice(update, context):
@@ -225,4 +225,21 @@ async def handle_chart_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "chart:cancel":
         return await handle_chart_cancel(update, context)
     if query.data == "chart:resend":
-        await query.message.reply_text("📸 Send your chart image to start again.")
+        await query.message.reply_text("📸 Send your HTF chart first, then your LTF chart.")
+
+
+async def chart_api_test_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🧪 Testing Gemini image reading...")
+    tiny_png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9Wl8kAAAAASUVORK5CYII="
+    )
+    try:
+        raw = await call_gemini(
+            [
+                "Read this image input and reply exactly in JSON: {\"status\":\"ok\",\"image_read\":true}.",
+                make_image_part(tiny_png),
+            ]
+        )
+        await update.message.reply_text(f"✅ Gemini image test response:\n`{raw[:350]}`", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Gemini image test failed: `{str(e)[:300]}`", parse_mode="Markdown")

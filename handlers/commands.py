@@ -94,6 +94,24 @@ def main_kb():
     return perps_keyboard()
 
 
+def _selected_pairs() -> list[str]:
+    prefs = db.get_user_preferences(CHAT_ID) or {}
+    preferred = [p for p in (prefs.get("preferred_pairs") or []) if p in SUPPORTED_PAIRS]
+    return preferred or list(SUPPORTED_PAIRS[:1])
+
+
+def _set_selected_pair(pair: str) -> None:
+    if pair in SUPPORTED_PAIRS:
+        db.update_user_preferences(CHAT_ID, preferred_pairs=[pair])
+
+
+def _pair_select_kb(prefix: str, include_back: bool = True) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(pair, callback_data=f"{prefix}:{pair}")] for pair in SUPPORTED_PAIRS]
+    if include_back:
+        rows.append([InlineKeyboardButton("« Back", callback_data="nav:models")])
+    return InlineKeyboardMarkup(rows)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
@@ -405,7 +423,7 @@ async def handle_master_category(update: Update, context: ContextTypes.DEFAULT_T
         status_dot = "🟢" if m["status"] == "active" else "⚫"
         rule_count = len(m.get("rules", []))
         buttons.append([InlineKeyboardButton(
-            f"{status_dot} {m['pair']} {m['timeframe']} — {formatters.fmt_bias(m.get('bias'))} ({rule_count} rules)",
+            f"{status_dot} {m['timeframe']} — Adaptive direction/pair ({rule_count} rules)",
             callback_data=f"model:detail:{m['id']}"
         )])
 
@@ -421,12 +439,51 @@ async def handle_master_category(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_activate_all_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer("Activating all master models...")
-    updated = db.activate_all_master_models()
+    await query.answer()
     await query.message.edit_text(
-        f"✅ *{updated} Master Models Activated*\n\n"
-        f"All master models are now scanning.\n"
-        f"Alerts will fire when criteria are met.",
+        "Select the live activation pair for master models.",
+        reply_markup=_pair_select_kb("model:activate_all_pair"),
+    )
+
+
+async def handle_activate_category(update: Update, context: ContextTypes.DEFAULT_TYPE, cat_key: str):
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_text(
+        f"Select live pair for category `{cat_key}`:",
+        parse_mode="Markdown",
+        reply_markup=_pair_select_kb(f"model:activate_cat_pair:{cat_key}", include_back=False),
+    )
+
+
+async def handle_activate_all_master_for_pair(update: Update, context: ContextTypes.DEFAULT_TYPE, pair: str):
+    query = update.callback_query
+    await query.answer("Activating and optimizing master models...")
+    _set_selected_pair(pair)
+    updated = db.activate_all_master_models()
+    all_models = db.get_all_models()
+    optimized = 0
+    for model in all_models:
+        if not str(model.get("id", "")).startswith("MM_"):
+            continue
+        opt = engine.optimize_model_for_pair(model, pair, days=30)
+        if opt.get("optimized"):
+            db.update_model_fields(
+                model["id"],
+                {
+                    "tier_a": opt["tier_a"],
+                    "tier_b": opt["tier_b"],
+                    "tier_c": opt["tier_c"],
+                    "min_score": opt["min_score"],
+                    "pair": "ALL",
+                    "bias": "Both",
+                },
+            )
+            optimized += 1
+    await query.message.edit_text(
+        f"✅ *{updated} Master Models Activated*\n"
+        f"Live pair: `{pair}`\n"
+        f"Optimized: `{optimized}` models",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⚙️ View Models", callback_data="nav:models")],
@@ -435,19 +492,40 @@ async def handle_activate_all_master(update: Update, context: ContextTypes.DEFAU
     )
 
 
-async def handle_activate_category(update: Update, context: ContextTypes.DEFAULT_TYPE, cat_key: str):
+async def handle_activate_category_for_pair(update: Update, context: ContextTypes.DEFAULT_TYPE, cat_key: str, pair: str):
     query = update.callback_query
-    await query.answer(f"Activating {cat_key} models...")
+    await query.answer(f"Activating {cat_key}...")
+    _set_selected_pair(pair)
     updated = db.activate_master_models_by_category(cat_key)
+    all_models = [m for m in db.get_all_models() if str(m.get("id", "")).startswith(f"MM_{cat_key}_")]
+    optimized = 0
+    for model in all_models:
+        opt = engine.optimize_model_for_pair(model, pair, days=30)
+        if opt.get("optimized"):
+            db.update_model_fields(
+                model["id"],
+                {
+                    "tier_a": opt["tier_a"],
+                    "tier_b": opt["tier_b"],
+                    "tier_c": opt["tier_c"],
+                    "min_score": opt["min_score"],
+                    "pair": "ALL",
+                    "bias": "Both",
+                },
+            )
+            optimized += 1
     await query.message.edit_text(
-        f"✅ *{updated} models activated*\nCategory: {cat_key}",
+        f"✅ *{updated} models activated*\n"
+        f"Category: `{cat_key}`\n"
+        f"Live pair: `{pair}`\n"
+        f"Optimized: `{optimized}` models",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=f"model:master_cat:{cat_key}")]])
     )
 
 
 def _pack_btc_all(models):
-    return [m["id"] for m in models if m.get("id", "").startswith("MM_") and m.get("pair") == "BTCUSDT" and m.get("timeframe") in {"1h", "4h"}]
+    return [m["id"] for m in models if m.get("id", "").startswith("MM_") and m.get("timeframe") in {"1h", "4h"}]
 
 
 async def _render_quick_deploy(q):
@@ -482,8 +560,16 @@ async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "model:activate_all_mm":
         await handle_activate_all_master(update, context)
         return
+    if data.startswith("model:activate_all_pair:"):
+        await handle_activate_all_master_for_pair(update, context, data.split(":")[2])
+        return
     if data.startswith("model:activate_cat:"):
         await handle_activate_category(update, context, data.split(":")[2])
+        return
+    if data.startswith("model:activate_cat_pair:"):
+        parts = data.split(":")
+        if len(parts) > 3:
+            await handle_activate_category_for_pair(update, context, parts[2], parts[3])
         return
     if data == "model:quick_deploy" or data == "model:quickdeploy":
         await q.answer()
@@ -517,13 +603,27 @@ async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("❌ Unknown pack")
             return
         activated = []
+        selected_pair = _selected_pairs()[0]
         for model_id in pack["models"]:
             m = db.get_model(model_id)
             if m:
+                if str(m.get("id", "")).startswith("MM_"):
+                    db.update_model_fields(model_id, {"pair": "ALL", "bias": "Both"})
+                    opt = engine.optimize_model_for_pair(m, selected_pair, days=30)
+                    if opt.get("optimized"):
+                        db.update_model_fields(
+                            model_id,
+                            {
+                                "tier_a": opt["tier_a"],
+                                "tier_b": opt["tier_b"],
+                                "tier_c": opt["tier_c"],
+                                "min_score": opt["min_score"],
+                            },
+                        )
                 db.set_model_status(model_id, "active")
                 activated.append(model_id)
         await q.message.reply_text(
-            f"✅ {pack['name']} deployed\n{pack['description']}\n\nActive models:\n" + "\n".join([f"• {x}" for x in activated]),
+            f"✅ {pack['name']} deployed\n{pack['description']}\nLive pair: {selected_pair}\n\nActive models:\n" + "\n".join([f"• {x}" for x in activated]),
             parse_mode="Markdown",
         )
         return
@@ -543,7 +643,8 @@ async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✏️ Edit", callback_data=f"model:edit:{model_id}"), InlineKeyboardButton("📋 Clone", callback_data=f"model:clone:{model_id}")],
             [InlineKeyboardButton("📜 History", callback_data=f"model:history:{model_id}"), InlineKeyboardButton("📊 Rule Analysis", callback_data=f"model:rules:{model_id}")],
         ])
-        await q.message.reply_text(formatters.fmt_model_detail(m, px.get_price(m['pair'])), parse_mode="Markdown", reply_markup=kb)
+        price_pair = m["pair"] if m.get("pair") != "ALL" else _selected_pairs()[0]
+        await q.message.reply_text(formatters.fmt_model_detail(m, px.get_price(price_pair)), parse_mode="Markdown", reply_markup=kb)
     elif action == "edit":
         await q.message.reply_text("✏️ *Edit Model*\nSelect what to change.", parse_mode="Markdown", reply_markup=_model_edit_kb(model_id))
     elif action == "edit_field" and len(parts) > 3:
@@ -632,9 +733,11 @@ async def handle_backtest_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if action == "start" or action == "again":
         await _send_backtest_entry(q.message.reply_text)
     elif action == "model" and len(parts) > 2:
-        await _send_backtest_days(q.message.reply_text, parts[2])
+        await _send_backtest_pairs(q.message.reply_text, parts[2])
+    elif action == "pair" and len(parts) > 3:
+        await _send_backtest_days(q.message.reply_text, parts[2], parts[3])
     elif action == "days" and len(parts) > 3:
-        await _run_backtest_selection(q.message.reply_text, parts[2], parts[3])
+        await _run_backtest_selection(q.message.reply_text, parts[2], parts[3], parts[4] if len(parts) > 4 else "")
 
 
 async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -649,7 +752,7 @@ async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _run_backtest_command(reply, args: list[str]):
     if len(args) < 2:
         await reply(
-            "❌ Usage: `/backtest <model_id> <days>` (example: `/backtest model_abc 30`)\n"
+            "❌ Usage: `/backtest <model_id> <days> [pair]` (example: `/backtest model_abc 30 BTCUSDT`)\n"
             "You can also use the Backtest screen to autofill this command.",
             parse_mode="Markdown",
             reply_markup=_backtest_screen_kb(),
@@ -672,7 +775,24 @@ async def _run_backtest_command(reply, args: list[str]):
         await reply("❌ Days must be between 1 and 90.")
         return
 
-    series = px.get_recent_series(model["pair"], days=days)
+    selected_pair = (args[2].strip().upper() if len(args) > 2 and args[2] else "").upper()
+    if selected_pair and selected_pair not in SUPPORTED_PAIRS:
+        await reply(f"❌ Pair must be one of: {', '.join(SUPPORTED_PAIRS)}")
+        return
+    pair = selected_pair or model.get("pair")
+    if pair == "ALL" or not pair:
+        pair = _selected_pairs()[0]
+
+    run_model = dict(model)
+    run_model["pair"] = pair
+    optimization = engine.optimize_model_for_pair(run_model, pair, days=max(14, min(days, 30)))
+    if optimization.get("optimized"):
+        run_model["tier_a"] = optimization["tier_a"]
+        run_model["tier_b"] = optimization["tier_b"]
+        run_model["tier_c"] = optimization["tier_c"]
+        run_model["min_score"] = optimization["min_score"]
+
+    series = px.get_recent_series(pair, days=days)
     if len(series) < 40:
         await reply(
             "⚠️ Not enough price data was returned for this pair/range. Try a longer range.",
@@ -680,7 +800,7 @@ async def _run_backtest_command(reply, args: list[str]):
         )
         return
 
-    result = engine.backtest_model(model, series)
+    result = engine.backtest_model(run_model, series)
     trades = int(result.get("trades") or 0)
     wins = int(result.get("wins") or 0)
     losses = int(result.get("losses") or 0)
@@ -689,13 +809,18 @@ async def _run_backtest_command(reply, args: list[str]):
 
     msg = (
         f"🧪 *Backtest — {model['name']}*\n"
-        f"Pair: `{model['pair']}`\n"
+        f"Pair: `{pair}`\n"
         f"Range: `{days}d`\n"
         f"Trades: `{trades}`\n"
         f"Wins/Losses: `{wins}/{losses}`\n"
         f"Win rate: `{win_rate:.2f}%`\n"
         f"Avg R/R: `{avg_rr:+.2f}R`"
     )
+    if optimization.get("optimized"):
+        msg += (
+            f"\n\n⚙️ Optimized thresholds\n"
+            f"Tier A/B/C: `{optimization['tier_a']}` / `{optimization['tier_b']}` / `{optimization['tier_c']}`"
+        )
     await reply(msg, parse_mode="Markdown", reply_markup=_backtest_screen_kb())
 
 
@@ -725,7 +850,21 @@ async def _send_backtest_entry(reply):
     )
 
 
-async def _send_backtest_days(reply, model_id: str):
+async def _send_backtest_pairs(reply, model_id: str):
+    model = db.get_model(model_id)
+    if not model:
+        await reply("❌ Model not found. Please choose again.", reply_markup=_backtest_screen_kb())
+        return
+    pair_buttons = [[InlineKeyboardButton(pair, callback_data=f"backtest:pair:{model_id}:{pair}")] for pair in SUPPORTED_PAIRS]
+    pair_buttons.append([InlineKeyboardButton("🔄 Choose Another Model", callback_data="backtest:start")])
+    await reply(
+        f"🧪 *Backtest*\nModel: *{model['name']}* (`{model_id}`)\nPick a pair.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(pair_buttons),
+    )
+
+
+async def _send_backtest_days(reply, model_id: str, pair: str):
     model = db.get_model(model_id)
     if not model:
         await reply("❌ Model not found. Please choose again.", reply_markup=_backtest_screen_kb())
@@ -735,28 +874,29 @@ async def _send_backtest_days(reply, model_id: str):
     day_buttons = [
         InlineKeyboardButton(
             f"{days}d",
-            callback_data=f"backtest:days:{model_id}:{days}",
+            callback_data=f"backtest:days:{model_id}:{pair}:{days}",
         )
         for days in day_options
     ]
     keyboard = [day_buttons[:2], day_buttons[2:]]
+    keyboard.append([InlineKeyboardButton("🔁 Choose Another Pair", callback_data=f"backtest:model:{model_id}")])
     keyboard.append([InlineKeyboardButton("🔄 Choose Another Model", callback_data="backtest:start")])
     keyboard.append([InlineKeyboardButton("« Back to Perps", callback_data="nav:perps_home")])
 
     await reply(
-        f"🧪 *Backtest*\nModel: *{model['name']}* (`{model_id}`)\nPick a range to run now.",
+        f"🧪 *Backtest*\nModel: *{model['name']}* (`{model_id}`)\nPair: `{pair}`\nPick a range to run now.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
-async def _run_backtest_selection(reply, model_id: str, days_raw: str):
+async def _run_backtest_selection(reply, model_id: str, pair: str, days_raw: str):
     try:
         days = int(days_raw)
     except Exception:
         await reply("❌ Invalid day range selected.", reply_markup=_backtest_screen_kb())
         return
-    await _run_backtest_command(reply, [model_id, str(days)])
+    await _run_backtest_command(reply, [model_id, str(days), pair])
 
 
 def _cancel_kb(scope: str) -> InlineKeyboardMarkup:

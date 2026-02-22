@@ -51,11 +51,7 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 FALLBACK_PRICES = {
     "BTCUSDT": 50000.0,
-    "ETHUSDT": 3000.0,
     "SOLUSDT": 120.0,
-    "BNBUSDT": 450.0,
-    "XRPUSDT": 0.6,
-    "DOGEUSDT": 0.11,
 }
 
 _SESSION = requests.Session()

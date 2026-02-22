@@ -3,6 +3,10 @@ import os
 import sys
 import logging
 from dotenv import load_dotenv
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
 
 load_dotenv()
 log = logging.getLogger(__name__)
@@ -24,7 +28,9 @@ def _required_env(name: str) -> str:
 WAT = timezone(timedelta(hours=1), name="WAT")
 
 TOKEN = _required_env("BOT_TOKEN")
-DB_URL = _required_env("DB_URL")
+DB_URL = os.getenv("DB_URL", "").strip() or os.getenv("DATABASE_URL", "").strip()
+if not DB_URL:
+    _fatal_env("DB_URL (or DATABASE_URL) is not set")
 
 _chat_id_raw = _required_env("CHAT_ID")
 try:
@@ -47,6 +53,9 @@ def init_gemini():
     global GEMINI_MODEL
     if not GEMINI_API_KEY:
         log.warning("GEMINI_API_KEY not set — chart analysis will be unavailable")
+        return None
+    if genai is None:
+        log.warning("google-generativeai package not installed — chart analysis will be unavailable")
         return None
     try:
         genai.configure(api_key=GEMINI_API_KEY)
@@ -105,7 +114,7 @@ VIOLATION_LABELS = {
 CLEAN_TRADE_BONUS = 2
 
 # ── Supported assets ──────────────────────────────────
-CRYPTO_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"]
+CRYPTO_PAIRS = ["BTCUSDT", "SOLUSDT"]
 FOREX_PAIRS  = []
 ALL_PAIRS    = CRYPTO_PAIRS
 
@@ -136,10 +145,6 @@ SUPPORTED_MODEL_RULES = [
 ]
 
 CORRELATED_PAIRS = {
-    "BTCUSDT": ["ETHUSDT", "SOLUSDT", "BNBUSDT"],
-    "ETHUSDT": ["BTCUSDT", "SOLUSDT"],
-    "SOLUSDT": ["BTCUSDT", "ETHUSDT"],
-    "EURUSD": ["GBPUSD", "AUDUSD"],
-    "GBPUSD": ["EURUSD"],
-    "XAUUSD": ["XAGUSD"],
+    "BTCUSDT": ["SOLUSDT"],
+    "SOLUSDT": ["BTCUSDT"],
 }

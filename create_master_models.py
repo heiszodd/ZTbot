@@ -15,7 +15,7 @@ def model(mid, name, pair, tf, session, bias, desc, rulespec):
     total = sum(x["weight"] for x in rules)
     a, b, c = total * 0.8, total * 0.65, total * 0.5
     return {
-        "id": mid, "name": name, "pair": pair, "timeframe": tf, "session": session, "bias": bias,
+        "id": mid, "name": name, "pair": "ALL", "timeframe": tf, "session": session, "bias": "Both",
         "status": "inactive", "rules": rules,
         "tier_a_threshold": a, "tier_b_threshold": b, "tier_c_threshold": c, "min_score": c,
         "description": desc, "tier_a": a, "tier_b": b, "tier_c": c,

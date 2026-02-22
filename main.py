@@ -463,15 +463,14 @@ def main():
     app.add_handler(CommandHandler("create_degen_model", degen_wizard.start_wizard))
     app.add_handler(CommandHandler("journal",     commands.journal_cmd))
     app.add_handler(CommandHandler("news",        news_handler.news_cmd))
+    app.add_handler(CommandHandler("charttest",   chart_handler.chart_api_test_cmd))
 
     # ── Conversations (must be before generic callback routers) ──
     chart_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO | filters.Document.IMAGE, chart_handler.chart_received_first)],
         states={
-            chart_handler.CHART_WAITING_HTF_CONFIRM: [CallbackQueryHandler(chart_handler.handle_chart_type_choice, pattern="^chart:(htf_yes|single)$")],
             chart_handler.CHART_WAITING_LTF: [
                 MessageHandler(filters.PHOTO | filters.Document.IMAGE, chart_handler.chart_received_ltf),
-                CallbackQueryHandler(chart_handler.handle_skip_ltf, pattern="^chart:skip_ltf$"),
             ],
         },
         fallbacks=[CallbackQueryHandler(chart_handler.handle_chart_cancel, pattern="^chart:cancel$")],

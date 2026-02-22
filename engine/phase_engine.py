@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timedelta
 
 import db
-from config import CHAT_ID
+from config import CHAT_ID, SUPPORTED_PAIRS
 from engine.rules import calc_atr, evaluate_rule, get_candles
 
 log = logging.getLogger(__name__)
@@ -13,7 +13,11 @@ PHASE_THRESHOLDS = {1: 60, 2: 55, 3: 70, 4: 50}
 
 def get_pairs_for_model(model: dict) -> list[str]:
     pair = model.get("pair", "BTCUSDT")
-    return [pair] if pair != "ALL" else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XAUUSD"]
+    if pair != "ALL":
+        return [pair]
+    prefs = db.get_user_preferences(CHAT_ID) or {}
+    preferred = [p for p in (prefs.get("preferred_pairs") or []) if p in SUPPORTED_PAIRS]
+    return preferred or list(SUPPORTED_PAIRS)
 
 
 def get_directions(model: dict) -> list[str]:

@@ -782,7 +782,7 @@ def set_model_status(model_id, status):
 
 
 def update_model_fields(model_id, fields: dict):
-    allowed = {"pair", "timeframe", "session", "bias", "name", "tier_a", "tier_b", "tier_c", "rules"}
+    allowed = {"pair", "timeframe", "session", "bias", "name", "tier_a", "tier_b", "tier_c", "min_score", "rules"}
     clean = {k: v for k, v in (fields or {}).items() if k in allowed}
     if not clean:
         return False
@@ -1656,7 +1656,9 @@ def activate_all_master_models() -> int:
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE models
-                SET status = 'active'
+                SET status = 'active',
+                    pair = 'ALL',
+                    bias = 'Both'
                 WHERE id LIKE 'MM_%'
             """)
             updated = cur.rowcount
@@ -1675,7 +1677,9 @@ def activate_master_models_by_category(cat_key: str) -> int:
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE models
-                SET status = 'active'
+                SET status = 'active',
+                    pair = 'ALL',
+                    bias = 'Both'
                 WHERE id LIKE %s
             """, (f"MM_{cat_key}_%",))
             updated = cur.rowcount

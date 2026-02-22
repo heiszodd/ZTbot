@@ -151,7 +151,9 @@ async def _evaluate_and_send(bot, model: dict, force=False, pair_override: str |
 async def run_scanner(context: ContextTypes.DEFAULT_TYPE):
     bot = context.application.bot
     models = [m for m in db.get_all_models() if m.get("status") == "active"]
-    scan_pairs = list(dict.fromkeys(SUPPORTED_PAIRS or []))
+    prefs = db.get_user_preferences(CHAT_ID) or {}
+    preferred = [p for p in (prefs.get("preferred_pairs") or []) if p in SUPPORTED_PAIRS]
+    scan_pairs = preferred or list(dict.fromkeys(SUPPORTED_PAIRS or []))
     processing = context.bot_data.setdefault("processing_setups", set())
 
     for model in models:
