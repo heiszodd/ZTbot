@@ -693,7 +693,7 @@ async def handle_scan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     pair = q.data.split(":")[1]
-    models = [x for x in db.get_active_models() if x['pair'] == pair]
+    models = [x for x in db.get_active_models() if x.get("pair") in {pair, "ALL"}]
     if not models:
         await q.message.reply_text(f"ℹ️ No active models for `{pair}`.", parse_mode="Markdown")
         return

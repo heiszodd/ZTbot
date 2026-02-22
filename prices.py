@@ -29,6 +29,10 @@ from config import (
 
 log = logging.getLogger(__name__)
 
+BINANCE_BASE_URLS = ["https://api.binance.us", "https://api.binance.com"]
+BINANCE_KLINES_PATH = "/api/v3/klines"
+BINANCE_TICKER_PATH = "/api/v3/ticker/price"
+
 CRYPTOCOMPARE_HISTO_MINUTE_PATH = "/data/v2/histominute"
 CRYPTOCOMPARE_HISTO_HOUR_PATH = "/data/v2/histohour"
 CRYPTOCOMPARE_HISTO_DAY_PATH = "/data/v2/histoday"
@@ -60,6 +64,45 @@ LAST_API_CALL_TS: float | None = None
 LAST_API_ERROR: str | None = None
 API_CALL_COUNT = 0
 _LIVE_PRICE_CACHE: dict[str, tuple[float, float]] = {}
+
+
+def _parse_cached_rows(rows: list[dict], interval_sec: int) -> list[Candle]:
+    candles: list[Candle] = []
+    for row in rows:
+        if "time" in row:
+            open_time_sec = int(row.get("time", 0))
+            if open_time_sec <= 0:
+                continue
+            candles.append(
+                Candle(
+                    open_time_ms=open_time_sec * 1000,
+                    open=Decimal(str(row.get("open", 0.0))),
+                    high=Decimal(str(row.get("high", 0.0))),
+                    low=Decimal(str(row.get("low", 0.0))),
+                    close=Decimal(str(row.get("close", 0.0))),
+                    volume=Decimal(str(row.get("volumefrom", row.get("volume", 0.0)))),
+                    close_time_ms=(open_time_sec + interval_sec) * 1000 - 1,
+                    trades_count=int(row.get("trades", 0) or 0),
+                )
+            )
+            continue
+        # Legacy/alternate cache shape support.
+        open_time_ms = int(row.get("open_time_ms", 0))
+        if open_time_ms <= 0:
+            continue
+        candles.append(
+            Candle(
+                open_time_ms=open_time_ms,
+                open=Decimal(str(row.get("open", 0.0))),
+                high=Decimal(str(row.get("high", 0.0))),
+                low=Decimal(str(row.get("low", 0.0))),
+                close=Decimal(str(row.get("close", 0.0))),
+                volume=Decimal(str(row.get("volume", 0.0))),
+                close_time_ms=int(row.get("close_time_ms", open_time_ms + interval_sec * 1000 - 1)),
+                trades_count=int(row.get("trades_count", 0) or 0),
+            )
+        )
+    return candles
 
 
 @dataclass(slots=True)
@@ -140,24 +183,7 @@ def _request(path: str, params: dict, retries: int = 5, timeout: float = 10.0):
 
 
 def _parse_histodata_rows(rows: list[dict], interval_sec: int) -> list[Candle]:
-    candles: list[Candle] = []
-    for row in rows:
-        open_time_sec = int(row.get("time", 0))
-        if open_time_sec <= 0:
-            continue
-        candles.append(
-            Candle(
-                open_time_ms=open_time_sec * 1000,
-                open=Decimal(str(row.get("open", 0.0))),
-                high=Decimal(str(row.get("high", 0.0))),
-                low=Decimal(str(row.get("low", 0.0))),
-                close=Decimal(str(row.get("close", 0.0))),
-                volume=Decimal(str(row.get("volumefrom", 0.0))),
-                close_time_ms=(open_time_sec + interval_sec) * 1000 - 1,
-                trades_count=0,
-            )
-        )
-    return candles
+    return _parse_cached_rows(rows, interval_sec)
 
 
 def fetch_cryptocompare_ohlcv(
@@ -167,7 +193,11 @@ def fetch_cryptocompare_ohlcv(
     end_time_ms: int | None = None,
     use_cache: bool = True,
 ) -> list[Candle]:
-    """Fetch OHLCV candles with backwards pagination (up to 2000 per call)."""
+    """
+    Fetch OHLCV candles with free-provider first strategy:
+    1) Binance public klines (no API key)
+    2) CryptoCompare fallback
+    """
     normalized_interval = interval.lower()
     if normalized_interval == "1h":
         normalized_interval = "1h"
@@ -190,6 +220,70 @@ def fetch_cryptocompare_ohlcv(
         if cached is not None:
             return _parse_histodata_rows(cached, interval_sec)
 
+    # 1) Binance first (free/no key)
+    rows_all: list[dict] = []
+    try:
+        start_cursor = int(start_time_ms)
+        end_cursor = int(end_time_ms)
+        step_ms = interval_sec * 1000
+        while start_cursor <= end_cursor:
+            page = None
+            last_exc = None
+            for base_url in BINANCE_BASE_URLS:
+                try:
+                    resp = _SESSION.get(
+                        f"{base_url}{BINANCE_KLINES_PATH}",
+                        params={
+                            "symbol": symbol.upper().replace("/", ""),
+                            "interval": normalized_interval,
+                            "startTime": start_cursor,
+                            "endTime": end_cursor,
+                            "limit": 1000,
+                        },
+                        timeout=10,
+                    )
+                    resp.raise_for_status()
+                    page = resp.json()
+                    LAST_API_ERROR = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    continue
+            if page is None:
+                raise RuntimeError(f"Binance klines unavailable: {last_exc}")
+            if not page:
+                break
+            for k in page:
+                # Convert Binance kline to CryptoCompare-like cache row.
+                rows_all.append(
+                    {
+                        "time": int(int(k[0]) // 1000),
+                        "open": float(k[1]),
+                        "high": float(k[2]),
+                        "low": float(k[3]),
+                        "close": float(k[4]),
+                        "volumefrom": float(k[5]),
+                        "trades": int(k[8]) if len(k) > 8 else 0,
+                    }
+                )
+            last_open_ms = int(page[-1][0])
+            next_cursor = last_open_ms + step_ms
+            if next_cursor <= start_cursor:
+                break
+            start_cursor = next_cursor
+            if len(page) < 1000:
+                break
+            time.sleep(0.05)
+
+        rows_all = sorted({int(r["time"]): r for r in rows_all}.values(), key=lambda x: int(x["time"]))
+        if rows_all:
+            if use_cache:
+                _save_cache(cache_file, rows_all)
+            return _parse_histodata_rows(rows_all, interval_sec)
+    except Exception as exc:
+        log.warning("Binance klines error for %s (%s), falling back to CryptoCompare", symbol, exc)
+
+    # 2) CryptoCompare fallback
     base, quote = _split_pair(symbol)
     endpoint = CRYPTOCOMPARE_HISTO_MINUTE_PATH
     aggregate = max(1, interval_sec // 60)
@@ -203,7 +297,7 @@ def fetch_cryptocompare_ohlcv(
     start_sec = int(start_time_ms // 1000)
     end_sec = int(end_time_ms // 1000)
 
-    rows_all: list[dict] = []
+    rows_all = []
     seen_times: set[int] = set()
     cursor_to_ts: int | None = end_sec
 
@@ -418,30 +512,57 @@ async def get_crypto_prices(pairs: list[str]) -> dict[str, float]:
     missing_parsed = [p for p in parsed if p[0] in set(missing_pairs)]
     fsyms = ",".join(fsym for _, fsym, _ in missing_parsed)
 
+    out: dict[str, float] = {}
+
+    # 1) Binance live price first (free/no key)
     try:
-        params = {"fsyms": fsyms, "tsyms": tsym}
-        if CRYPTOCOMPARE_API_KEY:
-            params["api_key"] = CRYPTOCOMPARE_API_KEY
-        if CRYPTOCOMPARE_EXTRA_PARAMS:
-            params["extraParams"] = CRYPTOCOMPARE_EXTRA_PARAMS
         async with httpx.AsyncClient(timeout=8.0) as client:
-            response = await client.get(f"{CRYPTOCOMPARE_BASE_URL}{CRYPTOCOMPARE_PRICE_MULTI_PATH}", params=params)
-            response.raise_for_status()
-            payload = response.json()
-        out: dict[str, float] = {}
-        for pair, fsym, _ in missing_parsed:
-            price = payload.get(fsym, {}).get(tsym)
-            if price is not None:
-                price_value = float(price)
-                out[pair] = price_value
-                _LIVE_PRICE_CACHE[pair] = (price_value, now)
-        merged = {**cache_hits, **out}
-        return {pair: merged[pair] for pair in pairs if pair in merged}
+            for pair, _, _ in missing_parsed:
+                symbol = pair.upper().replace("/", "")
+                got = None
+                for base_url in BINANCE_BASE_URLS:
+                    try:
+                        response = await client.get(
+                            f"{base_url}{BINANCE_TICKER_PATH}",
+                            params={"symbol": symbol},
+                        )
+                        response.raise_for_status()
+                        payload = response.json()
+                        got = float(payload.get("price"))
+                        break
+                    except Exception:
+                        continue
+                if got is not None:
+                    out[pair] = got
+                    _LIVE_PRICE_CACHE[pair] = (got, now)
     except Exception as exc:
-        log.error("CryptoCompare live price error: %s", exc)
-        fallback = {pair: FALLBACK_PRICES[pair] for pair in missing_pairs if pair in FALLBACK_PRICES}
-        merged = {**cache_hits, **fallback}
-        return {pair: merged[pair] for pair in pairs if pair in merged}
+        log.warning("Binance live price batch error: %s", exc)
+
+    # 2) CryptoCompare fallback for unresolved pairs
+    unresolved = [p for p in missing_parsed if p[0] not in out]
+    if unresolved:
+        try:
+            params = {"fsyms": ",".join(fsym for _, fsym, _ in unresolved), "tsyms": tsym}
+            if CRYPTOCOMPARE_API_KEY:
+                params["api_key"] = CRYPTOCOMPARE_API_KEY
+            if CRYPTOCOMPARE_EXTRA_PARAMS:
+                params["extraParams"] = CRYPTOCOMPARE_EXTRA_PARAMS
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                response = await client.get(f"{CRYPTOCOMPARE_BASE_URL}{CRYPTOCOMPARE_PRICE_MULTI_PATH}", params=params)
+                response.raise_for_status()
+                payload = response.json()
+            for pair, fsym, _ in unresolved:
+                price = payload.get(fsym, {}).get(tsym)
+                if price is not None:
+                    price_value = float(price)
+                    out[pair] = price_value
+                    _LIVE_PRICE_CACHE[pair] = (price_value, now)
+        except Exception as exc:
+            log.warning("CryptoCompare live price fallback error: %s", exc)
+
+    fallback = {pair: FALLBACK_PRICES[pair] for pair in missing_pairs if pair in FALLBACK_PRICES and pair not in out}
+    merged = {**cache_hits, **out, **fallback}
+    return {pair: merged[pair] for pair in pairs if pair in merged}
 
 
 async def fetch_prices(pairs: list[str]) -> dict[str, float]:
@@ -450,8 +571,19 @@ async def fetch_prices(pairs: list[str]) -> dict[str, float]:
 
 def get_price(pair: str) -> float | None:
     cached = _LIVE_PRICE_CACHE.get(pair)
-    if cached:
+    now = time.time()
+    if cached and (now - cached[1]) <= 30:
         return cached[0]
+    symbol = pair.upper().replace("/", "")
+    for base_url in BINANCE_BASE_URLS:
+        try:
+            resp = _SESSION.get(f"{base_url}{BINANCE_TICKER_PATH}", params={"symbol": symbol}, timeout=5)
+            resp.raise_for_status()
+            price_value = float(resp.json().get("price"))
+            _LIVE_PRICE_CACHE[pair] = (price_value, now)
+            return price_value
+        except Exception:
+            continue
     return FALLBACK_PRICES.get(pair)
 
 

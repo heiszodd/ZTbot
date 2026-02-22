@@ -518,6 +518,8 @@ def main():
     app.job_queue.run_repeating(phase_engine.model_grading_job, interval=86400, first=3600, name="model_grading")
     app.job_queue.run_daily(session_journal.record_session_data, time=datetime.time(hour=7, minute=5, tzinfo=datetime.timezone.utc), name="session_journal")
     app.job_queue.run_repeating(phase_engine.expire_old_phases_job, interval=3600, first=300, name="phase_expiry")
+    app.job_queue.run_repeating(alerts.run_scanner, interval=SCANNER_INTERVAL, first=20, name="scanner")
+    app.job_queue.run_repeating(alerts.run_pending_checker, interval=30, first=25, name="pending_checker")
 
     app.job_queue.run_repeating(news_handler.news_briefing_job, interval=60, first=10, name="news_briefing")
     app.job_queue.run_repeating(news_handler.news_signal_job, interval=15, first=5, name="news_signal")
