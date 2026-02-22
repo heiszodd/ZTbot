@@ -710,3 +710,78 @@ ALTER TABLE IF EXISTS public.degen_trades ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS public.degen_models ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS public.degen_model_alerts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS public.degen_model_versions ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS risk_settings (
+    id                  SERIAL PRIMARY KEY,
+    account_size        FLOAT DEFAULT 1000.0,
+    risk_per_trade_pct  FLOAT DEFAULT 1.0,
+    max_daily_loss_pct  FLOAT DEFAULT 3.0,
+    max_open_trades     INT DEFAULT 3,
+    max_exposure_pct    FLOAT DEFAULT 5.0,
+    max_pair_exposure   FLOAT DEFAULT 2.0,
+    risk_reward_min     FLOAT DEFAULT 1.5,
+    enabled             BOOLEAN DEFAULT TRUE,
+    min_quality_grade   VARCHAR(5) DEFAULT 'C',
+    updated_at          TIMESTAMP DEFAULT NOW()
+);
+INSERT INTO risk_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS daily_risk_tracker (
+    id               SERIAL PRIMARY KEY,
+    track_date       DATE NOT NULL UNIQUE,
+    starting_balance FLOAT,
+    current_balance  FLOAT,
+    realised_pnl     FLOAT DEFAULT 0,
+    open_risk        FLOAT DEFAULT 0,
+    trades_taken     INT DEFAULT 0,
+    daily_loss_hit   BOOLEAN DEFAULT FALSE,
+    updated_at       TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE alert_lifecycle
+    ADD COLUMN IF NOT EXISTS risk_level VARCHAR(10),
+    ADD COLUMN IF NOT EXISTS risk_amount FLOAT,
+    ADD COLUMN IF NOT EXISTS position_size FLOAT,
+    ADD COLUMN IF NOT EXISTS leverage FLOAT,
+    ADD COLUMN IF NOT EXISTS rr_ratio FLOAT,
+    ADD COLUMN IF NOT EXISTS quality_grade VARCHAR(5),
+    ADD COLUMN IF NOT EXISTS quality_score FLOAT;
+
+CREATE TABLE IF NOT EXISTS notification_patterns (
+    id              SERIAL PRIMARY KEY,
+    pattern_key     VARCHAR(100) UNIQUE NOT NULL,
+    pattern_type    VARCHAR(30),
+    total_alerts    INT DEFAULT 0,
+    entries_touched INT DEFAULT 0,
+    action_rate     FLOAT DEFAULT 0,
+    suppressed      BOOLEAN DEFAULT FALSE,
+    suppressed_at   TIMESTAMP,
+    override        BOOLEAN DEFAULT FALSE,
+    updated_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS market_regimes (
+    id           SERIAL PRIMARY KEY,
+    regime_date  DATE NOT NULL UNIQUE,
+    regime       VARCHAR(30) NOT NULL,
+    confidence   FLOAT DEFAULT 0,
+    btc_atr_pct  FLOAT,
+    btc_trend    VARCHAR(20),
+    range_size   FLOAT,
+    details      JSONB DEFAULT '{}',
+    detected_at  TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS model_regime_performance (
+    id           SERIAL PRIMARY KEY,
+    model_id     VARCHAR(100) NOT NULL,
+    regime       VARCHAR(30) NOT NULL,
+    total_alerts INT DEFAULT 0,
+    p4_confirms  INT DEFAULT 0,
+    confirm_rate FLOAT DEFAULT 0,
+    updated_at   TIMESTAMP DEFAULT NOW(),
+    UNIQUE(model_id, regime)
+);
+
+ALTER TABLE models
+    ADD COLUMN IF NOT EXISTS regime_managed BOOLEAN DEFAULT FALSE;
