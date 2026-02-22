@@ -33,7 +33,7 @@ def perps_keyboard():
         [InlineKeyboardButton("🧪 Backtest", callback_data="backtest:start"), InlineKeyboardButton("📊 Stats", callback_data="nav:stats")],
         [InlineKeyboardButton("⏳ Pending", callback_data="nav:pending"), InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline")],
         [InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts"), InlineKeyboardButton("🔍 Scan", callback_data="nav:scan")],
-        [InlineKeyboardButton("📓 Journal", callback_data="nav:journal")],
+        [InlineKeyboardButton("📓 Journal", callback_data="nav:journal"), InlineKeyboardButton("📊 Charts", callback_data="nav:charts")],
         [InlineKeyboardButton("📰 News", callback_data="nav:news"), InlineKeyboardButton("🎮 Demo", callback_data="demo:perps:home")],
         [InlineKeyboardButton("➕ New Model", callback_data="wiz:start"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
         [InlineKeyboardButton("🎰 Go to Degen", callback_data="nav:degen_home")],
@@ -46,6 +46,7 @@ def degen_keyboard():
         [InlineKeyboardButton("🆕 Latest Finds", callback_data="wallet:activity"), InlineKeyboardButton("👀 Watchlist", callback_data="wallet:list")],
         [InlineKeyboardButton("🐋 Wallets", callback_data="wallet:dash"), InlineKeyboardButton("📰 News Trades", callback_data="nav:news")],
         [InlineKeyboardButton("📊 Degen Stats", callback_data="degen:stats"), InlineKeyboardButton("🎮 Demo", callback_data="demo:degen:home")],
+        [InlineKeyboardButton("📊 Charts", callback_data="nav:charts")],
         [InlineKeyboardButton("🔍 Search Token", callback_data="wallet:activity"), InlineKeyboardButton("⚙️ Scanner Settings", callback_data="nav:status")],
         [InlineKeyboardButton("➕ New Model", callback_data="degen_model:new"), InlineKeyboardButton("⚖️ Compare", callback_data="degen:compare")],
         [InlineKeyboardButton("📈 Go to Perps", callback_data="nav:perps_home")],
@@ -157,6 +158,27 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 kb_rows.append([InlineKeyboardButton(f"🔍 View {p.get('pair')} Setup", callback_data=f"pending:model:{p['id']}")])
         kb_rows.extend([[InlineKeyboardButton("🔄 Refresh", callback_data="nav:pending"), InlineKeyboardButton("🏠 Home", callback_data="nav:home")]])
         await q.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb_rows))
+
+    elif dest == "charts":
+        rows = db.get_chart_analyses(limit=20)
+        lines = [
+            "📊 *Chart Analysis History*",
+            "━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"Your last {len(rows)} chart analyses:",
+            "",
+        ]
+        for r in rows:
+            action = str(r.get("action") or "wait").lower()
+            action_emoji = {"buy": "📈", "sell": "📉", "wait": "⏳", "avoid": "🚫"}.get(action, "⏳")
+            ago = formatters._fmt_age(int(((formatters._wat_now().replace(tzinfo=None) - r.get("analysed_at")).total_seconds()) // 60)) if r.get("analysed_at") else "just now"
+            lines.extend([
+                f"{action_emoji} {r.get('pair_estimate','unknown')} {r.get('timeframe','unknown')}   {action.upper()}",
+                f"   Setup: {r.get('setup_type') or 'none'}   Confluence: {r.get('confluence_score',0)}/10",
+                f"   {ago} ago",
+                "",
+            ])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Analysis", callback_data="chart:resend"), InlineKeyboardButton("🏠 Home", callback_data="nav:home")]])
+        await q.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb)
     elif dest == "scan":
         pairs = [[InlineKeyboardButton(p, callback_data=f"scan:{p}")] for p in SUPPORTED_PAIRS]
         await q.message.reply_text("Choose pair to scan", reply_markup=InlineKeyboardMarkup(pairs))
