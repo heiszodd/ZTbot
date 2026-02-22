@@ -98,7 +98,8 @@ def setup_db():
         tier_b     FLOAT        DEFAULT 7.5,
         tier_c     FLOAT        DEFAULT 5.5,
         rules      JSONB        NOT NULL DEFAULT '[]',
-        created_at TIMESTAMP    DEFAULT NOW()
+        created_at TIMESTAMP    DEFAULT NOW(),
+        updated_at TIMESTAMP    DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS trade_log (
         id          SERIAL PRIMARY KEY,
@@ -266,6 +267,7 @@ def setup_db():
     ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_a_threshold FLOAT;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_b_threshold FLOAT;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_c_threshold FLOAT;
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
 
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
