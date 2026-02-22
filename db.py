@@ -58,9 +58,12 @@ def init_pool():
         )
 
 
+def _ensure_pool():
+    init_pool()
+
+
 def acquire_conn():
-    if _pool is None:
-        init_pool()
+    _ensure_pool()
     return _pool.getconn()
 
 
@@ -743,8 +746,11 @@ def save_model(model: dict) -> str:
             return row[0] if row else model["id"]
     except Exception as e:
         if conn:
-            conn.rollback()
-        log.error(f"save_model DB error: {e}")
+            try:
+                conn.rollback()
+            except:
+                pass
+        log.error(f"save_model error: {e}")
         raise
     finally:
         if conn:
@@ -1588,7 +1594,7 @@ def save_degen_model(model: dict) -> str:
             """, (
                 model["id"],
                 model["name"],
-                json.dumps(model.get("chains", ["SOL"])),
+                model.get("chains", ["SOL"]),
                 model.get("strategy", "custom"),
                 json.dumps(model.get("rules", [])),
                 json.dumps(model.get("mandatory_rules", [])),
@@ -1608,12 +1614,72 @@ def save_degen_model(model: dict) -> str:
             return row[0] if row else model["id"]
     except Exception as e:
         if conn:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except:
+                pass
         log.error(f"save_degen_model error: {e}")
         raise
     finally:
         if conn:
             release_conn(conn)
+
+
+def get_trade_model_pair(trade_id: int) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT model_id, pair FROM trade_log WHERE id=%s", (trade_id,))
+            return dict(cur.fetchone() or {})
+
+
+def activate_all_master_models() -> int:
+    conn = None
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE models
+                SET status = 'active'
+                WHERE id LIKE 'MM_%'
+            """)
+            updated = cur.rowcount
+        conn.commit()
+        _cache_clear("active_models")
+        return updated
+    finally:
+        if conn:
+            release_conn(conn)
+
+
+def activate_master_models_by_category(cat_key: str) -> int:
+    conn = None
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE models
+                SET status = 'active'
+                WHERE id LIKE %s
+            """, (f"MM_{cat_key}_%",))
+            updated = cur.rowcount
+        conn.commit()
+        _cache_clear("active_models")
+        return updated
+    finally:
+        if conn:
+            release_conn(conn)
+
+
+def get_end_of_day_counts() -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) c FROM alert_log WHERE alerted_at::date=NOW()::date")
+            setups = int(cur.fetchone()["c"] or 0)
+            cur.execute("SELECT COUNT(*) c, COALESCE(SUM(rr),0) r FROM trade_log WHERE logged_at::date=NOW()::date")
+            row = cur.fetchone()
+            trades = int(row["c"] or 0)
+            total_r = float(row["r"] or 0)
+    return {"setups": setups, "trades": trades, "total_r": total_r}
 
 def set_degen_model_status(model_id: str, status: str) -> None:
     with get_conn() as conn:

@@ -285,52 +285,103 @@ async def handle_degen_wizard_cb(update, context):
 async def handle_degen_confirm_save(update, context):
     query = update.callback_query
     await query.answer("Saving...")
+
     try:
-        model_id = context.user_data.get("degen_model_id") or f"degen_{int(time.time())}"
-        rules = context.user_data.get("degen_rules", [])
+        import time
+        model_id = (
+            context.user_data.get("degen_model_id")
+            or f"degen_{int(time.time())}"
+        )
+        name      = context.user_data.get("degen_model_name", "Unnamed")
+        chains    = context.user_data.get("degen_chains", ["SOL"])
+        rules     = context.user_data.get("degen_rules", [])
         mandatory = context.user_data.get("degen_mandatory", [])
-        chains = context.user_data.get("degen_chains", ["SOL"])
-        name = context.user_data.get("degen_model_name", "Unnamed")
+
         if not rules:
-            await query.answer("❌ No rules selected", show_alert=True)
+            await query.answer(
+                "❌ No rules selected",
+                show_alert=True
+            )
             return
+
         max_score = sum(r.get("weight", 1.0) for r in rules)
         threshold = context.user_data.get("degen_min_score", 50)
+        min_score = round((threshold / 100) * max_score, 2)
+
         model = {
-            "id": model_id,
-            "name": name,
-            "chains": chains,
-            "strategy": context.user_data.get("degen_strategy", "custom"),
-            "rules": rules,
-            "mandatory_rules": mandatory,
-            "min_liquidity": context.user_data.get("degen_min_liquidity", 5000),
-            "min_age_minutes": context.user_data.get("degen_min_age", 0),
-            "max_age_minutes": context.user_data.get("degen_max_age", 120),
-            "max_risk_score": context.user_data.get("degen_max_risk", 70),
-            "min_moon_score": context.user_data.get("degen_min_moon", 40),
-            "block_serial_ruggers": context.user_data.get("degen_block_ruggers", True),
-            "min_score_threshold": threshold,
-            "min_score": round((threshold / 100) * max_score, 2),
-            "status": "active",
+            "id":                   model_id,
+            "name":                 name,
+            "chains":               chains,
+            "strategy":             context.user_data.get(
+                                        "degen_strategy", "custom"),
+            "rules":                rules,
+            "mandatory_rules":      mandatory,
+            "min_liquidity":        context.user_data.get(
+                                        "degen_min_liquidity", 5000),
+            "min_age_minutes":      context.user_data.get(
+                                        "degen_min_age", 0),
+            "max_age_minutes":      context.user_data.get(
+                                        "degen_max_age", 120),
+            "max_risk_score":       context.user_data.get(
+                                        "degen_max_risk", 70),
+            "min_moon_score":       context.user_data.get(
+                                        "degen_min_moon", 40),
+            "block_serial_ruggers": context.user_data.get(
+                                        "degen_block_ruggers", True),
+            "min_score_threshold":  threshold,
+            "min_score":            min_score,
+            "status":               "active",
         }
-        db.save_degen_model(model)
-        for key in [k for k in list(context.user_data) if k.startswith("degen_")]:
+
+        # Only db call needed
+        saved_id = db.save_degen_model(model)
+
+        # Clear wizard state
+        for key in [k for k in context.user_data
+                    if k.startswith("degen_")]:
             context.user_data.pop(key, None)
         context.user_data.pop("in_conversation", None)
+
+        chain_display = ", ".join(
+            DEGEN_CHAINS.get(c, c) for c in chains
+        )
+
         await query.message.edit_text(
-            f"✅ *Degen Model Saved*\n━━━━━━━━━━━━━━━━━━━━━━━━\n⚙️ {name}\n🔗 Chains:  {', '.join(DEGEN_CHAINS.get(c, c) for c in chains)}\n📋 Rules:   {len(rules)}\n🚀 Min moon: {model['min_moon_score']}\n🛡️ Max risk: {model['max_risk_score']}\n\nModel is active and scanning now.",
+            f"✅ *Degen Model Saved*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚙️ {name}\n"
+            f"🔗 Chains:   {chain_display}\n"
+            f"📋 Rules:    {len(rules)}\n"
+            f"🚀 Min moon: {model['min_moon_score']}\n"
+            f"🛡️ Max risk: {model['max_risk_score']}\n\n"
+            f"Model is active and scanning now.",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⚙️ Degen Models", callback_data="nav:degen_models")],
-                [InlineKeyboardButton("🎰 Degen Home", callback_data="nav:degen_home")],
-            ]),
+                [InlineKeyboardButton(
+                    "⚙️ Degen Models",
+                    callback_data="nav:degen_models"
+                )],
+                [InlineKeyboardButton(
+                    "🎰 Degen Home",
+                    callback_data="nav:degen_home"
+                )]
+            ])
         )
+
     except Exception as e:
-        log.error(f"Degen save failed: {type(e).__name__}: {e}")
+        import traceback
+        log.error(f"Degen save failed: {traceback.format_exc()}")
         await query.message.edit_text(
-            f"❌ *Save failed*\n\n`{type(e).__name__}: {str(e)[:200]}`",
+            f"❌ *Save failed*\n\n"
+            f"`{type(e).__name__}: {str(e)[:300]}`\n\n"
+            f"Tap retry.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Retry", callback_data="dgwiz:confirm_save")]]),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "🔄 Retry",
+                    callback_data="dgwiz:confirm_save"
+                )
+            ]])
         )
 
 

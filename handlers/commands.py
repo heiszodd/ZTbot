@@ -412,21 +412,7 @@ async def handle_master_category(update: Update, context: ContextTypes.DEFAULT_T
 async def handle_activate_all_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("Activating all master models...")
-
-    conn = db.get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE models
-                SET status = 'active'
-                WHERE id LIKE 'MM_%'
-            """)
-            updated = cur.rowcount
-        conn.commit()
-    finally:
-        db.release_conn(conn)
-
-    db._cache_clear("active_models")
+    updated = db.activate_all_master_models()
     await query.message.edit_text(
         f"✅ *{updated} Master Models Activated*\n\n"
         f"All master models are now scanning.\n"
@@ -442,21 +428,7 @@ async def handle_activate_all_master(update: Update, context: ContextTypes.DEFAU
 async def handle_activate_category(update: Update, context: ContextTypes.DEFAULT_TYPE, cat_key: str):
     query = update.callback_query
     await query.answer(f"Activating {cat_key} models...")
-
-    conn = db.get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE models
-                SET status = 'active'
-                WHERE id LIKE %s
-            """, (f"MM_{cat_key}_%",))
-            updated = cur.rowcount
-        conn.commit()
-    finally:
-        db.release_conn(conn)
-
-    db._cache_clear("active_models")
+    updated = db.activate_master_models_by_category(cat_key)
     await query.message.edit_text(
         f"✅ *{updated} models activated*\nCategory: {cat_key}",
         parse_mode="Markdown",
