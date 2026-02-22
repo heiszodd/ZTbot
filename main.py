@@ -8,12 +8,13 @@ from pathlib import Path
 
 import db
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+    Application, CommandHandler, CallbackQueryHandler, MessageHandler, ConversationHandler, filters
 )
 
 import prices as px
 from config import SCANNER_INTERVAL, WAT, init_gemini
 from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler
+from engine import phase_engine, session_journal
 from degen import wallet_tracker
 from engine import run_backtest
 
@@ -464,6 +465,22 @@ def main():
     app.add_handler(CommandHandler("news",        news_handler.news_cmd))
 
     # ── Conversations (must be before generic callback routers) ──
+    chart_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.PHOTO | filters.Document.IMAGE, chart_handler.chart_received_first)],
+        states={
+            chart_handler.CHART_WAITING_HTF_CONFIRM: [CallbackQueryHandler(chart_handler.handle_chart_type_choice, pattern="^chart:(htf_yes|single)$")],
+            chart_handler.CHART_WAITING_LTF: [
+                MessageHandler(filters.PHOTO | filters.Document.IMAGE, chart_handler.chart_received_ltf),
+                CallbackQueryHandler(chart_handler.handle_skip_ltf, pattern="^chart:skip_ltf$"),
+            ],
+        },
+        fallbacks=[CallbackQueryHandler(chart_handler.handle_chart_cancel, pattern="^chart:cancel$")],
+        per_message=False,
+        per_chat=True,
+        allow_reentry=True,
+    )
+    app.add_handler(chart_conv, group=0)
+
     app.add_handler(wizard.build_wizard_handler(), group=0)
     app.add_handler(CallbackQueryHandler(degen_wizard.start_wizard, pattern="^dgwiz:start$"), group=0)
 
@@ -493,61 +510,16 @@ def main():
     app.add_handler(wallet_handler.build_add_wallet_handler())
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, degen_wizard.handle_degen_name), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, demo_handler.handle_demo_risk_input))
-    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, chart_handler.handle_chart_image), group=2)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ca_handler.handle_ca_message), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, stats.handle_journal_text))
 
     # ── Scanner job ───────────────────────────────────
-    app.job_queue.run_repeating(
-        alerts.run_scanner,
-        interval=SCANNER_INTERVAL,
-        first=15,
-        name="scanner"
-    )
+    app.job_queue.run_repeating(phase_engine.run_phase_engine, interval=300, first=30, name="phase_engine")
+    app.job_queue.run_repeating(phase_engine.alert_lifecycle_job, interval=300, first=60, name="alert_lifecycle")
+    app.job_queue.run_repeating(phase_engine.model_grading_job, interval=86400, first=3600, name="model_grading")
+    app.job_queue.run_daily(session_journal.record_session_data, time=datetime.time(hour=7, minute=5, tzinfo=datetime.timezone.utc), name="session_journal")
+    app.job_queue.run_repeating(phase_engine.expire_old_phases_job, interval=3600, first=300, name="phase_expiry")
 
-    app.job_queue.run_repeating(
-        alerts.run_pending_checker,
-        interval=30,
-        first=15,
-        name="pending_checker"
-    )
-
-    app.job_queue.run_repeating(
-        keepalive_job,
-        interval=300,
-        first=60,
-        name="keepalive"
-    )
-
-    app.job_queue.run_daily(
-        scheduler.send_morning_briefing,
-        time=datetime.time(hour=6, minute=0, tzinfo=datetime.timezone.utc),
-        name="morning_briefing",
-    )
-    app.job_queue.run_daily(
-        scheduler.send_session_open,
-        time=datetime.time(hour=8, minute=0, tzinfo=datetime.timezone.utc),
-        name="london_open",
-    )
-    app.job_queue.run_daily(
-        scheduler.send_session_open,
-        time=datetime.time(hour=13, minute=0, tzinfo=datetime.timezone.utc),
-        name="ny_open",
-    )
-    app.job_queue.run_daily(
-        scheduler.send_weekly_review_prompt,
-        time=datetime.time(hour=20, minute=0, tzinfo=datetime.timezone.utc),
-        days=(6,),
-        name="weekly_review",
-    )
-    app.job_queue.run_monthly(
-        scheduler.send_monthly_report,
-        when=datetime.time(hour=23, minute=1, tzinfo=datetime.timezone.utc),
-        day=-1,
-        name="monthly_report",
-    )
-    app.job_queue.run_daily(scheduler.send_end_of_day_summary, time=datetime.time(hour=21, minute=0, tzinfo=datetime.timezone.utc), name="eod_summary")
-    app.job_queue.run_daily(scheduler.send_news_pre_warning, time=datetime.time(hour=0, minute=50, tzinfo=datetime.timezone.utc), name="news_50")
     app.job_queue.run_repeating(news_handler.news_briefing_job, interval=60, first=10, name="news_briefing")
     app.job_queue.run_repeating(news_handler.news_signal_job, interval=15, first=5, name="news_signal")
     app.job_queue.run_repeating(wallet_tracker.wallet_monitor_job, interval=120, first=30, name="wallet_monitor")

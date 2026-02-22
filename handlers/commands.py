@@ -70,6 +70,7 @@ def perps_keyboard():
         [InlineKeyboardButton("⏳ Pending", callback_data="nav:pending"), InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline")],
         [InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts"), InlineKeyboardButton("🔍 Scan", callback_data="nav:scan")],
         [InlineKeyboardButton("📓 Journal", callback_data="nav:journal"), InlineKeyboardButton("📊 Charts", callback_data="nav:charts")],
+        [InlineKeyboardButton("📓 Session Journal", callback_data="nav:session_journal")],
         [InlineKeyboardButton("📰 News", callback_data="nav:news"), InlineKeyboardButton("🎮 Demo", callback_data="demo:perps:home")],
         [InlineKeyboardButton("➕ New Model", callback_data="wizard:start"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
         [InlineKeyboardButton("🎰 Go to Degen", callback_data="nav:degen_home")],
@@ -137,6 +138,15 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
         txt = formatters.fmt_stats(row, tiers, sessions) + "\n\n" + formatters.fmt_rolling_10(db.get_rolling_10()) + f"\n\nConversion: {conv['total_trades']}/{conv['total_alerts']} alerts entered ({conv['ratio']}%) — {conv['would_win_skipped']} skipped setups would have won"
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🕐 Heatmap", callback_data="nav:heatmap"), InlineKeyboardButton("📓 Journal", callback_data="nav:journal")], [InlineKeyboardButton("📈 Rolling 10", callback_data="nav:rolling10")], [InlineKeyboardButton("🏠 Home", callback_data="nav:home")]])
         await q.message.reply_text(txt, parse_mode="Markdown", reply_markup=kb)
+    elif dest == "session_journal":
+        rows = db.get_session_journal("BTCUSDT", days=7)
+        lines = ["📓 *Session Journal*", "━━━━━━━━━━━━━━━━━━━━━━━━"]
+        for r in rows:
+            levels = ", ".join([f"${(lvl.get('price') or 0):.2f}" for lvl in (r.get("key_levels") or [])[:3]])
+            lines.append(
+                f"{r['session_date']} {r['pair']}\nAsian range: ${r.get('asian_low',0):.2f} — ${r.get('asian_high',0):.2f} ({r.get('asian_range_pts',0):.2f} pts)\nLondon swept: {r.get('london_swept') or 'neither'}\nKey levels: {levels}"
+            )
+        await q.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
     elif dest == "discipline":
         from handlers.stats import _disc_score
 
