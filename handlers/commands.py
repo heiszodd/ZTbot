@@ -130,7 +130,7 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers import degen_handler
         await degen_handler.degen_home(update, context)
     elif dest == "models":
-        await _render_models(q)
+        await handle_models_list(update, context)
     elif dest == "stats":
         row, tiers, sessions = db.get_stats_30d(), db.get_tier_breakdown(), db.get_session_breakdown()
         conv = db.get_conversion_stats()
@@ -237,13 +237,79 @@ def _model_edit_value_kb(model_id: str, field: str, options: list[str]) -> Inlin
     rows.append([InlineKeyboardButton("« Back", callback_data=f"model:edit:{model_id}")])
     return InlineKeyboardMarkup(rows)
 
-async def _render_models(q):
-    models = db.get_all_models()
-    rows = [[InlineKeyboardButton(f"{'🟢' if m['status'] == 'active' else '⚫'} {m['name']} ({m['pair']})", callback_data=f"model:detail:{m['id']}")] for m in models]
-    rows.append([InlineKeyboardButton("🏆 Master Models", callback_data="model:master")])
-    rows.append([InlineKeyboardButton("🗑 Delete All Models", callback_data="model:delete_all_confirm")])
-    rows.append([InlineKeyboardButton("🏠 Home", callback_data="nav:home")])
-    await q.message.reply_text(formatters.fmt_models(models), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+async def handle_models_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    try:
+        all_models = db.get_all_models()
+    except Exception as e:
+        log.error(f"Failed to fetch models: {e}")
+        await query.message.edit_text(
+            "❌ Failed to load models. Check database connection.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 Retry", callback_data="nav:models"),
+                InlineKeyboardButton("🏠 Home", callback_data="nav:perps_home")
+            ]])
+        )
+        return
+
+    if not all_models:
+        await query.message.edit_text(
+            "📭 *No models found*\n\n"
+            "Tap ➕ to create your first model\n"
+            "or tap 🏆 to view Master Models",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ New Model", callback_data="wiz:start")],
+                [InlineKeyboardButton("🏆 Master Models", callback_data="model:master_list")],
+                [InlineKeyboardButton("🏠 Home", callback_data="nav:perps_home")]
+            ])
+        )
+        return
+
+    master_models = [m for m in all_models if m["id"].startswith("MM_")]
+    user_models = [m for m in all_models if not m["id"].startswith("MM_")]
+
+    text = "*⚙️ Your Models*\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    if user_models:
+        text += f"\n*Custom Models ({len(user_models)})*\n"
+        for m in user_models:
+            status_dot = "🟢" if m["status"] == "active" else "⚫"
+            text += f"{status_dot} {m['name']} — {m['pair']} {m['timeframe']}\n"
+    else:
+        text += "\n_No custom models yet_\n"
+
+    text += f"\n*🏆 Master Models ({len(master_models)})*\n"
+    if master_models:
+        active_mm = sum(1 for m in master_models if m["status"] == "active")
+        text += f"_{len(master_models)} models available, {active_mm} active_\n"
+    else:
+        text += "_Run create_master_models.py to install_\n"
+
+    buttons = []
+    for m in user_models:
+        status_dot = "🟢" if m["status"] == "active" else "⚫"
+        buttons.append([InlineKeyboardButton(
+            f"{status_dot} {m['name']} — {m['pair']}",
+            callback_data=f"model:detail:{m['id']}"
+        )])
+
+    buttons.append([
+        InlineKeyboardButton("🏆 Master Models", callback_data="model:master_list"),
+        InlineKeyboardButton("➕ New Model", callback_data="wiz:start")
+    ])
+    buttons.append([InlineKeyboardButton("🗑 Delete All Models", callback_data="model:delete_all_confirm")])
+    buttons.append([InlineKeyboardButton("🏠 Home", callback_data="nav:perps_home")])
+
+    await query.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 
 def _master_models_grouped(models):
@@ -257,31 +323,145 @@ def _master_models_grouped(models):
     return grouped
 
 
-async def _render_master_models(q):
-    grouped = _master_models_grouped(db.get_all_models())
-    text = [
-        "🏆 *MASTER MODELS*",
-        "━━━━━━━━━━━━━━━━━━━━━━━━",
-        "Pre-built professional trading models.",
-        "Activate any model to start scanning.",
-        "",
-    ]
-    rows = []
-    for key, label in MASTER_CATEGORY_LABELS.items():
-        n = len(grouped[key])
-        text.append(f"{label} ({n} models)")
-        rows.append([InlineKeyboardButton(f"{label} ({n})", callback_data=f"model:mastercat:{key}")])
-    rows.append([InlineKeyboardButton("⚡ Quick Deploy", callback_data="model:quickdeploy")])
-    rows.append([InlineKeyboardButton("« Back", callback_data="nav:models")])
-    await q.message.reply_text("\n".join(text), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+async def handle_master_models_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    all_models = db.get_all_models()
+    master_models = [m for m in all_models if m["id"].startswith("MM_")]
+
+    if not master_models:
+        await query.message.edit_text(
+            "❌ *Master Models not found*\n\n"
+            "The master models have not been installed yet.\n\n"
+            "Run this command in your terminal:\n"
+            "`python create_master_models.py`\n\n"
+            "Then come back here and tap Refresh.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Refresh", callback_data="model:master_list")],
+                [InlineKeyboardButton("« Back", callback_data="nav:models")]
+            ])
+        )
+        return
+
+    grouped = _master_models_grouped(master_models)
+    active_count = sum(1 for m in master_models if m["status"] == "active")
+    text = (
+        f"🏆 *MASTER MODELS*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Total: {len(master_models)} models\n"
+        f"Active: {active_count} / {len(master_models)}\n\n"
+        f"Select a category to browse models:"
+    )
+
+    buttons = []
+    for cat_key, cat_label in MASTER_CATEGORY_LABELS.items():
+        models_in_cat = grouped.get(cat_key, [])
+        if models_in_cat:
+            active_in_cat = sum(1 for m in models_in_cat if m["status"] == "active")
+            buttons.append([InlineKeyboardButton(
+                f"{cat_label} ({active_in_cat}/{len(models_in_cat)} active)",
+                callback_data=f"model:master_cat:{cat_key}"
+            )])
+
+    buttons.append([
+        InlineKeyboardButton("⚡ Quick Deploy", callback_data="model:quick_deploy"),
+        InlineKeyboardButton("✅ Activate All", callback_data="model:activate_all_mm")
+    ])
+    buttons.append([InlineKeyboardButton("« Back to Models", callback_data="nav:models")])
+
+    await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 
 
-async def _render_master_category(q, category):
-    grouped = _master_models_grouped(db.get_all_models())
-    models = grouped.get(category, [])
-    rows = [[InlineKeyboardButton(f"{'🟢' if m['status']=='active' else '⚫'} {m['name']} · {m['pair']} {m['timeframe']} {m['session']} {m['bias']}", callback_data=f"model:detail:{m['id']}")] for m in models]
-    rows.append([InlineKeyboardButton("« Back", callback_data="model:master")])
-    await q.message.reply_text(f"{MASTER_CATEGORY_LABELS.get(category, category)}\nSelect model:", reply_markup=InlineKeyboardMarkup(rows))
+async def handle_master_category(update: Update, context: ContextTypes.DEFAULT_TYPE, cat_key: str):
+    query = update.callback_query
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    all_models = db.get_all_models()
+    cat_models = [m for m in all_models if m["id"].startswith(f"MM_{cat_key}_")]
+
+    cat_label = MASTER_CATEGORY_LABELS.get(cat_key, cat_key)
+    text = f"{cat_label}\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+    buttons = []
+    for m in cat_models:
+        status_dot = "🟢" if m["status"] == "active" else "⚫"
+        rule_count = len(m.get("rules", []))
+        buttons.append([InlineKeyboardButton(
+            f"{status_dot} {m['pair']} {m['timeframe']} — {m['bias']} ({rule_count} rules)",
+            callback_data=f"model:detail:{m['id']}"
+        )])
+
+    buttons.append([InlineKeyboardButton("✅ Activate All in Category", callback_data=f"model:activate_cat:{cat_key}")])
+    buttons.append([InlineKeyboardButton("« Back", callback_data="model:master_list")])
+
+    await query.message.edit_text(
+        text + f"{len(cat_models)} models in this category",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+async def handle_activate_all_master(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Activating all master models...")
+
+    conn = db.get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE models
+                SET status = 'active'
+                WHERE id LIKE 'MM_%'
+            """)
+            updated = cur.rowcount
+        conn.commit()
+    finally:
+        db.release_conn(conn)
+
+    db._cache_clear("active_models")
+    await query.message.edit_text(
+        f"✅ *{updated} Master Models Activated*\n\n"
+        f"All master models are now scanning.\n"
+        f"Alerts will fire when criteria are met.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚙️ View Models", callback_data="nav:models")],
+            [InlineKeyboardButton("🏠 Home", callback_data="nav:perps_home")]
+        ])
+    )
+
+
+async def handle_activate_category(update: Update, context: ContextTypes.DEFAULT_TYPE, cat_key: str):
+    query = update.callback_query
+    await query.answer(f"Activating {cat_key} models...")
+
+    conn = db.get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE models
+                SET status = 'active'
+                WHERE id LIKE %s
+            """, (f"MM_{cat_key}_%",))
+            updated = cur.rowcount
+        conn.commit()
+    finally:
+        db.release_conn(conn)
+
+    db._cache_clear("active_models")
+    await query.message.edit_text(
+        f"✅ *{updated} models activated*\nCategory: {cat_key}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data=f"model:master_cat:{cat_key}")]])
+    )
 
 
 def _pack_btc_all(models):
@@ -297,14 +477,39 @@ async def _render_quick_deploy(q):
         "models": _pack_btc_all(models),
     }
     rows = [[InlineKeyboardButton(p["name"], callback_data=f"model:deploy:{k}")] for k, p in packs.items()]
-    rows.append([InlineKeyboardButton("« Back", callback_data="model:master")])
+    rows.append([InlineKeyboardButton("« Back", callback_data="model:master_list")])
     await q.message.reply_text("⚡ *Quick Deploy*\nChoose a starter pack:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    data = q.data
+
+    if data == "nav:models" or data == "model:list":
+        await handle_models_list(update, context)
+        return
+    if data == "model:master_list" or data == "model:master":
+        await handle_master_models_list(update, context)
+        return
+    if data.startswith("model:master_cat:"):
+        await handle_master_category(update, context, data.split(":")[2])
+        return
+    if data.startswith("model:mastercat:"):
+        await handle_master_category(update, context, data.split(":")[2])
+        return
+    if data == "model:activate_all_mm":
+        await handle_activate_all_master(update, context)
+        return
+    if data.startswith("model:activate_cat:"):
+        await handle_activate_category(update, context, data.split(":")[2])
+        return
+    if data == "model:quick_deploy" or data == "model:quickdeploy":
+        await q.answer()
+        await _render_quick_deploy(q)
+        return
+
     await q.answer()
-    parts = q.data.split(":")
+    parts = data.split(":")
     action = parts[1]
 
     if action == "delete_all_confirm":
@@ -316,15 +521,6 @@ async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("Cancel", callback_data="nav:models")],
             ]),
         )
-        return
-    if action == "master":
-        await _render_master_models(q)
-        return
-    if action == "mastercat" and len(parts) > 2:
-        await _render_master_category(q, parts[2])
-        return
-    if action == "quickdeploy":
-        await _render_quick_deploy(q)
         return
     if action == "deploy" and len(parts) > 2:
         key = parts[2]
@@ -352,7 +548,7 @@ async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "delete_all":
         db.delete_all_models()
         await q.message.reply_text("✅ All perps models deleted.", parse_mode="Markdown")
-        await _render_models(q)
+        await handle_models_list(update, context)
         return
 
     model_id = parts[2]
