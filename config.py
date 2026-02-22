@@ -1,7 +1,6 @@
 from datetime import timezone, timedelta
 import os
 import sys
-import google.generativeai as genai
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -43,6 +42,8 @@ GEMINI_MODEL = None
 
 
 def init_gemini():
+    # Lazy import so DB-only scripts can run without Gemini dependencies.
+    import google.generativeai as genai
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY not set")
     genai.configure(api_key=GEMINI_API_KEY)

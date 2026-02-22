@@ -121,7 +121,8 @@ def run():
     try:
         with conn_check.cursor() as cur_check:
             cur_check.execute("SELECT COUNT(*) FROM models")
-            count = cur_check.fetchone()[0]
+            count_row = cur_check.fetchone()
+            count = count_row["count"] if isinstance(count_row, dict) else count_row[0]
             print(f"Connected. models table has {count} existing rows.")
 
             cur_check.execute("""
@@ -129,7 +130,11 @@ def run():
                 WHERE table_name = 'models'
                 ORDER BY ordinal_position
             """)
-            columns = [row[0] for row in cur_check.fetchall()]
+            col_rows = cur_check.fetchall()
+            columns = [
+                row["column_name"] if isinstance(row, dict) else row[0]
+                for row in col_rows
+            ]
             print(f"Table columns: {columns}")
     finally:
         db.release_conn(conn_check)
@@ -186,7 +191,7 @@ def run():
             """, values)
             conn.commit()
             inserted += 1
-            print(f"✅ Inserted: {model['id']}")
+            print(f"[OK] Inserted: {model['id']}")
             for rule in model["rules"]:
                 cur.execute(
                     """
@@ -213,26 +218,26 @@ def run():
             conn.commit()
         except Exception as e:
             conn.rollback()
-            print(f"❌ FAILED: {model['id']} — {e}")
+            print(f"[FAIL] {model['id']} - {e}")
             print(f"   Values: {values}")
 
     cur.close()
     conn.close()
 
-    print("✅ MASTER MODELS created:")
-    print("Category 1 — Trend Continuation: 6 models")
-    print("Category 2 — Reversal: 6 models")
-    print("Category 3 — Liquidity Grab: 7 models")
-    print("Category 4 — Order Block: 7 models")
-    print("Category 5 — Fair Value Gap: 5 models")
-    print("Category 6 — Session-Specific: 6 models")
-    print("Category 7 — Multi-Pair: 3 models")
-    print("Category 8 — HTF Swing: 3 models")
-    print("Category 9 — Forex: 3 models")
-    print("Category 10 — Advanced Concepts: 8 models")
-    print("━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("[DONE] MASTER MODELS created:")
+    print("Category 1 - Trend Continuation: 6 models")
+    print("Category 2 - Reversal: 6 models")
+    print("Category 3 - Liquidity Grab: 7 models")
+    print("Category 4 - Order Block: 7 models")
+    print("Category 5 - Fair Value Gap: 5 models")
+    print("Category 6 - Session-Specific: 6 models")
+    print("Category 7 - Multi-Pair: 3 models")
+    print("Category 8 - HTF Swing: 3 models")
+    print("Category 9 - Forex: 3 models")
+    print("Category 10 - Advanced Concepts: 8 models")
+    print("------------------------")
     print(f"Total: {inserted} MASTER MODELS inserted")
-    print("All set to inactive — activate from the bot")
+    print("All set to inactive - activate from the bot")
 
 
 if __name__ == "__main__":
