@@ -71,7 +71,7 @@ def perps_keyboard():
         [InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts"), InlineKeyboardButton("🔍 Scan", callback_data="nav:scan")],
         [InlineKeyboardButton("📓 Journal", callback_data="nav:journal"), InlineKeyboardButton("📊 Charts", callback_data="nav:charts")],
         [InlineKeyboardButton("📰 News", callback_data="nav:news"), InlineKeyboardButton("🎮 Demo", callback_data="demo:perps:home")],
-        [InlineKeyboardButton("➕ New Model", callback_data="wiz:start"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
+        [InlineKeyboardButton("➕ New Model", callback_data="wizard:start"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
         [InlineKeyboardButton("🎰 Go to Degen", callback_data="nav:degen_home")],
     ])
 
@@ -264,7 +264,7 @@ async def handle_models_list(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "or tap 🏆 to view Master Models",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ New Model", callback_data="wiz:start")],
+                [InlineKeyboardButton("➕ New Model", callback_data="wizard:start")],
                 [InlineKeyboardButton("🏆 Master Models", callback_data="model:master_list")],
                 [InlineKeyboardButton("🏠 Home", callback_data="nav:perps_home")]
             ])
@@ -300,7 +300,7 @@ async def handle_models_list(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     buttons.append([
         InlineKeyboardButton("🏆 Master Models", callback_data="model:master_list"),
-        InlineKeyboardButton("➕ New Model", callback_data="wiz:start")
+        InlineKeyboardButton("➕ New Model", callback_data="wizard:start")
     ])
     buttons.append([InlineKeyboardButton("🗑 Delete All Models", callback_data="model:delete_all_confirm")])
     buttons.append([InlineKeyboardButton("🏠 Home", callback_data="nav:perps_home")])
@@ -395,7 +395,7 @@ async def handle_master_category(update: Update, context: ContextTypes.DEFAULT_T
         status_dot = "🟢" if m["status"] == "active" else "⚫"
         rule_count = len(m.get("rules", []))
         buttons.append([InlineKeyboardButton(
-            f"{status_dot} {m['pair']} {m['timeframe']} — {m['bias']} ({rule_count} rules)",
+            f"{status_dot} {m['pair']} {m['timeframe']} — {formatters.fmt_bias(m.get('bias'))} ({rule_count} rules)",
             callback_data=f"model:detail:{m['id']}"
         )])
 

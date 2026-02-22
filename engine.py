@@ -211,6 +211,53 @@ def backtest_model(model: dict, prices_series: list[float]) -> dict:
     }
 
 
+def _score_direction(pair: str, timeframe: str, model: dict, direction: str) -> dict | None:
+    scan_model = {**model, "pair": pair, "timeframe": timeframe, "bias": direction}
+    series = px.get_recent_series(pair, days=2)
+    if not series:
+        return None
+    setup = build_live_setup(scan_model, series)
+    if not setup:
+        return None
+    scored = score_setup(setup, scan_model)
+    atr = px.estimate_atr(series[-30:]) if series else None
+    price = px.get_price(pair)
+    if not price:
+        return None
+    sl, tp, _ = px.calc_sl_tp(price, setup.get("direction", "BUY"), atr=atr)
+    scored["score"] = float(scored.get("final_score", 0) or 0)
+    scored["entry"] = price
+    scored["sl"] = sl
+    scored["tp"] = tp
+    scored["tp1"] = tp
+    if setup.get("direction", "BUY") == "BUY":
+        scored["tp2"] = round(tp + (tp - price) * 0.5, 5)
+        scored["tp3"] = round(tp + (tp - price), 5)
+    else:
+        scored["tp2"] = round(tp - (price - tp) * 0.5, 5)
+        scored["tp3"] = round(tp - (price - tp), 5)
+    scored["direction"] = setup.get("direction", "BUY")
+    scored["invalidated"] = not scored.get("valid", True)
+    scored["invalidation_reason"] = scored.get("invalid_reason")
+    return scored
+
+
+def score_pair(pair: str, timeframe: str, model: dict) -> list[dict]:
+    bias = model.get("bias", "Both")
+    if bias == "Both":
+        results = []
+        for direction in ["Bullish", "Bearish"]:
+            result = _score_direction(pair, timeframe, model, direction)
+            if result and result.get("score", 0) >= model.get("min_score", 0):
+                result["detected_direction"] = direction
+                results.append(result)
+        return results
+    result = _score_direction(pair, timeframe, model, bias)
+    if result:
+        result["detected_direction"] = bias
+    return [result] if result else []
+
+
 MODELS = [
     "FVG Basic",
     "Sweep Reversal",

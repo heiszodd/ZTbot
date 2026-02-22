@@ -10,6 +10,16 @@ def _bar(value, max_val=100, width=10):
     return "█" * max(0, min(width, f)) + "░" * max(0, width - max(0, min(width, f)))
 
 
+def fmt_bias(bias: str) -> str:
+    if not bias or bias == "Both":
+        return "↔️ Both"
+    elif bias == "Bullish":
+        return "📈 Bullish"
+    elif bias == "Bearish":
+        return "📉 Bearish"
+    return "↔️ Both"
+
+
 def _wat_now():
     return datetime.now(timezone.utc).astimezone(WAT)
 
@@ -30,18 +40,27 @@ def fmt_home(active_models, live_alerts):
 
 
 def fmt_models(models):
-    return "⚙️ *My Models*\n" + "\n".join([f"• {m['name']} ({m['pair']})" for m in models])
+    return "⚙️ *My Models*\n" + "\n".join([f"• {m['name']} ({m['pair']}) {fmt_bias(m.get('bias'))}" for m in models])
 
 
 def fmt_model_detail(m, price=None):
     rules = "\n".join([f"• {'🔒' if r.get('mandatory') else '🔓'} {r['name']} +{r['weight']}" for r in m.get('rules', [])])
     badge = "🏆 *MASTER MODEL*\n" if str(m.get("id", "")).startswith("MM_") else ""
-    return f"{badge}⚙️ *{m['name']}*\nPair `{m['pair']}` TF `{m['timeframe']}`\nPrice `{fmt_price(price) if price else '-'}`\n{rules}`"
+    return f"{badge}⚙️ *{m['name']}*\nPair `{m['pair']}` TF `{m['timeframe']}`\nBias {fmt_bias(m.get('bias'))}\nPrice `{fmt_price(price) if price else '-'}`\n{rules}`"
 
 
 def fmt_alert(setup, model, scored, risk_pct, risk_usd, at_capacity=False, max_concurrent=3, correlation_warning=None, reentry=False, pending_duration=None, pending_checks=None):
     passed, failed = scored.get('passed_rules', []), scored.get('failed_rules', [])
-    lines = ["🚨 *Setup Alert*", "━━━━━━━━━━━━━━━━━━━━━━━━", f"📌 *{model['name']}* · `{setup['pair']}`", f"🧭 {_direction_icon(setup.get('direction', 'BUY'))}", f"💹 Entry `{fmt_price(setup.get('entry'))}`", f"🛑 SL `{fmt_price(setup.get('sl'))}` · 🎯 TP `{fmt_price(setup.get('tp'))}`", "", "🧠 *Confluence*"]
+    lines = ["🚨 *Setup Alert*", "━━━━━━━━━━━━━━━━━━━━━━━━", f"📌 *{model['name']}* · `{setup['pair']}`"]
+    if model.get('bias') == 'Both':
+        lines.append(f"⚙️ Model:  {model['name']}  ↔️ Both")
+        lines.append(f"📊 Direction detected: {'📈 BULLISH' if (setup.get('direction') or '').upper() == 'BUY' else '📉 BEARISH'}")
+    else:
+        lines.append(f"📊 Bias: {fmt_bias(model.get('bias'))}")
+    lines.append(f"🧭 {_direction_icon(setup.get('direction', 'BUY'))}")
+    lines.append(f"💹 Entry `{fmt_price(setup.get('entry'))}`")
+    lines.append(f"🛑 SL `{fmt_price(setup.get('sl'))}` · 🎯 TP `{fmt_price(setup.get('tp'))}`")
+    lines.extend(["", "🧠 *Confluence*"])
     if scored.get('htf_conflict'): lines.insert(2, "⚠️ *HTF Conflict: Score reduced by `-1.5`*")
     for r in passed: lines.append(f"✅ {r['name']} `+{r['weight']}`")
     for r in failed: lines.append(f"❌ {r['name']} `+{r['weight']}`")
@@ -140,7 +159,7 @@ def fmt_perps_home(active_models: list, recent_setups: list, session: str, time_
     ]
     if active_models:
         for m in active_models[:5]:
-            lines.append(f"• {m.get('name')} — {m.get('pair')} {m.get('timeframe')}")
+            lines.append(f"• {m.get('name')} — {m.get('pair')} {m.get('timeframe')} {fmt_bias(m.get('bias'))}")
     else:
         lines.append("No active models — tap Models to create one")
 
@@ -202,9 +221,9 @@ def fmt_pending_setup(setup: dict, classification: dict, score_result: dict) -> 
     lines = [
         "⏳ *PENDING SETUP*",
         "━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"⚙️ Model:  {setup.get('model_name', '-')}",
+        f"⚙️ Model:  {setup.get('model_name', '-')}  {fmt_bias(setup.get('model_bias', 'Both'))}",
         f"🪙 Pair:   {setup.get('pair', '-')}   {setup.get('timeframe', '-')}",
-        f"📊 Bias:   {'📈 Bullish' if (setup.get('direction') or '').upper() == 'BUY' else '📉 Bearish'}",
+        f"📊 Direction detected: {'📈 BULLISH' if (setup.get('direction') or '').upper() == 'BUY' else '📉 BEARISH'}",
         f"⏰ First seen: {setup.get('first_seen_label', '-')}",
         f"🔄 Last check: {setup.get('last_check_label', '-')}  (check #{setup.get('check_count', 1)})",
         "",

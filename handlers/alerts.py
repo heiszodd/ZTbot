@@ -15,9 +15,9 @@ _circuit_warned_at = None
 _DEDUP_SEC = 900
 
 
-def _dedup_key(pair, model_id, tier): return f"{pair}_{model_id}_{tier}"
-def _is_dup(pair, model_id, tier): return (datetime.now(timezone.utc).timestamp() - _recent.get(_dedup_key(pair, model_id, tier), 0)) < _DEDUP_SEC
-def _mark(pair, model_id, tier): _recent[_dedup_key(pair, model_id, tier)] = datetime.now(timezone.utc).timestamp()
+def _dedup_key(pair, model_id, tier, direction): return f"{pair}_{model_id}_{tier}_{direction}"
+def _is_dup(pair, model_id, tier, direction): return (datetime.now(timezone.utc).timestamp() - _recent.get(_dedup_key(pair, model_id, tier, direction), 0)) < _DEDUP_SEC
+def _mark(pair, model_id, tier, direction): _recent[_dedup_key(pair, model_id, tier, direction)] = datetime.now(timezone.utc).timestamp()
 
 
 def format_duration(start_time: datetime) -> str:
@@ -127,7 +127,8 @@ async def _evaluate_and_send(bot, model: dict, force=False, pair_override: str |
     scored = engine.score_setup(setup, scan_model)
     if not scored.get("tier"):
         return False
-    if not force and _is_dup(pair, model["id"], scored["tier"]):
+    dedup_direction = "Bullish" if setup.get("direction") == "BUY" else "Bearish"
+    if not force and _is_dup(pair, model["id"], scored["tier"], dedup_direction):
         return False
 
     atr = px.estimate_atr(series[-30:]) if series else None
@@ -135,7 +136,7 @@ async def _evaluate_and_send(bot, model: dict, force=False, pair_override: str |
     setup.update({"entry": price, "sl": sl, "tp": tp, "rr": rr})
 
     db.log_alert(pair, model["id"], model["name"], scored["final_score"], scored["tier"], setup["direction"], price, sl, tp, rr, True)
-    _mark(pair, model["id"], scored["tier"])
+    _mark(pair, model["id"], scored["tier"], dedup_direction)
     key = f"{pair}_{model['id']}_{datetime.now(timezone.utc).strftime('%H%M%S')}"
     _pending[key] = (setup, scan_model, scored)
 
@@ -145,33 +146,6 @@ async def _evaluate_and_send(bot, model: dict, force=False, pair_override: str |
     job = bot._application.job_queue.run_once(_setup_aging_follow_up, when=900, data={"pair": pair, "entry": price}, name=f"aging:{key}")
     _aging_jobs[key] = job
     return True
-
-
-def score_pair(pair: str, timeframe: str, model: dict):
-    scan_model = {**model, "pair": pair, "timeframe": timeframe}
-    series = px.get_recent_series(pair, days=2)
-    if not series:
-        return None
-    setup = engine.build_live_setup(scan_model, series)
-    if not setup:
-        return None
-    scored = engine.score_setup(setup, scan_model)
-    atr = px.estimate_atr(series[-30:]) if series else None
-    price = px.get_price(pair)
-    if not price:
-        return None
-    sl, tp, rr = px.calc_sl_tp(price, setup.get("direction", "BUY"), atr=atr)
-    scored["score"] = float(scored.get("final_score", 0) or 0)
-    scored["entry"] = price
-    scored["sl"] = sl
-    scored["tp"] = tp
-    scored["tp1"] = tp
-    scored["tp2"] = round(tp + (tp - price) * 0.5, 5) if setup.get("direction", "BUY") == "BUY" else round(tp - (price - tp) * 0.5, 5)
-    scored["tp3"] = round(tp + (tp - price), 5) if setup.get("direction", "BUY") == "BUY" else round(tp - (price - tp), 5)
-    scored["direction"] = setup.get("direction", "BUY")
-    scored["invalidated"] = not scored.get("valid", True)
-    scored["invalidation_reason"] = scored.get("invalid_reason")
-    return scored
 
 
 async def run_scanner(context: ContextTypes.DEFAULT_TYPE):
@@ -189,54 +163,56 @@ async def run_scanner(context: ContextTypes.DEFAULT_TYPE):
             try:
                 if existing:
                     processing.add(existing.get("id"))
-                score_result = score_pair(pair, timeframe, model)
-                if not score_result:
+                score_results = engine.score_pair(pair, timeframe, model)
+                if not score_results:
                     continue
-                classification = engine.classify_score_result(score_result, model)
+                for score_result in score_results:
+                    classification = engine.classify_score_result(score_result, model)
+                    detected_direction = score_result.get("detected_direction", "Bullish")
 
-                if classification["classification"] == "FULL_ALERT":
-                    if existing and existing.get("status") == "pending":
-                        await promote_to_full_alert(context, existing, score_result)
+                    if classification["classification"] == "FULL_ALERT":
+                        if existing and existing.get("status") == "pending":
+                            await promote_to_full_alert(context, existing, score_result)
+                        else:
+                            tier = "A" if score_result.get("score", 0) >= model.get("tier_a", 9.5) else "B" if score_result.get("score", 0) >= model.get("tier_b", 7.5) else "C"
+                            if _is_dup(pair, model["id"], tier, detected_direction):
+                                continue
+                            await _evaluate_and_send(bot, {**model, "bias": detected_direction}, pair_override=pair)
+
+                    elif classification["classification"] == "PENDING":
+                        if existing and existing.get("status") == "pending":
+                            await update_pending_message(context, existing, classification, score_result)
+                            continue
+                        if existing and existing.get("status") == "promoted" and existing.get("promoted_at"):
+                            if (datetime.now(timezone.utc).replace(tzinfo=None) - existing["promoted_at"]).total_seconds() < 900:
+                                continue
+                        if existing and existing.get("status") == "expired":
+                            db.delete_pending_setup(existing["id"])
+
+                        now = datetime.now(timezone.utc)
+                        setup_payload = {
+                            "model_id": model["id"], "model_name": model.get("name"), "pair": pair, "timeframe": timeframe,
+                            "direction": score_result.get("direction"), "entry_price": score_result.get("entry"), "sl": score_result.get("sl"),
+                            "tp1": score_result.get("tp1"), "tp2": score_result.get("tp2"), "tp3": score_result.get("tp3"),
+                            "current_score": score_result.get("score"), "max_possible_score": sum(float(r.get("weight",0) or 0) for r in model.get("rules",[])),
+                            "score_pct": classification.get("score_pct"), "min_score_threshold": float(model.get("min_score") or model.get("tier_c") or 0),
+                            "passed_rules": classification.get("passed_rules"), "failed_rules": classification.get("failed_rules"),
+                            "mandatory_passed": classification.get("mandatory_passed"), "mandatory_failed": classification.get("mandatory_failed"),
+                            "rule_snapshots": {"score": score_result.get("score"), "passed_rule_ids": [r.get("id") for r in classification.get("passed_rules",[])], "failed_rule_ids": [r.get("id") for r in classification.get("failed_rules",[])]},
+                            "telegram_chat_id": CHAT_ID, "status": "pending", "first_detected_at": now, "check_count": 1, "peak_score_pct": classification.get("score_pct",0),
+                        }
+                        setup_id = db.save_pending_setup(setup_payload)
+                        record = db.get_pending_setup(model["id"], pair, timeframe)
+                        record["first_seen_label"] = now.strftime("%H:%M WAT")
+                        record["last_check_label"] = now.strftime("%H:%M WAT")
+                        record["trend"] = "➡️ Score unchanged"
+                        text = formatters.fmt_pending_setup(record, classification, score_result)
+                        msg = await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown", reply_markup=pending_keyboard(setup_id))
+                        db.update_pending_setup(setup_id, {"telegram_message_id": msg.message_id})
+
                     else:
-                        tier = "A" if score_result.get("score", 0) >= model.get("tier_a", 9.5) else "B" if score_result.get("score", 0) >= model.get("tier_b", 7.5) else "C"
-                        if _is_dup(pair, model["id"], tier):
-                            continue
-                        await _evaluate_and_send(bot, model, pair_override=pair)
-
-                elif classification["classification"] == "PENDING":
-                    if existing and existing.get("status") == "pending":
-                        await update_pending_message(context, existing, classification, score_result)
-                        continue
-                    if existing and existing.get("status") == "promoted" and existing.get("promoted_at"):
-                        if (datetime.now(timezone.utc).replace(tzinfo=None) - existing["promoted_at"]).total_seconds() < 900:
-                            continue
-                    if existing and existing.get("status") == "expired":
-                        db.delete_pending_setup(existing["id"])
-
-                    now = datetime.now(timezone.utc)
-                    setup_payload = {
-                        "model_id": model["id"], "model_name": model.get("name"), "pair": pair, "timeframe": timeframe,
-                        "direction": score_result.get("direction"), "entry_price": score_result.get("entry"), "sl": score_result.get("sl"),
-                        "tp1": score_result.get("tp1"), "tp2": score_result.get("tp2"), "tp3": score_result.get("tp3"),
-                        "current_score": score_result.get("score"), "max_possible_score": sum(float(r.get("weight",0) or 0) for r in model.get("rules",[])),
-                        "score_pct": classification.get("score_pct"), "min_score_threshold": float(model.get("min_score") or model.get("tier_c") or 0),
-                        "passed_rules": classification.get("passed_rules"), "failed_rules": classification.get("failed_rules"),
-                        "mandatory_passed": classification.get("mandatory_passed"), "mandatory_failed": classification.get("mandatory_failed"),
-                        "rule_snapshots": {"score": score_result.get("score"), "passed_rule_ids": [r.get("id") for r in classification.get("passed_rules",[])], "failed_rule_ids": [r.get("id") for r in classification.get("failed_rules",[])]},
-                        "telegram_chat_id": CHAT_ID, "status": "pending", "first_detected_at": now, "check_count": 1, "peak_score_pct": classification.get("score_pct",0),
-                    }
-                    setup_id = db.save_pending_setup(setup_payload)
-                    record = db.get_pending_setup(model["id"], pair, timeframe)
-                    record["first_seen_label"] = now.strftime("%H:%M WAT")
-                    record["last_check_label"] = now.strftime("%H:%M WAT")
-                    record["trend"] = "➡️ Score unchanged"
-                    text = formatters.fmt_pending_setup(record, classification, score_result)
-                    msg = await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown", reply_markup=pending_keyboard(setup_id))
-                    db.update_pending_setup(setup_id, {"telegram_message_id": msg.message_id})
-
-                else:
-                    if existing and existing.get("status") == "pending":
-                        await expire_pending_message(context, existing, classification)
+                        if existing and existing.get("status") == "pending":
+                            await expire_pending_message(context, existing, classification)
             except Exception as e:
                 log.error(f"scanner error {e}")
             finally:
@@ -370,8 +346,8 @@ async def run_pending_checker(context):
                 db.expire_pending_setup(setup["id"])
                 continue
 
-            score_result = score_pair(setup["pair"], setup["timeframe"], model)
-            if not score_result:
+            score_results = engine.score_pair(setup["pair"], setup["timeframe"], model)
+            if not score_results:
                 stale_minutes = (datetime.now(timezone.utc).replace(tzinfo=None) - setup["last_updated_at"]).total_seconds() / 60
                 if stale_minutes >= 10:
                     try:
@@ -381,13 +357,14 @@ async def run_pending_checker(context):
                     db.update_pending_setup(setup["id"], {"status": "stale"})
                 continue
 
-            classification = engine.classify_score_result(score_result, model)
-            if classification["classification"] == "FULL_ALERT":
-                await promote_to_full_alert(context, setup, score_result)
-            elif classification["classification"] == "PENDING":
-                await update_pending_message(context, setup, classification, score_result)
-            else:
-                await expire_pending_message(context, setup, classification)
+            for score_result in score_results:
+                classification = engine.classify_score_result(score_result, model)
+                if classification["classification"] == "FULL_ALERT":
+                    await promote_to_full_alert(context, setup, score_result)
+                elif classification["classification"] == "PENDING":
+                    await update_pending_message(context, setup, classification, score_result)
+                else:
+                    await expire_pending_message(context, setup, classification)
         except Exception as e:
             log.error(f"Pending checker error for setup {setup['id']}: {e}")
         finally:

@@ -457,15 +457,16 @@ def main():
     app.add_handler(CommandHandler("stats",       stats.stats_cmd))
     app.add_handler(CommandHandler("discipline",  stats.discipline_cmd))
     app.add_handler(CommandHandler("result",      stats.result_cmd))
-    app.add_handler(CommandHandler("create_model",wizard.wiz_start))
+    app.add_handler(CommandHandler("create_model", wizard.start_wizard))
     app.add_handler(CommandHandler("backtest",    commands.backtest))
     app.add_handler(CommandHandler("create_degen_model", degen_wizard.start_wizard))
     app.add_handler(CommandHandler("journal",     commands.journal_cmd))
     app.add_handler(CommandHandler("news",        news_handler.news_cmd))
 
     # ── Conversations (must be before generic callback routers) ──
-    app.add_handler(wizard.build_wizard_handler())
-    app.add_handler(degen_wizard.build_degen_wizard_handler())
+    app.add_handler(wizard.build_wizard_handler(), group=0)
+    app.add_handler(CallbackQueryHandler(degen_wizard.start_wizard, pattern="^dgwiz:start$"), group=0)
+    app.add_handler(CallbackQueryHandler(degen_wizard.handle_degen_wizard_cb, pattern="^dgwiz:"), group=0)
     app.add_handler(commands.build_goal_handler())
     app.add_handler(commands.build_budget_handler())
 
@@ -485,6 +486,7 @@ def main():
     app.add_handler(CallbackQueryHandler(ca_handler.handle_ca_cb, pattern="^ca:"))
     app.add_handler(CallbackQueryHandler(chart_handler.handle_chart_cb, pattern="^chart:"))
     app.add_handler(wallet_handler.build_add_wallet_handler())
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, degen_wizard.handle_degen_name), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, demo_handler.handle_demo_risk_input))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, chart_handler.handle_chart_image), group=2)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ca_handler.handle_ca_message), group=1)

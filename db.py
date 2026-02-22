@@ -692,6 +692,64 @@ def insert_model(model):
             """, {**model, "rules": json.dumps(model["rules"])})
         conn.commit()
 
+
+def save_model(model: dict) -> str:
+    import json
+    _ensure_pool()
+    conn = None
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO models
+                    (id, name, pair, timeframe, session, bias,
+                     status, rules, tier_a_threshold,
+                     tier_b_threshold, tier_c_threshold,
+                     min_score, description, created_at, updated_at)
+                VALUES
+                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    name             = EXCLUDED.name,
+                    pair             = EXCLUDED.pair,
+                    timeframe        = EXCLUDED.timeframe,
+                    session          = EXCLUDED.session,
+                    bias             = EXCLUDED.bias,
+                    rules            = EXCLUDED.rules,
+                    tier_a_threshold = EXCLUDED.tier_a_threshold,
+                    tier_b_threshold = EXCLUDED.tier_b_threshold,
+                    tier_c_threshold = EXCLUDED.tier_c_threshold,
+                    min_score        = EXCLUDED.min_score,
+                    description      = EXCLUDED.description,
+                    updated_at       = NOW()
+                RETURNING id
+            """, (
+                model["id"],
+                model["name"],
+                model.get("pair", "BTCUSDT"),
+                model.get("timeframe", "1h"),
+                model.get("session", "Any"),
+                model.get("bias", "Both"),
+                model.get("status", "inactive"),
+                json.dumps(model.get("rules", [])),
+                model.get("tier_a_threshold", 0),
+                model.get("tier_b_threshold", 0),
+                model.get("tier_c_threshold", 0),
+                model.get("min_score", 0),
+                model.get("description", ""),
+            ))
+            row = cur.fetchone()
+            conn.commit()
+            _cache_clear("active_models")
+            return row[0] if row else model["id"]
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error(f"save_model DB error: {e}")
+        raise
+    finally:
+        if conn:
+            release_conn(conn)
+
 def set_model_status(model_id, status):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -1491,6 +1549,71 @@ def insert_degen_model(model: dict) -> None:
             )
         conn.commit()
 
+
+
+def save_degen_model(model: dict) -> str:
+    import json
+    _ensure_pool()
+    conn = None
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO degen_models
+                    (id, name, chains, strategy, rules,
+                     mandatory_rules, min_liquidity,
+                     min_age_minutes, max_age_minutes,
+                     max_risk_score, min_moon_score,
+                     block_serial_ruggers,
+                     min_score_threshold, min_score,
+                     status, created_at, updated_at)
+                VALUES
+                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    name                 = EXCLUDED.name,
+                    chains               = EXCLUDED.chains,
+                    rules                = EXCLUDED.rules,
+                    mandatory_rules      = EXCLUDED.mandatory_rules,
+                    min_liquidity        = EXCLUDED.min_liquidity,
+                    min_age_minutes      = EXCLUDED.min_age_minutes,
+                    max_age_minutes      = EXCLUDED.max_age_minutes,
+                    max_risk_score       = EXCLUDED.max_risk_score,
+                    min_moon_score       = EXCLUDED.min_moon_score,
+                    block_serial_ruggers = EXCLUDED.block_serial_ruggers,
+                    min_score_threshold  = EXCLUDED.min_score_threshold,
+                    min_score            = EXCLUDED.min_score,
+                    status               = EXCLUDED.status,
+                    updated_at           = NOW()
+                RETURNING id
+            """, (
+                model["id"],
+                model["name"],
+                json.dumps(model.get("chains", ["SOL"])),
+                model.get("strategy", "custom"),
+                json.dumps(model.get("rules", [])),
+                json.dumps(model.get("mandatory_rules", [])),
+                model.get("min_liquidity", 5000),
+                model.get("min_age_minutes", 0),
+                model.get("max_age_minutes", 120),
+                model.get("max_risk_score", 70),
+                model.get("min_moon_score", 40),
+                model.get("block_serial_ruggers", True),
+                model.get("min_score_threshold", 50),
+                model.get("min_score", 0),
+                model.get("status", "active"),
+            ))
+            row = cur.fetchone()
+            conn.commit()
+            _cache_clear("active_degen_models")
+            return row[0] if row else model["id"]
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error(f"save_degen_model error: {e}")
+        raise
+    finally:
+        if conn:
+            release_conn(conn)
 
 def set_degen_model_status(model_id: str, status: str) -> None:
     with get_conn() as conn:
