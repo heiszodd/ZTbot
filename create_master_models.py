@@ -6,12 +6,129 @@ import db
 from config import DB_URL
 
 
-def r(mid, i, name, w, m=False):
-    return {"id": f"{mid}_rule_{i}", "name": name, "weight": float(w), "mandatory": bool(m), "description": name}
+NAME_TO_TAG = {
+    "htf trend bullish": "htf_bullish",
+    "htf trend bearish": "htf_bearish",
+    "ltf bullish structure": "ltf_bullish_structure",
+    "ltf bearish structure": "ltf_bearish_structure",
+    "htf ltf aligned bullish": "htf_ltf_aligned_bull",
+    "htf ltf aligned bearish": "htf_ltf_aligned_bear",
+    "htf/ltf aligned bull": "htf_ltf_aligned_bull",
+    "htf/ltf aligned bear": "htf_ltf_aligned_bear",
+    "bullish ob present": "bullish_ob_present",
+    "bearish ob present": "bearish_ob_present",
+    "bullish order block": "bullish_ob_present",
+    "bearish order block": "bearish_ob_present",
+    "ob respected": "ob_respected",
+    "order block respected": "ob_respected",
+    "breaker block": "breaker_block",
+    "ob on htf": "ob_on_htf",
+    "htf order block": "ob_on_htf",
+    "bullish fvg": "bullish_fvg",
+    "bearish fvg": "bearish_fvg",
+    "bullish fair value gap": "bullish_fvg",
+    "bearish fair value gap": "bearish_fvg",
+    "fvg within ob": "fvg_within_ob",
+    "nested fvg": "nested_fvg",
+    "liquidity swept bullish": "liquidity_swept_bull",
+    "liquidity swept bearish": "liquidity_swept_bear",
+    "liq sweep bull": "liquidity_swept_bull",
+    "liq sweep bear": "liquidity_swept_bear",
+    "asian range swept": "asian_range_swept",
+    "stop hunt": "stop_hunt",
+    "mss bullish": "mss_bullish",
+    "mss bearish": "mss_bearish",
+    "market structure shift bull": "mss_bullish",
+    "market structure shift bear": "mss_bearish",
+    "bos bullish": "bos_bullish",
+    "bos bearish": "bos_bearish",
+    "break of structure bull": "bos_bullish",
+    "break of structure bear": "bos_bearish",
+    "choch bullish": "choch_bullish",
+    "choch bearish": "choch_bearish",
+    "change of character bull": "choch_bullish",
+    "change of character bear": "choch_bearish",
+    "london session": "session_london",
+    "ny session": "session_ny",
+    "new york session": "session_ny",
+    "session overlap": "session_overlap",
+    "london open sweep": "london_open_sweep",
+    "ny open reversal": "ny_open_reversal",
+    "new york open reversal": "ny_open_reversal",
+    "premium zone": "premium_zone",
+    "discount zone": "discount_zone",
+    "equilibrium": "equilibrium",
+    "near htf level": "near_htf_level",
+    "htf key level": "near_htf_level",
+    "bullish engulfing": "bullish_engulfing",
+    "bearish engulfing": "bearish_engulfing",
+    "pin bar bullish": "pin_bar_bull",
+    "pin bar bearish": "pin_bar_bear",
+    "bullish pin bar": "pin_bar_bull",
+    "bearish pin bar": "pin_bar_bear",
+    "doji rejection": "doji_rejection",
+    "volume spike": "volume_spike",
+    "volume declining pullback": "volume_declining_pullback",
+    "volume expanding breakout": "volume_expanding_breakout",
+    "declining volume pullback": "volume_declining_pullback",
+    "ote zone": "ote_zone",
+    "optimal trade entry": "ote_zone",
+    "power of three": "power_of_three",
+    "judas swing": "judas_swing",
+    "silver bullet window": "silver_bullet_window",
+    "silver bullet": "silver_bullet_window",
+    "midnight open": "midnight_open",
+    "three confluences": "three_confluences",
+    "3 confluences": "three_confluences",
+    "news clear": "news_clear",
+    "no major news": "news_clear",
+    "higher high confirmation": "higher_high_confirmation",
+    "lower low confirmation": "lower_low_confirmation",
+    "higher high": "higher_high_confirmation",
+    "lower low": "lower_low_confirmation",
+}
+
+
+def name_to_tag(name: str) -> str:
+    if not name:
+        return ""
+    key = str(name).lower().strip()
+    if key in NAME_TO_TAG:
+        return NAME_TO_TAG[key]
+    for prefix in ("rule: ", "rule ", "check "):
+        if key.startswith(prefix):
+            stripped = key[len(prefix):]
+            if stripped in NAME_TO_TAG:
+                return NAME_TO_TAG[stripped]
+    best_tag = ""
+    best_score = 0
+    key_words = set(key.replace("-", " ").replace("_", " ").split())
+    for label, tag in NAME_TO_TAG.items():
+        label_words = set(label.split())
+        overlap = len(key_words & label_words)
+        if overlap > best_score:
+            best_score = overlap
+            best_tag = tag
+    return best_tag if best_score >= 2 else ""
+
+
+def make_rule(model_id, index, name, weight, mandatory=False, phase=1):
+    tag = name_to_tag(name)
+    if not tag:
+        print(f"WARNING: No tag found for rule name='{name}' in model {model_id}")
+    return {
+        "id": f"{model_id}_rule_{index}",
+        "name": name,
+        "tag": tag,
+        "weight": float(weight),
+        "mandatory": bool(mandatory),
+        "phase": phase,
+        "description": name,
+    }
 
 
 def model(mid, name, pair, tf, session, bias, desc, rulespec, rr_target=2.0):
-    rules = [r(mid, i + 1, *row) for i, row in enumerate(rulespec)]
+    rules = [make_rule(mid, i + 1, *row) for i, row in enumerate(rulespec)]
     total = sum(x["weight"] for x in rules)
     a, b, c = total * 0.8, total * 0.65, total * 0.5
     return {

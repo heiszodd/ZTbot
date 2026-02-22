@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timedelta
 
 import db
-from config import CHAT_ID, SUPPORTED_PAIRS
+from config import CHAT_ID
 from engine.rules import calc_atr, evaluate_rule, get_candles
 
 log = logging.getLogger(__name__)
@@ -11,20 +11,25 @@ PHASE_EXPIRY = {1: 4 * 3600, 2: 1 * 3600, 3: 0, 4: 3 * 900}
 PHASE_THRESHOLDS = {1: 60, 2: 55, 3: 70, 4: 50}
 
 
+DEFAULT_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XAUUSD"]
+
+
 def get_pairs_for_model(model: dict) -> list[str]:
-    pair = model.get("pair", "BTCUSDT")
-    if pair != "ALL":
-        return [pair]
-    prefs = db.get_user_preferences(CHAT_ID) or {}
-    preferred = [p for p in (prefs.get("preferred_pairs") or []) if p in SUPPORTED_PAIRS]
-    return preferred or list(SUPPORTED_PAIRS)
+    pair = str(model.get("pair", "BTCUSDT") or "").strip()
+    if not pair or pair.upper() in {"ALL", "ANY"}:
+        return list(DEFAULT_PAIRS)
+    if "," in pair:
+        return [p.strip().upper() for p in pair.split(",") if p.strip()]
+    return [pair.upper()]
 
 
-def get_directions(model: dict) -> list[str]:
-    bias = str(model.get("bias", "Both")).lower()
-    if bias == "bullish":
+def get_directions_for_model(model: dict) -> list[str]:
+    bias = str(model.get("bias", "Both") or "").strip().lower()
+    if not bias or bias in {"both", "all", "any"}:
+        return ["bullish", "bearish"]
+    if bias in {"bullish", "bull", "long"}:
         return ["bullish"]
-    if bias == "bearish":
+    if bias in {"bearish", "bear", "short"}:
         return ["bearish"]
     return ["bullish", "bearish"]
 
@@ -46,40 +51,95 @@ async def passes_volatility_gate(pair: str, timeframe: str, cache: dict) -> bool
 
 
 async def evaluate_phase(phase_num: int, rules: list, pair: str, timeframe: str, candle_cache: dict, direction: str) -> dict:
-    phase_rules = [r for r in rules if int(r.get("phase", 1)) == phase_num]
+    phase_rules = [r for r in rules if (int(r.get("phase") or 1) if str(r.get("phase") or "").strip() else 1) == phase_num]
+    log.info("Phase %s | %s | %s | %s | %s rules", phase_num, pair, direction.capitalize(), timeframe, len(phase_rules))
+    if not phase_rules:
+        log.info("Phase %s: no rules assigned — auto-passing", phase_num)
+        return {
+            "phase": phase_num,
+            "passed": True,
+            "score": 0,
+            "max_score": 0,
+            "score_pct": 100,
+            "passed_rules": [],
+            "failed_rules": [],
+            "mandatory_failed": [],
+            "invalidated": False,
+            "phase_data": {},
+        }
+
     passed_rules, failed_rules, mandatory_failed = [], [], []
     score = 0.0
     max_score = sum(float(r.get("weight", 1)) for r in phase_rules)
     phase_data = {"pair": pair, "timeframe": timeframe, "direction": direction}
     for rule in phase_rules:
         ok = await evaluate_rule(rule, pair, timeframe, direction, candle_cache)
+        rule_display = rule.get("tag") or rule.get("name") or rule.get("id") or "unknown"
         if ok:
-            passed_rules.append(rule["id"])
+            passed_rules.append(rule_display)
             score += float(rule.get("weight", 1))
+            log.debug("  ✅ %s", rule_display)
         else:
-            failed_rules.append(rule["id"])
+            failed_rules.append(rule_display)
+            log.debug("  ❌ %s", rule_display)
             if rule.get("mandatory"):
-                mandatory_failed.append(rule["id"])
+                mandatory_failed.append(rule_display)
     score_pct = (score / max_score * 100) if max_score > 0 else 0
     invalidated = bool(mandatory_failed)
-    passed = (not invalidated) and score_pct >= PHASE_THRESHOLDS[phase_num]
+    threshold = PHASE_THRESHOLDS.get(phase_num, 60)
+    passed = (not invalidated) and score_pct >= threshold
+    log.info(
+        "Phase %s result: %.1f/%.1f (%.0f%% vs %s%% threshold) → %s%s",
+        phase_num,
+        score,
+        max_score,
+        score_pct,
+        threshold,
+        "PASS" if passed else "FAIL",
+        f" [mandatory failed: {mandatory_failed}]" if mandatory_failed else "",
+    )
     return {"phase": phase_num, "passed": passed, "score": score, "max_score": max_score, "score_pct": score_pct, "passed_rules": passed_rules, "failed_rules": failed_rules, "mandatory_failed": mandatory_failed, "invalidated": invalidated, "phase_data": phase_data}
 
 
 async def run_phase_engine(context):
     models = db.get_active_models()
+    if not models:
+        log.info("Phase engine: no active models")
+        return
+
     candle_cache = {}
+    log.info("Phase engine: evaluating %s models", len(models))
     for model in models:
         rules = model.get("rules", [])
         if not rules:
+            log.warning("Model '%s' has no rules — skipping", model.get("name"))
             continue
-        for pair in get_pairs_for_model(model):
-            for direction in get_directions(model):
-                await evaluate_model_phases(context, model, pair, direction, rules, candle_cache)
+        pairs = get_pairs_for_model(model)
+        directions = get_directions_for_model(model)
+        phase_tfs = model.get("phase_timeframes", {"1": "4h", "2": "1h", "3": "15m", "4": "5m"})
+        log.debug(
+            "Model '%s': pairs=%s directions=%s rules=%s",
+            model.get("name"),
+            pairs,
+            directions,
+            len(rules),
+        )
+        for pair in pairs:
+            for direction in directions:
+                try:
+                    await evaluate_model_phases(context, model, pair, direction, rules, phase_tfs, candle_cache)
+                except Exception as exc:
+                    log.error(
+                        "Phase engine error — model='%s' pair=%s direction=%s: %s: %s",
+                        model.get("name"),
+                        pair,
+                        direction,
+                        type(exc).__name__,
+                        exc,
+                    )
 
 
-async def evaluate_model_phases(context, model, pair, direction, rules, candle_cache):
-    phase_tfs = model.get("phase_timeframes", {"1": "4h", "2": "1h", "3": "15m", "4": "5m"})
+async def evaluate_model_phases(context, model, pair, direction, rules, phase_tfs, candle_cache):
     existing = db.get_setup_phase(model["id"], pair, direction)
     if existing is None:
         sid = db.save_setup_phase({"model_id": model["id"], "model_name": model["name"], "pair": pair, "direction": direction, "overall_status": "phase1", "check_count": 0})

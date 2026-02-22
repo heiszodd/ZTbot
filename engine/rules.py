@@ -364,13 +364,88 @@ async def rule_lower_low_confirmation(pair, tf, direction, cache): return await 
 RULE_FUNCTIONS = {k:v for k,v in globals().items() if k.startswith("rule_")}
 
 async def evaluate_rule(rule: dict, pair: str, timeframe: str, direction: str, cache: dict) -> bool:
-    rule_id = (rule or {}).get("id", "")
-    fn = RULE_FUNCTIONS.get(f"rule_{rule_id}") or RULE_FUNCTIONS.get(rule_id)
+    """
+    Evaluate a rule against the current market context.
+
+    Master model rules can use descriptive IDs (for example
+    MM_ADV_09_rule_1) that do not directly map to RULE_FUNCTIONS.
+    This resolver tries multiple fields and normalization strategies
+    to find the real callable key.
+    """
+    rule = rule or {}
+    lookup_fields = [
+        rule.get("tag"),
+        rule.get("rule_id"),
+        rule.get("function"),
+        rule.get("rule_name"),
+        rule.get("id"),
+        rule.get("name"),
+    ]
+
+    fn = None
+    matched_key = None
+    for candidate in lookup_fields:
+        if not candidate:
+            continue
+        candidate = str(candidate).strip()
+        if not candidate:
+            continue
+
+        if candidate in RULE_FUNCTIONS:
+            fn = RULE_FUNCTIONS[candidate]
+            matched_key = candidate
+            break
+
+        prefixed = f"rule_{candidate}"
+        if prefixed in RULE_FUNCTIONS:
+            fn = RULE_FUNCTIONS[prefixed]
+            matched_key = prefixed
+            break
+
+        normalized = candidate.lower().replace(" ", "_").replace("-", "_").replace("/", "_")
+        if normalized in RULE_FUNCTIONS:
+            fn = RULE_FUNCTIONS[normalized]
+            matched_key = normalized
+            break
+
+        normalized_prefixed = f"rule_{normalized}"
+        if normalized_prefixed in RULE_FUNCTIONS:
+            fn = RULE_FUNCTIONS[normalized_prefixed]
+            matched_key = normalized_prefixed
+            break
+
     if fn is None:
-        log.warning("No evaluate function for rule: %s", rule_id)
+        name = str(rule.get("name", "")).strip().lower()
+        if name:
+            name_words = set(name.replace("-", " ").replace("_", " ").split())
+            for rule_key in RULE_FUNCTIONS:
+                comparable_key = rule_key.removeprefix("rule_")
+                key_words = set(comparable_key.split("_"))
+                if len(key_words & name_words) >= 2:
+                    fn = RULE_FUNCTIONS[rule_key]
+                    matched_key = rule_key
+                    log.debug("Fuzzy matched rule '%s' -> '%s'", rule.get("name"), comparable_key)
+                    break
+
+    if fn is None:
+        log.warning(
+            "No function found for rule: id='%s' name='%s' tag='%s' — returning False",
+            rule.get("id"),
+            rule.get("name"),
+            rule.get("tag"),
+        )
         return False
+
     try:
         return bool(await fn(pair, timeframe, direction, cache))
     except Exception as exc:
-        log.error("Rule %s eval error: %s", rule_id, exc)
+        log.error(
+            "Rule '%s' failed on %s/%s/%s: %s: %s",
+            matched_key,
+            pair,
+            timeframe,
+            direction,
+            type(exc).__name__,
+            exc,
+        )
         return False
