@@ -3,7 +3,7 @@ import psycopg2.extras
 from psycopg2 import pool as pg_pool
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from config import DB_URL
 
 _pool = None
@@ -649,7 +649,7 @@ def get_all_models():
                        bias, status, rules, phase_timeframes, tier_a_threshold,
                        tier_b_threshold, tier_c_threshold, rr_target,
                        min_score, description, created_at,
-                       tier_a, tier_b, tier_c
+                       tier_a, tier_b, tier_c, regime_managed
                 FROM models
                 ORDER BY
                     CASE WHEN id LIKE 'MM_%' THEN 0 ELSE 1 END,
@@ -686,7 +686,7 @@ def get_active_models():
                        bias, status, rules, phase_timeframes, tier_a_threshold,
                        tier_b_threshold, tier_c_threshold, rr_target,
                        min_score, description, created_at,
-                       tier_a, tier_b, tier_c
+                       tier_a, tier_b, tier_c, regime_managed
                 FROM models
                 WHERE status='active'
                 ORDER BY created_at DESC
@@ -2420,10 +2420,33 @@ def close_demo_trade(trade_id: int, exit_price: float, result: str) -> dict:
     return {**tr, "exit_price": exit_price, "final_pnl_usd": pnl_usd, "final_pnl_pct": pnl_pct, "final_x": final_x, "balance": acct.get("balance")}
 
 
-def get_open_demo_trades(section: str) -> list:
+def get_open_demo_trades(section: str = None) -> list:
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM demo_trades WHERE section=%s AND result IS NULL ORDER BY opened_at DESC", (section,))
+            if section:
+                cur.execute("SELECT * FROM demo_trades WHERE section=%s AND result IS NULL ORDER BY opened_at DESC", (section,))
+            else:
+                cur.execute("SELECT * FROM demo_trades WHERE result IS NULL ORDER BY opened_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_open_demo_trades_all() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    pair,
+                    direction,
+                    entry_price,
+                    COALESCE(sl, 0) AS stop_loss,
+                    COALESCE(position_size_usd, 0) AS position_size,
+                    COALESCE(risk_amount_usd, 0) AS risk_amount
+                FROM demo_trades
+                WHERE result IS NULL
+                ORDER BY opened_at DESC
+                """
+            )
             return [dict(r) for r in cur.fetchall()]
 
 
@@ -2824,7 +2847,21 @@ def expire_old_phases() -> None:
 def save_alert_lifecycle(data: dict) -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("""INSERT INTO alert_lifecycle (setup_phase_id,model_id,pair,direction,entry_price,alert_sent_at) VALUES (%s,%s,%s,%s,%s,COALESCE(%s,NOW())) RETURNING id""", (data.get("setup_phase_id"), data.get("model_id"), data.get("pair"), data.get("direction"), data.get("entry_price"), data.get("alert_sent_at")))
+            cur.execute(
+                """
+                INSERT INTO alert_lifecycle (
+                    setup_phase_id,model_id,pair,direction,entry_price,alert_sent_at,
+                    risk_level,risk_amount,position_size,leverage,rr_ratio,
+                    quality_grade,quality_score
+                ) VALUES (%s,%s,%s,%s,%s,COALESCE(%s,NOW()),%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    data.get("setup_phase_id"), data.get("model_id"), data.get("pair"), data.get("direction"), data.get("entry_price"), data.get("alert_sent_at"),
+                    data.get("risk_level"), data.get("risk_amount"), data.get("position_size"), data.get("leverage"), data.get("rr_ratio"),
+                    data.get("quality_grade"), data.get("quality_score"),
+                ),
+            )
             row = cur.fetchone()
         conn.commit()
     return row[0] if row else 0
@@ -2927,3 +2964,318 @@ def get_session_journal(pair: str, days: int = 30) -> list:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM session_journal WHERE pair=%s AND session_date >= CURRENT_DATE - make_interval(days => %s) ORDER BY session_date DESC", (pair, days))
             return cur.fetchall()
+
+
+def _ensure_risk_tables() -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS risk_settings (
+                    id                  SERIAL PRIMARY KEY,
+                    account_size        FLOAT DEFAULT 1000.0,
+                    risk_per_trade_pct  FLOAT DEFAULT 1.0,
+                    max_daily_loss_pct  FLOAT DEFAULT 3.0,
+                    max_open_trades     INT DEFAULT 3,
+                    max_exposure_pct    FLOAT DEFAULT 5.0,
+                    max_pair_exposure   FLOAT DEFAULT 2.0,
+                    risk_reward_min     FLOAT DEFAULT 1.5,
+                    enabled             BOOLEAN DEFAULT TRUE,
+                    min_quality_grade   VARCHAR(5) DEFAULT 'C',
+                    updated_at          TIMESTAMP DEFAULT NOW()
+                );
+                INSERT INTO risk_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+                CREATE TABLE IF NOT EXISTS daily_risk_tracker (
+                    id               SERIAL PRIMARY KEY,
+                    track_date       DATE NOT NULL UNIQUE,
+                    starting_balance FLOAT,
+                    current_balance  FLOAT,
+                    realised_pnl     FLOAT DEFAULT 0,
+                    open_risk        FLOAT DEFAULT 0,
+                    trades_taken     INT DEFAULT 0,
+                    daily_loss_hit   BOOLEAN DEFAULT FALSE,
+                    updated_at       TIMESTAMP DEFAULT NOW()
+                );
+                """
+            )
+        conn.commit()
+
+
+def get_risk_settings() -> dict:
+    _ensure_risk_tables()
+    defaults = {
+        "id": 1,
+        "account_size": 1000.0,
+        "risk_per_trade_pct": 1.0,
+        "max_daily_loss_pct": 3.0,
+        "max_open_trades": 3,
+        "max_exposure_pct": 5.0,
+        "max_pair_exposure": 2.0,
+        "risk_reward_min": 1.5,
+        "enabled": True,
+        "min_quality_grade": "C",
+    }
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM risk_settings WHERE id=1")
+            row = cur.fetchone()
+            if row:
+                data = dict(row)
+                return {**defaults, **data}
+            cur.execute("INSERT INTO risk_settings (id) VALUES (1) RETURNING *")
+            row = cur.fetchone()
+        conn.commit()
+    return {**defaults, **dict(row or {})}
+
+
+def update_risk_settings(fields: dict) -> None:
+    if not fields:
+        return
+    _ensure_risk_tables()
+    payload = dict(fields)
+    payload["updated_at"] = datetime.utcnow()
+    sets = ", ".join(f"{k}=%s" for k in payload)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE risk_settings SET {sets} WHERE id=1", tuple(payload.values()))
+        conn.commit()
+
+
+def get_daily_tracker() -> dict:
+    _ensure_risk_tables()
+    today = date.today()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM daily_risk_tracker WHERE track_date=%s", (today,))
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+            settings = get_risk_settings()
+            acct = float(settings.get("account_size") or 1000.0)
+            cur.execute(
+                """
+                INSERT INTO daily_risk_tracker (track_date, starting_balance, current_balance)
+                VALUES (%s,%s,%s)
+                RETURNING *
+                """,
+                (today, acct, acct),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return dict(row)
+
+
+def update_daily_tracker(fields: dict) -> None:
+    if not fields:
+        return
+    tracker = get_daily_tracker()
+    payload = dict(fields)
+    payload["updated_at"] = datetime.utcnow()
+    sets = ", ".join(f"{k}=%s" for k in payload)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE daily_risk_tracker SET {sets} WHERE id=%s", (*payload.values(), tracker["id"]))
+        conn.commit()
+
+
+def get_notification_pattern(key: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM notification_patterns WHERE pattern_key=%s", (key,))
+            row = cur.fetchone()
+            return dict(row) if row else {}
+
+
+def increment_pattern_alert(key: str) -> None:
+    pattern_type = key.split("_", 1)[0]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO notification_patterns (pattern_key, pattern_type, total_alerts, entries_touched, action_rate, updated_at)
+                VALUES (%s,%s,1,0,0,NOW())
+                ON CONFLICT (pattern_key) DO UPDATE SET
+                    total_alerts=notification_patterns.total_alerts+1,
+                    updated_at=NOW()
+                """,
+                (key, pattern_type),
+            )
+        conn.commit()
+    recalculate_action_rate(key)
+
+
+def increment_pattern_action(key: str) -> None:
+    pattern_type = key.split("_", 1)[0]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO notification_patterns (pattern_key, pattern_type, total_alerts, entries_touched, action_rate, updated_at)
+                VALUES (%s,%s,1,1,1,NOW())
+                ON CONFLICT (pattern_key) DO UPDATE SET
+                    entries_touched=notification_patterns.entries_touched+1,
+                    updated_at=NOW()
+                """,
+                (key, pattern_type),
+            )
+        conn.commit()
+
+
+def recalculate_action_rate(key: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE notification_patterns
+                SET action_rate = COALESCE(entries_touched::float / NULLIF(total_alerts, 0), 0),
+                    updated_at = NOW()
+                WHERE pattern_key=%s
+                """,
+                (key,),
+            )
+        conn.commit()
+
+
+def update_notification_pattern(key, fields) -> None:
+    if not fields:
+        return
+    payload = dict(fields)
+    payload["updated_at"] = datetime.utcnow()
+    sets = ", ".join(f"{k}=%s" for k in payload)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE notification_patterns SET {sets} WHERE pattern_key=%s", (*payload.values(), key))
+        conn.commit()
+
+
+def get_all_notification_patterns() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM notification_patterns ORDER BY action_rate ASC, total_alerts DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def save_market_regime(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO market_regimes (regime_date, regime, confidence, btc_atr_pct, btc_trend, range_size, details, detected_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT (regime_date) DO UPDATE SET
+                    regime=EXCLUDED.regime,
+                    confidence=EXCLUDED.confidence,
+                    btc_atr_pct=EXCLUDED.btc_atr_pct,
+                    btc_trend=EXCLUDED.btc_trend,
+                    range_size=EXCLUDED.range_size,
+                    details=EXCLUDED.details,
+                    detected_at=NOW()
+                """,
+                (
+                    data.get("regime_date"),
+                    data.get("regime"),
+                    data.get("confidence", 0),
+                    data.get("btc_atr_pct", 0),
+                    data.get("btc_trend"),
+                    data.get("range_size", 0),
+                    json.dumps(data.get("details", {})),
+                ),
+            )
+        conn.commit()
+
+
+def get_latest_regime() -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM market_regimes ORDER BY regime_date DESC LIMIT 1")
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_model_regime_performance(model_id, regime) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM model_regime_performance WHERE model_id=%s AND regime=%s", (model_id, regime))
+            row = cur.fetchone()
+            return dict(row) if row else {}
+
+
+def update_model_regime_performance(model_id, regime, confirmed: bool) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO model_regime_performance (model_id, regime, total_alerts, p4_confirms, confirm_rate, updated_at)
+                VALUES (%s,%s,1,%s,%s,NOW())
+                ON CONFLICT (model_id, regime) DO UPDATE SET
+                    total_alerts=model_regime_performance.total_alerts+1,
+                    p4_confirms=model_regime_performance.p4_confirms+EXCLUDED.p4_confirms,
+                    confirm_rate=(model_regime_performance.p4_confirms+EXCLUDED.p4_confirms)::float/(model_regime_performance.total_alerts+1),
+                    updated_at=NOW()
+                """,
+                (model_id, regime, 1 if confirmed else 0, 1.0 if confirmed else 0.0),
+            )
+        conn.commit()
+
+
+def set_model_active(model_id: str, active: bool, regime_managed: bool = False) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE models SET status=%s, regime_managed=%s, updated_at=NOW() WHERE id=%s",
+                ("active" if active else "inactive", regime_managed, model_id),
+            )
+            _cache_clear("active_models")
+        conn.commit()
+
+
+def ensure_intelligence_tables() -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                ALTER TABLE models ADD COLUMN IF NOT EXISTS regime_managed BOOLEAN DEFAULT FALSE;
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS risk_level VARCHAR(10);
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS risk_amount FLOAT;
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS position_size FLOAT;
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS leverage FLOAT;
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS rr_ratio FLOAT;
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS quality_grade VARCHAR(5);
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS quality_score FLOAT;
+                CREATE TABLE IF NOT EXISTS notification_patterns (
+                    id              SERIAL PRIMARY KEY,
+                    pattern_key     VARCHAR(100) UNIQUE NOT NULL,
+                    pattern_type    VARCHAR(30),
+                    total_alerts    INT DEFAULT 0,
+                    entries_touched INT DEFAULT 0,
+                    action_rate     FLOAT DEFAULT 0,
+                    suppressed      BOOLEAN DEFAULT FALSE,
+                    suppressed_at   TIMESTAMP,
+                    override        BOOLEAN DEFAULT FALSE,
+                    updated_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS market_regimes (
+                    id           SERIAL PRIMARY KEY,
+                    regime_date  DATE NOT NULL UNIQUE,
+                    regime       VARCHAR(30) NOT NULL,
+                    confidence   FLOAT DEFAULT 0,
+                    btc_atr_pct  FLOAT,
+                    btc_trend    VARCHAR(20),
+                    range_size   FLOAT,
+                    details      JSONB DEFAULT '{}',
+                    detected_at  TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS model_regime_performance (
+                    id           SERIAL PRIMARY KEY,
+                    model_id     VARCHAR(100) NOT NULL,
+                    regime       VARCHAR(30) NOT NULL,
+                    total_alerts INT DEFAULT 0,
+                    p4_confirms  INT DEFAULT 0,
+                    confirm_rate FLOAT DEFAULT 0,
+                    updated_at   TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(model_id, regime)
+                );
+                """
+            )
+        conn.commit()
+    _ensure_risk_tables()

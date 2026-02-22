@@ -13,8 +13,8 @@ from telegram.ext import (
 
 import prices as px
 from config import SCANNER_INTERVAL, WAT
-from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler, simulator_handler
-from engine import phase_engine, session_journal
+from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler, simulator_handler, risk_handler
+from engine import phase_engine, session_journal, regime_detector, notification_filter, session_checklist
 from degen import wallet_tracker
 from engine import run_backtest
 
@@ -466,6 +466,7 @@ def main():
     try:
         db.init_pool()
         db.setup_db()
+        db.ensure_intelligence_tables()
         log.info("DB ready")
     except Exception as e:
         log.error(f"DB setup failed: {e}")
@@ -541,17 +542,22 @@ def main():
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_model_cb, pattern="^degen_model:"))
     app.add_handler(CallbackQueryHandler(wallet_handler.handle_wallet_cb, pattern="^wallet:"))
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_cb, pattern="^degen:"))
+    app.add_handler(CallbackQueryHandler(risk_handler.handle_risk_cb, pattern="^(risk:|nav:risk|nav:checklist|nav:notif_filter|filter:toggle:|filter:override:|nav:regime)"), group=0)
     app.add_handler(wallet_handler.build_add_wallet_handler())
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, degen_wizard.handle_degen_name), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, demo_handler.handle_demo_risk_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ca_handler.handle_ca_message), group=1)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, risk_handler.handle_risk_text), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, stats.handle_journal_text))
 
     # ── Scanner job ───────────────────────────────────
     app.job_queue.run_repeating(phase_engine.run_phase_engine, interval=300, first=30, name="phase_engine")
     app.job_queue.run_repeating(phase_engine.alert_lifecycle_job, interval=300, first=60, name="alert_lifecycle")
+    app.job_queue.run_daily(regime_detector.run_regime_detection, time=datetime.time(hour=5, minute=30, tzinfo=datetime.timezone.utc), name="regime_detection")
     app.job_queue.run_repeating(phase_engine.model_grading_job, interval=86400, first=3600, name="model_grading")
     app.job_queue.run_daily(session_journal.record_session_data, time=datetime.time(hour=7, minute=5, tzinfo=datetime.timezone.utc), name="session_journal")
+    app.job_queue.run_daily(session_checklist.run_pre_session_checklist, time=datetime.time(hour=6, minute=30, tzinfo=datetime.timezone.utc), name="pre_session_checklist")
+    app.job_queue.run_daily(notification_filter.run_pattern_analysis, time=datetime.time(hour=20, minute=0, tzinfo=datetime.timezone.utc), days=(6,), name="pattern_analysis")
     app.job_queue.run_repeating(phase_engine.expire_old_phases_job, interval=3600, first=300, name="phase_expiry")
     app.job_queue.run_repeating(alerts.run_scanner, interval=SCANNER_INTERVAL, first=20, name="scanner")
     app.job_queue.run_repeating(alerts.run_pending_checker, interval=30, first=25, name="pending_checker")
