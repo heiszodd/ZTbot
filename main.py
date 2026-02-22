@@ -477,7 +477,7 @@ def main():
         fallbacks=[CallbackQueryHandler(chart_handler.handle_chart_cancel, pattern="^chart:cancel$")],
         per_message=False,
         per_chat=True,
-        allow_reentry=True,
+        allow_reentry=False,
     )
     app.add_handler(chart_conv, group=0)
 
