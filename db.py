@@ -3,6 +3,7 @@ import psycopg2.extras
 from psycopg2 import pool as pg_pool
 import json
 import time
+from datetime import datetime, timedelta
 from config import DB_URL
 
 _pool = None
@@ -268,6 +269,7 @@ def setup_db():
     ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_b_threshold FLOAT;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_c_threshold FLOAT;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS phase_timeframes JSONB DEFAULT '{"1":"4h","2":"1h","3":"15m","4":"5m"}';
 
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
@@ -642,7 +644,7 @@ def get_all_models():
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT id, name, pair, timeframe, session,
-                       bias, status, rules, tier_a_threshold,
+                       bias, status, rules, phase_timeframes, tier_a_threshold,
                        tier_b_threshold, tier_c_threshold,
                        min_score, description, created_at,
                        tier_a, tier_b, tier_c
@@ -656,6 +658,7 @@ def get_all_models():
     for r in rows:
         d = dict(r)
         d["rules"] = d["rules"] if isinstance(d["rules"], list) else json.loads(d["rules"] or "[]")
+        d["phase_timeframes"] = d.get("phase_timeframes") if isinstance(d.get("phase_timeframes"), dict) else json.loads(d.get("phase_timeframes") or "{\"1\":\"4h\",\"2\":\"1h\",\"3\":\"15m\",\"4\":\"5m\"}")
         result.append(d)
     return result
 
@@ -667,6 +670,7 @@ def get_model(model_id):
     if not row: return None
     d = dict(row)
     d["rules"] = d["rules"] if isinstance(d["rules"], list) else json.loads(d["rules"] or "[]")
+    d["phase_timeframes"] = d.get("phase_timeframes") if isinstance(d.get("phase_timeframes"), dict) else json.loads(d.get("phase_timeframes") or "{\"1\":\"4h\",\"2\":\"1h\",\"3\":\"15m\",\"4\":\"5m\"}")
     return d
 
 def get_active_models():
@@ -677,7 +681,7 @@ def get_active_models():
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT id, name, pair, timeframe, session,
-                       bias, status, rules, tier_a_threshold,
+                       bias, status, rules, phase_timeframes, tier_a_threshold,
                        tier_b_threshold, tier_c_threshold,
                        min_score, description, created_at,
                        tier_a, tier_b, tier_c
@@ -690,6 +694,7 @@ def get_active_models():
     for r in rows:
         d = dict(r)
         d["rules"] = d["rules"] if isinstance(d["rules"], list) else json.loads(d["rules"] or "[]")
+        d["phase_timeframes"] = d.get("phase_timeframes") if isinstance(d.get("phase_timeframes"), dict) else json.loads(d.get("phase_timeframes") or "{\"1\":\"4h\",\"2\":\"1h\",\"3\":\"15m\",\"4\":\"5m\"}")
         result.append(d)
     _cache_set("active_models", result)
     return result
@@ -716,11 +721,11 @@ def save_model(model: dict) -> str:
             cur.execute("""
                 INSERT INTO models
                     (id, name, pair, timeframe, session, bias,
-                     status, rules, tier_a_threshold,
+                     status, rules, phase_timeframes, tier_a_threshold,
                      tier_b_threshold, tier_c_threshold,
                      min_score, description, created_at, updated_at)
                 VALUES
-                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     name             = EXCLUDED.name,
                     pair             = EXCLUDED.pair,
@@ -728,6 +733,7 @@ def save_model(model: dict) -> str:
                     session          = EXCLUDED.session,
                     bias             = EXCLUDED.bias,
                     rules            = EXCLUDED.rules,
+                    phase_timeframes = EXCLUDED.phase_timeframes,
                     tier_a_threshold = EXCLUDED.tier_a_threshold,
                     tier_b_threshold = EXCLUDED.tier_b_threshold,
                     tier_c_threshold = EXCLUDED.tier_c_threshold,
@@ -744,6 +750,7 @@ def save_model(model: dict) -> str:
                 model.get("bias", "Both"),
                 model.get("status", "inactive"),
                 json.dumps(model.get("rules", [])),
+                json.dumps(model.get("phase_timeframes", {"1":"4h","2":"1h","3":"15m","4":"5m"})),
                 model.get("tier_a_threshold", 0),
                 model.get("tier_b_threshold", 0),
                 model.get("tier_c_threshold", 0),
@@ -1584,7 +1591,7 @@ def save_degen_model(model: dict) -> str:
                      min_score_threshold, min_score,
                      status, created_at, updated_at)
                 VALUES
-                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     name                 = EXCLUDED.name,
                     chains               = EXCLUDED.chains,
@@ -2718,3 +2725,189 @@ def link_chart_to_demo_trade(analysis_id: int, trade_id: int) -> None:
         with conn.cursor() as cur:
             cur.execute("UPDATE chart_analyses SET demo_trade_id=%s WHERE id=%s", (trade_id, analysis_id))
         conn.commit()
+
+
+def get_setup_phase(model_id, pair, direction):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM setup_phases WHERE model_id=%s AND pair=%s AND direction=%s", (model_id, pair, direction))
+            return cur.fetchone()
+
+
+def save_setup_phase(phase: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if phase.get("id"):
+                sets = ", ".join(f"{k}=%s" for k in phase if k != "id")
+                vals = [phase[k] for k in phase if k != "id"]
+                cur.execute(f"UPDATE setup_phases SET {sets}, last_updated_at=NOW() WHERE id=%s RETURNING id", (*vals, phase["id"]))
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO setup_phases (model_id, model_name, pair, direction, overall_status, check_count, last_updated_at)
+                    VALUES (%s,%s,%s,%s,COALESCE(%s,'phase1'),COALESCE(%s,0),NOW())
+                    ON CONFLICT (model_id,pair,direction) DO UPDATE SET model_name=EXCLUDED.model_name,last_updated_at=NOW()
+                    RETURNING id
+                    """,
+                    (phase["model_id"], phase.get("model_name"), phase["pair"], phase.get("direction"), phase.get("overall_status"), phase.get("check_count", 0)),
+                )
+            row = cur.fetchone()
+        conn.commit()
+    return row[0] if row else 0
+
+
+def update_phase_status(id, phase_num, status, data):
+    now = datetime.utcnow()
+    expires = now + timedelta(seconds={1: 14400, 2: 3600, 3: 0, 4: 2700}.get(phase_num, 0)) if phase_num in (1, 2, 4) else None
+    next_status = {1: "phase2", 2: "phase3", 3: "phase4", 4: "phase1"}.get(phase_num, "phase1")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE setup_phases
+                SET phase{phase_num}_status=%s,
+                    phase{phase_num}_score=%s,
+                    phase{phase_num}_max_score=%s,
+                    phase{phase_num}_passed_rules=%s,
+                    phase{phase_num}_failed_rules=%s,
+                    phase{phase_num}_data=%s,
+                    phase{phase_num}_completed_at=%s,
+                    phase{phase_num}_expires_at=COALESCE(%s, phase{phase_num}_expires_at),
+                    overall_status=%s,
+                    last_updated_at=NOW(),
+                    check_count=COALESCE(check_count,0)+1
+                WHERE id=%s
+                """,
+                (status, data.get("score", 0), data.get("max_score", 0), json.dumps(data.get("passed_rules", [])), json.dumps(data.get("failed_rules", [])), json.dumps(data.get("phase_data", {})), now, expires, next_status, id),
+            )
+        conn.commit()
+
+
+def get_active_setup_phases() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM setup_phases WHERE overall_status IN ('phase1','phase2','phase3','phase4') ORDER BY last_updated_at DESC")
+            return cur.fetchall()
+
+
+def get_phases_awaiting_phase4() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM setup_phases WHERE overall_status='phase4'")
+            return cur.fetchall()
+
+
+def expire_old_phases() -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM setup_phases WHERE overall_status='phase2' AND phase1_completed_at < NOW() - interval '4 hours'")
+            cur.execute("DELETE FROM setup_phases WHERE overall_status='phase3' AND phase2_completed_at < NOW() - interval '1 hour'")
+        conn.commit()
+
+
+def save_alert_lifecycle(data: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO alert_lifecycle (setup_phase_id,model_id,pair,direction,entry_price,alert_sent_at) VALUES (%s,%s,%s,%s,%s,COALESCE(%s,NOW())) RETURNING id""", (data.get("setup_phase_id"), data.get("model_id"), data.get("pair"), data.get("direction"), data.get("entry_price"), data.get("alert_sent_at")))
+            row = cur.fetchone()
+        conn.commit()
+    return row[0] if row else 0
+
+
+def update_alert_lifecycle(id, fields: dict) -> None:
+    if not fields:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            sets = ", ".join(f"{k}=%s" for k in fields)
+            cur.execute(f"UPDATE alert_lifecycle SET {sets} WHERE id=%s", (*fields.values(), id))
+        conn.commit()
+
+
+def get_alert_lifecycle(setup_phase_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM alert_lifecycle WHERE setup_phase_id=%s ORDER BY id DESC LIMIT 1", (setup_phase_id,))
+            return cur.fetchone()
+
+
+def get_active_lifecycles() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM alert_lifecycle WHERE outcome IS NULL")
+            return cur.fetchall()
+
+
+def get_model_performance(model_id: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM model_performance WHERE model_id=%s", (model_id,))
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+            cur.execute("INSERT INTO model_performance (model_id) VALUES (%s) RETURNING *", (model_id,))
+            row = cur.fetchone()
+        conn.commit()
+    return dict(row)
+
+
+def update_model_performance(model_id: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO model_performance (model_id,total_alerts,entries_touched,phase4_confirms,phase4_fails,demo_trades,demo_wins,demo_losses,demo_win_rate,avg_r,updated_at)
+                SELECT %s,
+                    COUNT(*),
+                    COUNT(*) FILTER (WHERE entry_touched),
+                    COUNT(*) FILTER (WHERE phase4_result='confirmed'),
+                    COUNT(*) FILTER (WHERE phase4_result='failed'),
+                    COUNT(*) FILTER (WHERE outcome IN ('win','loss')),
+                    COUNT(*) FILTER (WHERE outcome='win'),
+                    COUNT(*) FILTER (WHERE outcome='loss'),
+                    COALESCE(COUNT(*) FILTER (WHERE outcome='win')::float / NULLIF(COUNT(*) FILTER (WHERE outcome IN ('win','loss')),0),0),
+                    0,
+                    NOW()
+                FROM alert_lifecycle WHERE model_id=%s
+                ON CONFLICT (model_id) DO UPDATE SET
+                    total_alerts=EXCLUDED.total_alerts,
+                    entries_touched=EXCLUDED.entries_touched,
+                    phase4_confirms=EXCLUDED.phase4_confirms,
+                    phase4_fails=EXCLUDED.phase4_fails,
+                    demo_trades=EXCLUDED.demo_trades,
+                    demo_wins=EXCLUDED.demo_wins,
+                    demo_losses=EXCLUDED.demo_losses,
+                    demo_win_rate=EXCLUDED.demo_win_rate,
+                    updated_at=NOW()
+                """,
+                (model_id, model_id),
+            )
+        conn.commit()
+
+
+def save_session_journal(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO session_journal (session_date,session_name,pair,asian_high,asian_low,asian_range_pts,london_swept,london_swept_at,ny_direction,ny_reversed,key_levels,notes)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (session_date,pair) DO UPDATE SET
+                    session_name=EXCLUDED.session_name,
+                    asian_high=EXCLUDED.asian_high,
+                    asian_low=EXCLUDED.asian_low,
+                    asian_range_pts=EXCLUDED.asian_range_pts,
+                    london_swept=EXCLUDED.london_swept,
+                    key_levels=EXCLUDED.key_levels,
+                    notes=EXCLUDED.notes
+                """,
+                (data.get("session_date"), data.get("session_name"), data.get("pair"), data.get("asian_high"), data.get("asian_low"), data.get("asian_range_pts"), data.get("london_swept"), data.get("london_swept_at"), data.get("ny_direction"), data.get("ny_reversed", False), json.dumps(data.get("key_levels", [])), data.get("notes")),
+            )
+        conn.commit()
+
+
+def get_session_journal(pair: str, days: int = 30) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM session_journal WHERE pair=%s AND session_date >= CURRENT_DATE - make_interval(days => %s) ORDER BY session_date DESC", (pair, days))
+            return cur.fetchall()

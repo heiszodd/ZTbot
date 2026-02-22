@@ -18,8 +18,10 @@ log = logging.getLogger(__name__)
     WIZARD_BIAS,
     WIZARD_RULES,
     WIZARD_WEIGHTS,
+    WIZARD_PHASE_ASSIGN,
+    WIZARD_PHASE_CONFIG,
     WIZARD_REVIEW,
-) = range(8)
+) = range(10)
 
 PERPS_RULE_LIBRARY = [
     {"id": "htf_bullish", "category": "Trend", "name": "HTF Trend Bullish", "description": "Higher timeframe (4H/1D) trend is bullish", "default_weight": 3.0},
@@ -215,6 +217,45 @@ async def show_model_review(query, context):
     )
 
 
+async def show_phase_assignment_step(query, context):
+    rules = context.user_data.get("model_rules", [])
+    if rules and not any("phase" in r for r in rules):
+        n = len(rules)
+        for idx, rule in enumerate(rules):
+            pct = (idx + 1) / max(n, 1)
+            rule["phase"] = 1 if pct <= 0.3 else 2 if pct <= 0.7 else 3 if pct <= 0.9 else 4
+    phase_labels = {1: "P1", 2: "P2", 3: "P3", 4: "P4"}
+    phase_colors = {1: "🔭", 2: "🔬", 3: "⚡", 4: "✅"}
+    text = (
+        "📐 *Assign Rules to Phases*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Tap a rule to cycle its phase:\n"
+        "🔭 P1=HTF Context → 🔬 P2=MTF Setup\n"
+        "→ ⚡ P3=LTF Trigger → ✅ P4=Confirm\n\n"
+        "Rules fire in order. P2 only runs after P1\n"
+        "passes. P3 only runs after P2 passes."
+    )
+    buttons = []
+    for rule in rules:
+        phase = int(rule.get("phase", 1))
+        buttons.append([InlineKeyboardButton(f"{phase_colors[phase]} [{phase_labels[phase]}] {rule['name']}", callback_data=f"wizard:cycle_phase:{rule['id']}")])
+    buttons.append([InlineKeyboardButton("✅ Done — phase timeframes", callback_data="wizard:phase_done")])
+    buttons.append([InlineKeyboardButton("« Back to Weights", callback_data="wizard:weights")])
+    await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def show_phase_timeframes_step(query, context):
+    ptf = context.user_data.get("phase_timeframes", {"1": "4h", "2": "1h", "3": "15m", "4": "5m"})
+    context.user_data["phase_timeframes"] = ptf
+    rows = [
+        [InlineKeyboardButton(f"P1: {ptf['1']}", callback_data="wizard:phase_tf:1"), InlineKeyboardButton(f"P2: {ptf['2']}", callback_data="wizard:phase_tf:2")],
+        [InlineKeyboardButton(f"P3: {ptf['3']}", callback_data="wizard:phase_tf:3"), InlineKeyboardButton(f"P4: {ptf['4']}", callback_data="wizard:phase_tf:4")],
+        [InlineKeyboardButton("✅ Done — go to review", callback_data="wizard:phase_cfg_done")],
+    ]
+    await query.message.edit_text("⏱ *Phase Timeframes*\nP1 (Context) scans on: [1D] [4H]\nP2 (Setup) scans on: [4H] [1H] [30M]\nP3 (Trigger) scans on: [1H] [15M] [5M]\nP4 (Confirm) scans on: [15M] [5M] [1M]", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+
+
+
 async def handle_wizard_cb(update, context):
     query = update.callback_query
     await query.answer()
@@ -308,6 +349,38 @@ async def handle_wizard_cb(update, context):
         return WIZARD_WEIGHTS
 
     if data == "wizard:weights_done":
+        await show_phase_assignment_step(query, context)
+        return WIZARD_PHASE_ASSIGN
+
+    if data.startswith("wizard:cycle_phase:"):
+        rule_id = data.split("wizard:cycle_phase:")[1]
+        rules = context.user_data.get("model_rules", [])
+        for rule in rules:
+            if rule["id"] == rule_id:
+                current = int(rule.get("phase", 1))
+                rule["phase"] = (current % 4) + 1
+                await query.answer(f"→ Phase {rule['phase']}")
+                break
+        context.user_data["model_rules"] = rules
+        await show_phase_assignment_step(query, context)
+        return WIZARD_PHASE_ASSIGN
+
+    if data == "wizard:phase_done":
+        await show_phase_timeframes_step(query, context)
+        return WIZARD_PHASE_CONFIG
+
+    if data.startswith("wizard:phase_tf:"):
+        phase = data.split(":")[-1]
+        options = {"1": ["1d", "4h"], "2": ["4h", "1h", "30m"], "3": ["1h", "15m", "5m"], "4": ["15m", "5m", "1m"]}
+        ptf = context.user_data.get("phase_timeframes", {"1": "4h", "2": "1h", "3": "15m", "4": "5m"})
+        vals = options[phase]
+        idx = (vals.index(ptf.get(phase, vals[0])) + 1) % len(vals) if ptf.get(phase, vals[0]) in vals else 0
+        ptf[phase] = vals[idx]
+        context.user_data["phase_timeframes"] = ptf
+        await show_phase_timeframes_step(query, context)
+        return WIZARD_PHASE_CONFIG
+
+    if data == "wizard:phase_cfg_done":
         await show_model_review(query, context)
         return WIZARD_REVIEW
 
@@ -340,6 +413,9 @@ async def handle_confirm_save(update, context):
         session   = context.user_data.get("model_session", "Any")
         bias      = context.user_data.get("model_bias", "Both")
         rules     = context.user_data.get("model_rules", [])
+        phase_timeframes = context.user_data.get("phase_timeframes", {"1": "4h", "2": "1h", "3": "15m", "4": "5m"})
+        for r in rules:
+            r["timeframe"] = phase_timeframes.get(str(r.get("phase", 1)), timeframe)
         desc      = context.user_data.get("model_description", "")
 
         if not rules:
@@ -365,6 +441,7 @@ async def handle_confirm_save(update, context):
             "tier_c_threshold":  round(max_score * 0.50, 2),
             "min_score":         round(max_score * 0.50, 2),
             "description":       desc,
+            "phase_timeframes":  phase_timeframes,
         }
 
         # This is the ONLY db call needed — everything
@@ -452,6 +529,8 @@ def build_wizard_handler() -> ConversationHandler:
             WIZARD_BIAS: [CallbackQueryHandler(handle_wizard_cb, pattern="^wizard:")],
             WIZARD_RULES: [CallbackQueryHandler(handle_wizard_cb, pattern="^wizard:")],
             WIZARD_WEIGHTS: [CallbackQueryHandler(handle_wizard_cb, pattern="^wizard:")],
+            WIZARD_PHASE_ASSIGN: [CallbackQueryHandler(handle_wizard_cb, pattern="^wizard:")],
+            WIZARD_PHASE_CONFIG: [CallbackQueryHandler(handle_wizard_cb, pattern="^wizard:")],
             WIZARD_REVIEW: [CallbackQueryHandler(handle_wizard_cb, pattern="^wizard:")],
         },
         fallbacks=[
