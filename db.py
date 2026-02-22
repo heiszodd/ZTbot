@@ -3235,6 +3235,23 @@ def ensure_intelligence_tables() -> None:
             cur.execute(
                 """
                 ALTER TABLE models ADD COLUMN IF NOT EXISTS regime_managed BOOLEAN DEFAULT FALSE;
+                CREATE TABLE IF NOT EXISTS alert_lifecycle (
+                    id SERIAL PRIMARY KEY,
+                    setup_phase_id INT,
+                    model_id VARCHAR(100),
+                    pair VARCHAR(20),
+                    direction VARCHAR(10),
+                    entry_price FLOAT,
+                    alert_sent_at TIMESTAMP DEFAULT NOW(),
+                    entry_touched BOOLEAN DEFAULT FALSE,
+                    entry_touched_at TIMESTAMP,
+                    phase4_result VARCHAR(20),
+                    phase4_message TEXT,
+                    phase4_sent_at TIMESTAMP,
+                    demo_trade_id INT,
+                    outcome VARCHAR(20),
+                    closed_at TIMESTAMP
+                );
                 ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS risk_level VARCHAR(10);
                 ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS risk_amount FLOAT;
                 ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS position_size FLOAT;
