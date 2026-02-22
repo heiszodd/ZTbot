@@ -567,3 +567,110 @@ CREATE TABLE IF NOT EXISTS chart_analyses (
     demo_trade_id    INT REFERENCES demo_trades(id),
     analysed_at      TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS setup_phases (
+    id                  SERIAL PRIMARY KEY,
+    model_id            VARCHAR(100) NOT NULL,
+    model_name          VARCHAR(200),
+    pair                VARCHAR(20) NOT NULL,
+    direction           VARCHAR(10),
+    phase1_status       VARCHAR(20) DEFAULT 'pending',
+    phase1_score        FLOAT DEFAULT 0,
+    phase1_max_score    FLOAT DEFAULT 0,
+    phase1_passed_rules JSONB DEFAULT '[]',
+    phase1_failed_rules JSONB DEFAULT '[]',
+    phase1_data         JSONB DEFAULT '{}',
+    phase1_completed_at TIMESTAMP,
+    phase1_expires_at   TIMESTAMP,
+    phase2_status       VARCHAR(20) DEFAULT 'waiting',
+    phase2_score        FLOAT DEFAULT 0,
+    phase2_max_score    FLOAT DEFAULT 0,
+    phase2_passed_rules JSONB DEFAULT '[]',
+    phase2_failed_rules JSONB DEFAULT '[]',
+    phase2_data         JSONB DEFAULT '{}',
+    phase2_completed_at TIMESTAMP,
+    phase2_expires_at   TIMESTAMP,
+    phase3_status       VARCHAR(20) DEFAULT 'waiting',
+    phase3_score        FLOAT DEFAULT 0,
+    phase3_max_score    FLOAT DEFAULT 0,
+    phase3_passed_rules JSONB DEFAULT '[]',
+    phase3_failed_rules JSONB DEFAULT '[]',
+    phase3_data         JSONB DEFAULT '{}',
+    phase3_completed_at TIMESTAMP,
+    phase4_status       VARCHAR(20) DEFAULT 'waiting',
+    phase4_score        FLOAT DEFAULT 0,
+    phase4_passed_rules JSONB DEFAULT '[]',
+    phase4_data         JSONB DEFAULT '{}',
+    phase4_completed_at TIMESTAMP,
+    alert_message_id    BIGINT,
+    alert_sent_at       TIMESTAMP,
+    entry_price         FLOAT,
+    stop_loss           FLOAT,
+    tp1                 FLOAT,
+    tp2                 FLOAT,
+    tp3                 FLOAT,
+    overall_status      VARCHAR(20) DEFAULT 'phase1',
+    check_count         INT DEFAULT 0,
+    first_detected_at   TIMESTAMP DEFAULT NOW(),
+    last_updated_at     TIMESTAMP DEFAULT NOW(),
+    invalidated_at      TIMESTAMP,
+    invalidation_reason TEXT,
+    UNIQUE(model_id, pair, direction)
+);
+CREATE INDEX IF NOT EXISTS idx_setup_phases_status ON setup_phases(overall_status);
+CREATE INDEX IF NOT EXISTS idx_setup_phases_model ON setup_phases(model_id);
+
+CREATE TABLE IF NOT EXISTS session_journal (
+    id SERIAL PRIMARY KEY,
+    session_date DATE NOT NULL,
+    session_name VARCHAR(20) NOT NULL,
+    pair VARCHAR(20) NOT NULL,
+    asian_high FLOAT,
+    asian_low FLOAT,
+    asian_range_pts FLOAT,
+    london_swept VARCHAR(10),
+    london_swept_at TIMESTAMP,
+    ny_direction VARCHAR(10),
+    ny_reversed BOOLEAN DEFAULT FALSE,
+    key_levels JSONB DEFAULT '[]',
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(session_date, pair)
+);
+
+CREATE TABLE IF NOT EXISTS alert_lifecycle (
+    id SERIAL PRIMARY KEY,
+    setup_phase_id INT REFERENCES setup_phases(id),
+    model_id VARCHAR(100),
+    pair VARCHAR(20),
+    direction VARCHAR(10),
+    entry_price FLOAT,
+    alert_sent_at TIMESTAMP DEFAULT NOW(),
+    entry_touched BOOLEAN DEFAULT FALSE,
+    entry_touched_at TIMESTAMP,
+    phase4_result VARCHAR(20),
+    phase4_message TEXT,
+    phase4_sent_at TIMESTAMP,
+    demo_trade_id INT,
+    outcome VARCHAR(20),
+    closed_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS model_performance (
+    id SERIAL PRIMARY KEY,
+    model_id VARCHAR(100) UNIQUE NOT NULL,
+    model_name VARCHAR(200),
+    total_alerts INT DEFAULT 0,
+    entries_touched INT DEFAULT 0,
+    phase4_confirms INT DEFAULT 0,
+    phase4_fails INT DEFAULT 0,
+    demo_trades INT DEFAULT 0,
+    demo_wins INT DEFAULT 0,
+    demo_losses INT DEFAULT 0,
+    demo_win_rate FLOAT DEFAULT 0,
+    avg_r FLOAT DEFAULT 0,
+    grade VARCHAR(5) DEFAULT 'N/A',
+    graded_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+ALTER TABLE models ADD COLUMN IF NOT EXISTS phase_timeframes JSONB DEFAULT '{"1":"4h","2":"1h","3":"15m","4":"5m"}';

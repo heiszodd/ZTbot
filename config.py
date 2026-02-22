@@ -1,9 +1,11 @@
 from datetime import timezone, timedelta
 import os
 import sys
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
+log = logging.getLogger(__name__)
 
 
 def _fatal_env(message: str) -> None:
@@ -42,19 +44,27 @@ GEMINI_MODEL = None
 
 
 def init_gemini():
-    # Lazy import so DB-only scripts can run without Gemini dependencies.
-    import google.generativeai as genai
+    global GEMINI_MODEL
     if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY not set")
-    genai.configure(api_key=GEMINI_API_KEY)
-    return genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        generation_config={
-            "temperature": 0.1,
-            "top_p": 0.95,
-            "max_output_tokens": 2048,
-        }
-    )
+        log.warning("GEMINI_API_KEY not set — chart analysis will be unavailable")
+        return None
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        GEMINI_MODEL = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,
+                top_p=0.95,
+                max_output_tokens=2048,
+            ),
+        )
+        GEMINI_MODEL.generate_content("ping")
+        log.info("✅ Gemini connection verified")
+        return GEMINI_MODEL
+    except Exception as e:
+        log.error(f"Gemini init failed: {e}")
+        GEMINI_MODEL = None
+        return None
 
 # ── Tier risk sizing ──────────────────────────────────
 TIER_RISK = {"A": 2.0, "B": 1.0, "C": 0.5}
