@@ -79,14 +79,11 @@ def perps_keyboard():
 
 def degen_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="degen_model:list")],
-        [InlineKeyboardButton("🆕 Latest Finds", callback_data="wallet:activity"), InlineKeyboardButton("👀 Watchlist", callback_data="wallet:list")],
-        [InlineKeyboardButton("🐋 Wallets", callback_data="wallet:dash"), InlineKeyboardButton("📰 News Trades", callback_data="nav:news")],
-        [InlineKeyboardButton("📊 Degen Stats", callback_data="degen:stats"), InlineKeyboardButton("🎮 Demo", callback_data="demo:degen:home")],
-        [InlineKeyboardButton("📊 Charts", callback_data="nav:charts")],
-        [InlineKeyboardButton("🔍 Search Token", callback_data="wallet:activity"), InlineKeyboardButton("⚙️ Scanner Settings", callback_data="nav:status")],
-        [InlineKeyboardButton("➕ New Model", callback_data="degen_model:new"), InlineKeyboardButton("⚖️ Compare", callback_data="degen:compare")],
-        [InlineKeyboardButton("📈 Go to Perps", callback_data="nav:perps_home")],
+        [InlineKeyboardButton("⚡ Degen Scanner", callback_data="wallet:activity"), InlineKeyboardButton("📊 Degen Models", callback_data="degen_model:list")],
+        [InlineKeyboardButton("🔍 Scan Contract", callback_data="degen:scan_prompt"), InlineKeyboardButton("🌊 Narratives", callback_data="degen:narratives")],
+        [InlineKeyboardButton("🎲 Degen Journal", callback_data="degen:journal_home"), InlineKeyboardButton("📤 Exit Planner", callback_data="degen:exit_plan")],
+        [InlineKeyboardButton("👁 Dev Wallets", callback_data="wallet:dash"), InlineKeyboardButton("🧠 Patterns", callback_data="degen:stats")],
+        [InlineKeyboardButton("🏠 Home", callback_data="nav:home")],
     ])
 
 

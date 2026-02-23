@@ -40,6 +40,9 @@ CRYPTOCOMPARE_EXTRA_PARAMS = os.getenv("CRYPTOCOMPARE_EXTRA_PARAMS", "ztbot")
 
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
 ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY", "")
+GOPLUSLABS_BASE = "https://api.gopluslabs.io/api/v1"
+DEXSCREENER_BASE = "https://api.dexscreener.com/latest"
+HONEYPOT_BASE = "https://api.honeypot.is/v2"
 BSCSCAN_KEY = os.getenv("BSCSCAN_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 

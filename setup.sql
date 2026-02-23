@@ -785,3 +785,151 @@ CREATE TABLE IF NOT EXISTS model_regime_performance (
 
 ALTER TABLE models
     ADD COLUMN IF NOT EXISTS regime_managed BOOLEAN DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS contract_scans (
+    id                  SERIAL PRIMARY KEY,
+    contract_address    VARCHAR(100) NOT NULL,
+    chain               VARCHAR(20) NOT NULL,
+    token_name          VARCHAR(100),
+    token_symbol        VARCHAR(20),
+    is_honeypot         BOOLEAN,
+    honeypot_reason     TEXT,
+    mint_enabled        BOOLEAN,
+    owner_can_blacklist BOOLEAN,
+    owner_can_whitelist BOOLEAN,
+    is_proxy            BOOLEAN,
+    is_open_source      BOOLEAN,
+    trading_cooldown    BOOLEAN,
+    transfer_pausable   BOOLEAN,
+    buy_tax             FLOAT,
+    sell_tax            FLOAT,
+    holder_count        INT,
+    top10_holder_pct    FLOAT,
+    dev_wallet          VARCHAR(100),
+    dev_holding_pct     FLOAT,
+    lp_holder_count     INT,
+    lp_locked_pct       FLOAT,
+    liquidity_usd       FLOAT,
+    volume_24h          FLOAT,
+    price_usd           FLOAT,
+    market_cap          FLOAT,
+    pair_created_at     TIMESTAMP,
+    dex_name            VARCHAR(50),
+    rug_score           FLOAT,
+    rug_grade           VARCHAR(5),
+    safety_flags        JSONB DEFAULT '[]',
+    passed_checks       JSONB DEFAULT '[]',
+    scanned_at          TIMESTAMP DEFAULT NOW(),
+    raw_goplus          JSONB DEFAULT '{}',
+    UNIQUE(contract_address, chain)
+);
+
+CREATE TABLE IF NOT EXISTS dev_wallets (
+    id               SERIAL PRIMARY KEY,
+    contract_address VARCHAR(100) NOT NULL,
+    chain            VARCHAR(20) NOT NULL,
+    wallet_address   VARCHAR(100) NOT NULL,
+    label            VARCHAR(50) DEFAULT 'deployer',
+    watching         BOOLEAN DEFAULT TRUE,
+    first_seen       TIMESTAMP DEFAULT NOW(),
+    last_activity    TIMESTAMP,
+    alert_on_sell    BOOLEAN DEFAULT TRUE,
+    alert_on_buy     BOOLEAN DEFAULT TRUE,
+    UNIQUE(contract_address, wallet_address)
+);
+
+CREATE TABLE IF NOT EXISTS dev_wallet_events (
+    id               SERIAL PRIMARY KEY,
+    wallet_address   VARCHAR(100) NOT NULL,
+    contract_address VARCHAR(100),
+    chain            VARCHAR(20),
+    event_type       VARCHAR(30),
+    token_amount     FLOAT,
+    usd_value        FLOAT,
+    tx_hash          VARCHAR(100),
+    detected_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS degen_risk_settings (
+    id                   SERIAL PRIMARY KEY,
+    account_size         FLOAT DEFAULT 500.0,
+    max_position_pct     FLOAT DEFAULT 2.0,
+    max_degen_exposure   FLOAT DEFAULT 10.0,
+    min_liquidity_usd    FLOAT DEFAULT 50000.0,
+    max_buy_tax          FLOAT DEFAULT 5.0,
+    max_sell_tax         FLOAT DEFAULT 5.0,
+    max_top10_holder_pct FLOAT DEFAULT 50.0,
+    min_rug_grade        VARCHAR(5) DEFAULT 'C',
+    block_honeypots      BOOLEAN DEFAULT TRUE,
+    block_no_lp_lock     BOOLEAN DEFAULT FALSE,
+    updated_at           TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO degen_risk_settings (id) VALUES (1)
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS narrative_tracking (
+    id              SERIAL PRIMARY KEY,
+    narrative       VARCHAR(50) NOT NULL UNIQUE,
+    mention_count   INT DEFAULT 0,
+    prev_count      INT DEFAULT 0,
+    velocity        FLOAT DEFAULT 0,
+    trend           VARCHAR(20) DEFAULT 'neutral',
+    tokens          JSONB DEFAULT '[]',
+    last_updated    TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS degen_journal (
+    id                SERIAL PRIMARY KEY,
+    contract_address  VARCHAR(100),
+    chain             VARCHAR(20),
+    token_symbol      VARCHAR(20),
+    token_name        VARCHAR(100),
+    narrative         VARCHAR(50),
+    entry_price       FLOAT,
+    entry_time        TIMESTAMP,
+    entry_mcap        FLOAT,
+    entry_liquidity   FLOAT,
+    entry_holders     INT,
+    entry_age_hours   FLOAT,
+    entry_rug_grade   VARCHAR(5),
+    position_size_usd FLOAT,
+    risk_usd          FLOAT,
+    exit_price        FLOAT,
+    exit_time         TIMESTAMP,
+    exit_reason       VARCHAR(100),
+    peak_price        FLOAT,
+    peak_multiplier   FLOAT,
+    final_multiplier  FLOAT,
+    followed_exit_plan BOOLEAN,
+    pnl_usd           FLOAT,
+    outcome           VARCHAR(20),
+    early_score       FLOAT,
+    social_velocity   FLOAT,
+    rug_score         FLOAT,
+    notes             TEXT,
+    tags              JSONB DEFAULT '[]',
+    created_at        TIMESTAMP DEFAULT NOW(),
+    updated_at        TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS exit_reminders (
+    id               SERIAL PRIMARY KEY,
+    journal_id       INT REFERENCES degen_journal(id),
+    contract_address VARCHAR(100),
+    token_symbol     VARCHAR(20),
+    entry_price      FLOAT,
+    current_price    FLOAT,
+    multiplier       FLOAT,
+    reminder_type    VARCHAR(30),
+    sent             BOOLEAN DEFAULT FALSE,
+    sent_at          TIMESTAMP,
+    created_at       TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO narrative_tracking (narrative)
+VALUES
+  ('AI'), ('DeFi'), ('Gaming'), ('Meme'),
+  ('RWA'), ('Layer2'), ('DePIN'), ('SocialFi'),
+  ('Liquid Staking'), ('NFT'), ('DAO'), ('Metaverse')
+ON CONFLICT (narrative) DO NOTHING;
