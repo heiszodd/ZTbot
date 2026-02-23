@@ -23,6 +23,13 @@ def _grade_index(grade: str) -> int:
     return grade_order.index(grade)
 
 
+def _md_escape(text: str) -> str:
+    raw = str(text or "")
+    for ch in ("_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"):
+        raw = raw.replace(ch, "\\" + ch)
+    return raw
+
+
 async def discover_candidates(settings: dict) -> list:
     """
     Fetch candidate tokens from multiple sources.
@@ -244,6 +251,8 @@ async def send_scanner_alert(context, token: dict, rank: int, run_id: str, total
 
     symbol = scan.get("token_symbol", "?")
     name = scan.get("token_name", "Unknown")
+    symbol_safe = _md_escape(symbol)
+    name_safe = _md_escape(name)
     price = float(scan.get("price_usd", 0) or 0)
     mcap = float(scan.get("market_cap", 0) or 0)
     liq = float(scan.get("liquidity_usd", 0) or 0)
@@ -278,7 +287,7 @@ async def send_scanner_alert(context, token: dict, rank: int, run_id: str, total
     text = (
         f"{rank_emoji} *Auto Scan #{rank}/3*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🪙 *{name}* (${symbol})\n"
+        f"🪙 *{name_safe}* ({symbol_safe})\n"
         f"`{address}`\n\n"
         f"🎯 *Probability: {score:.0f}/100*\n"
         f"[{bar}]\n"
@@ -292,7 +301,7 @@ async def send_scanner_alert(context, token: dict, rank: int, run_id: str, total
         f"Vol 1h:  ${vol_1h:>12,.0f}\n"
         f"Buys/Sells: {buys}/{sells} ({buy_pct:.0f}% buys)\n\n"
         f"⏱ Age: {age_str}  👥 Holders: {holders:,}\n"
-        f"{vel_emoji} Social: {vel.get('trend','?').title()}  🌊 Narrative: {narrative}\n"
+        f"{vel_emoji} Social: {_md_escape(vel.get('trend','?').title())}  🌊 Narrative: {_md_escape(narrative)}\n"
         f"⏰ Entry: {early_label}\n\n"
         f"🛡 Safety: {rug_grade}  LP locked: {float(scan.get('lp_locked_pct',0) or 0):.0f}%  Mint: {'✅' if not scan.get('mint_enabled') else '❌'}\n\n"
     )
@@ -301,7 +310,7 @@ async def send_scanner_alert(context, token: dict, rank: int, run_id: str, total
     if flags:
         text += "*⚠️ Flags*\n"
         for flag in flags[:2]:
-            text += f"{flag}\n"
+            text += f"{_md_escape(flag)}\n"
         text += "\n"
 
     if price > 0:
@@ -413,7 +422,7 @@ async def _run_auto_scanner_inner(context) -> None:
                 log.error("Score candidate error %s: %s", address[:12], exc)
                 return None
 
-    tasks = [score_candidate(c) for c in candidates[:20]]
+    tasks = [score_candidate(c) for c in candidates[:30]]
     results = await asyncio.gather(*tasks)
     scored = [r for r in results if r is not None]
 
