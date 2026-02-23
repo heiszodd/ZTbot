@@ -54,6 +54,8 @@ async def discover_candidates(settings: dict) -> list:
                             "chain": chain,
                             "source": "trending",
                             "boost": item.get("amount", 0),
+                            "symbol": (item.get("tokenSymbol") or item.get("symbol") or ""),
+                            "name": (item.get("tokenName") or item.get("name") or ""),
                         }
         except Exception as exc:
             log.warning("DexScreener boosts error: %s", exc)
@@ -69,6 +71,8 @@ async def discover_candidates(settings: dict) -> list:
                             "address": addr,
                             "chain": chain,
                             "source": "new_profile",
+                            "symbol": (item.get("tokenSymbol") or item.get("symbol") or ""),
+                            "name": (item.get("tokenName") or item.get("name") or ""),
                         }
         except Exception as exc:
             log.warning("DexScreener profiles error: %s", exc)
@@ -114,6 +118,8 @@ async def discover_candidates(settings: dict) -> list:
                             "source": "volume_search",
                             "liquidity": liq,
                             "volume_1h": vol,
+                            "symbol": (base_token.get("symbol") or ""),
+                            "name": (base_token.get("name") or ""),
                         }
         except Exception as exc:
             log.warning("DexScreener search error: %s", exc)
@@ -388,6 +394,16 @@ async def _run_auto_scanner_inner(context) -> None:
             chain = candidate.get("chain", "solana")
             try:
                 scan = await scan_contract(address, chain, force_refresh=True)
+
+                if not scan.get("token_symbol") or scan.get("token_symbol") == "?":
+                    scan["token_symbol"] = candidate.get("symbol") or scan.get("token_symbol") or "?"
+                if not scan.get("token_name") or scan.get("token_name") == "Unknown":
+                    scan["token_name"] = candidate.get("name") or scan.get("token_name") or "Unknown"
+
+                if not float(scan.get("liquidity_usd", 0) or 0):
+                    scan["liquidity_usd"] = float(candidate.get("liquidity", 0) or 0)
+                if not float(scan.get("volume_24h", 0) or 0) and float(candidate.get("volume_1h", 0) or 0) > 0:
+                    scan["volume_24h"] = float(candidate.get("volume_1h", 0) or 0) * 24
 
                 if scan.get("is_honeypot"):
                     return None

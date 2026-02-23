@@ -1624,6 +1624,7 @@ def get_unsent_briefings(minutes_ahead: int) -> list:
                 SELECT * FROM news_events
                 WHERE briefing_sent=FALSE
                   AND suppressed=FALSE
+                  AND COALESCE(source,'') <> 'cryptonews'
                   AND event_time_utc BETWEEN NOW() + (%s || ' minutes')::interval AND NOW() + (%s || ' minutes')::interval
                 ORDER BY event_time_utc ASC
                 """,
@@ -1640,6 +1641,7 @@ def get_unsent_signals() -> list:
                 SELECT * FROM news_events
                 WHERE signal_sent=FALSE
                   AND suppressed=FALSE
+                  AND COALESCE(source,'') <> 'cryptonews'
                   AND event_time_utc BETWEEN NOW() - INTERVAL '60 seconds' AND NOW() + INTERVAL '60 seconds'
                 ORDER BY event_time_utc ASC
                 """
