@@ -434,10 +434,7 @@ async def post_init(application):
     else:
         log.warning("⚠️ Gemini: NOT available - chart analysis disabled")
 
-    if config.CRYPTOCOMPARE_API_KEY:
-        log.info("✅ CryptoCompare: key loaded")
-    else:
-        log.warning("⚠️ CryptoCompare: no key set")
+    log.info("📊 Binance: market data ✅ ready (no key needed for OHLCV)")
 
     if config.CRYPTOPANIC_TOKEN:
         log.info("✅ CryptoPanic: token loaded")
