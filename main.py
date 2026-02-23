@@ -17,6 +17,7 @@ from handlers import commands, alerts, wizard, stats, scheduler, news_handler, d
 from engine import phase_engine, session_journal, regime_detector, notification_filter, session_checklist
 from degen import wallet_tracker
 from engine import run_backtest
+from engine.degen import dev_tracker, exit_planner, narrative_detector
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -541,9 +542,12 @@ def main():
     app.add_handler(CallbackQueryHandler(news_handler.handle_news_cb, pattern="^news:"))
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_model_cb, pattern="^degen_model:"))
     app.add_handler(CallbackQueryHandler(wallet_handler.handle_wallet_cb, pattern="^wallet:"))
+    app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_cb, pattern="^degen_journal:"))
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_cb, pattern="^degen:"))
     app.add_handler(CallbackQueryHandler(risk_handler.handle_risk_cb, pattern="^(risk:|nav:risk|nav:checklist|nav:notif_filter|filter:toggle:|filter:override:|nav:regime)"), group=0)
     app.add_handler(wallet_handler.build_add_wallet_handler())
+    app.add_handler(MessageHandler(filters.Regex(r"^(?i:scan\s+).+"), degen_handler.handle_manual_scan), group=0)
+    app.add_handler(MessageHandler(filters.Regex(r"^(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$"), degen_handler.handle_manual_scan), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, degen_wizard.handle_degen_name), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, demo_handler.handle_demo_risk_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ca_handler.handle_ca_message), group=1)
@@ -567,6 +571,10 @@ def main():
     app.job_queue.run_repeating(wallet_tracker.wallet_monitor_job, interval=120, first=30, name="wallet_monitor")
     app.job_queue.run_repeating(demo_handler.demo_monitor_job, interval=30, first=20, name="demo_monitor")
     app.job_queue.run_repeating(ca_handler.ca_monitor_job, interval=120, first=30, name="ca_monitor")
+
+    app.job_queue.run_repeating(dev_tracker.run_dev_wallet_monitor, interval=600, first=120, name="dev_wallet_monitor")
+    app.job_queue.run_repeating(narrative_detector.update_narrative_momentum, interval=1800, first=60, name="narrative_momentum")
+    app.job_queue.run_repeating(exit_planner.monitor_exit_triggers, interval=300, first=120, name="degen_exit_monitor")
 
     log.info("🤖 Bot started — polling")
     app.run_polling(drop_pending_updates=True)
