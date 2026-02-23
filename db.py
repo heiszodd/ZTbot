@@ -3786,3 +3786,230 @@ def get_all_narratives() -> list:
             for row in rows:
                 row["tokens"] = _decode_json_field(row.get("tokens"), [])
             return rows
+
+
+def get_scanner_settings() -> dict:
+    defaults = {
+        "id": 1,
+        "enabled": True,
+        "interval_minutes": 60,
+        "min_liquidity": 50000.0,
+        "max_liquidity": 5000000.0,
+        "min_volume_1h": 10000.0,
+        "max_age_hours": 72.0,
+        "min_probability_score": 55.0,
+        "chains": ["solana"],
+        "min_rug_grade": "C",
+        "require_mint_revoked": True,
+        "require_lp_locked": True,
+        "max_top_holder_pct": 15.0,
+    }
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM scanner_settings WHERE id=1")
+            row = cur.fetchone()
+            if not row:
+                cur.execute("INSERT INTO scanner_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+                conn.commit()
+                return defaults
+            data = dict(row)
+            data["chains"] = _decode_json_field(data.get("chains"), ["solana"])
+            return {**defaults, **data}
+
+
+def update_scanner_settings(fields: dict) -> None:
+    if not fields:
+        return
+    allowed = {
+        "enabled", "interval_minutes", "min_liquidity", "max_liquidity", "min_volume_1h", "max_age_hours",
+        "min_probability_score", "chains", "min_rug_grade", "require_mint_revoked", "require_lp_locked",
+        "max_top_holder_pct",
+    }
+    sets, values = [], []
+    for key, value in fields.items():
+        if key in allowed:
+            sets.append(f"{key}=%s")
+            values.append(json.dumps(value) if key == "chains" else value)
+    if not sets:
+        return
+    values.append(1)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO scanner_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+            cur.execute(f"UPDATE scanner_settings SET {', '.join(sets)}, updated_at=NOW() WHERE id=%s", tuple(values))
+        conn.commit()
+
+
+def save_auto_scan_result(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO auto_scan_results (
+                    scan_run_id, contract_address, chain, token_symbol, token_name,
+                    probability_score, risk_score, early_score, social_score,
+                    momentum_score, rank, alert_message_id, user_action, action_at, scan_data
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    data.get("scan_run_id"),
+                    data.get("contract_address"),
+                    data.get("chain", "solana"),
+                    data.get("token_symbol"),
+                    data.get("token_name"),
+                    data.get("probability_score", 0),
+                    data.get("risk_score", 0),
+                    data.get("early_score", 0),
+                    data.get("social_score", 0),
+                    data.get("momentum_score", 0),
+                    data.get("rank", 1),
+                    data.get("alert_message_id"),
+                    data.get("user_action"),
+                    data.get("action_at"),
+                    json.dumps(data.get("scan_data", {})),
+                ),
+            )
+        conn.commit()
+
+
+def get_latest_auto_scan(address: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM auto_scan_results
+                WHERE contract_address=%s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (address,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return {}
+            data = dict(row)
+            data["scan_data"] = _decode_json_field(data.get("scan_data"), {})
+            return data
+
+
+def update_auto_scan_action(address: str, action: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE auto_scan_results
+                SET user_action=%s, action_at=NOW()
+                WHERE id = (
+                    SELECT id
+                    FROM auto_scan_results
+                    WHERE contract_address=%s AND user_action IS NULL
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                """,
+                (action, address),
+            )
+        conn.commit()
+
+
+def add_to_watchlist(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO watchlist (
+                    contract_address, chain, token_symbol, token_name,
+                    added_by, last_scanned, last_score, status, notes
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (contract_address) DO UPDATE SET
+                    chain=EXCLUDED.chain,
+                    token_symbol=EXCLUDED.token_symbol,
+                    token_name=EXCLUDED.token_name,
+                    last_scanned=COALESCE(EXCLUDED.last_scanned, watchlist.last_scanned),
+                    last_score=EXCLUDED.last_score,
+                    status='watching',
+                    notes=COALESCE(EXCLUDED.notes, watchlist.notes)
+                """,
+                (
+                    data.get("contract_address"),
+                    data.get("chain", "solana"),
+                    data.get("token_symbol", ""),
+                    data.get("token_name", ""),
+                    data.get("added_by", "auto_scan"),
+                    data.get("last_scanned"),
+                    data.get("last_score", 0),
+                    data.get("status", "watching"),
+                    data.get("notes"),
+                ),
+            )
+        conn.commit()
+
+
+def get_active_watchlist() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM watchlist
+                WHERE status='watching'
+                ORDER BY added_at DESC
+                """
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
+def update_watchlist_item(address: str, fields: dict) -> None:
+    if not fields:
+        return
+    allowed = {"chain", "token_symbol", "token_name", "last_scanned", "last_score", "status", "notes"}
+    sets, values = [], []
+    for key, value in fields.items():
+        if key in allowed:
+            sets.append(f"{key}=%s")
+            values.append(value)
+    if not sets:
+        return
+    values.append(address)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE watchlist SET {', '.join(sets)} WHERE contract_address=%s", tuple(values))
+        conn.commit()
+
+
+def add_to_ignored(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ignored_tokens (
+                    contract_address, token_symbol, ignored_at,
+                    expires_at, reason
+                ) VALUES (%s,%s,%s,%s,%s)
+                ON CONFLICT (contract_address) DO UPDATE SET
+                    token_symbol=EXCLUDED.token_symbol,
+                    ignored_at=EXCLUDED.ignored_at,
+                    expires_at=EXCLUDED.expires_at,
+                    reason=EXCLUDED.reason
+                """,
+                (
+                    data.get("contract_address"),
+                    data.get("token_symbol", ""),
+                    data.get("ignored_at"),
+                    data.get("expires_at"),
+                    data.get("reason", "user_ignored"),
+                ),
+            )
+        conn.commit()
+
+
+def get_ignored_addresses() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT contract_address
+                FROM ignored_tokens
+                WHERE expires_at > NOW()
+                """
+            )
+            return [row["contract_address"] for row in cur.fetchall()]

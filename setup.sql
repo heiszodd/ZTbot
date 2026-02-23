@@ -933,3 +933,71 @@ VALUES
   ('RWA'), ('Layer2'), ('DePIN'), ('SocialFi'),
   ('Liquid Staking'), ('NFT'), ('DAO'), ('Metaverse')
 ON CONFLICT (narrative) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS auto_scan_results (
+    id               SERIAL PRIMARY KEY,
+    scan_run_id      VARCHAR(50) NOT NULL,
+    contract_address VARCHAR(100) NOT NULL,
+    chain            VARCHAR(20) DEFAULT 'solana',
+    token_symbol     VARCHAR(20),
+    token_name       VARCHAR(100),
+    probability_score FLOAT DEFAULT 0,
+    risk_score       FLOAT DEFAULT 0,
+    early_score      FLOAT DEFAULT 0,
+    social_score     FLOAT DEFAULT 0,
+    momentum_score   FLOAT DEFAULT 0,
+    rank             INT DEFAULT 1,
+    alert_message_id INT,
+    user_action      VARCHAR(20),
+    action_at        TIMESTAMP,
+    scan_data        JSONB DEFAULT '{}',
+    created_at       TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_auto_scan_address
+    ON auto_scan_results(contract_address);
+CREATE INDEX IF NOT EXISTS idx_auto_scan_action
+    ON auto_scan_results(user_action);
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    id               SERIAL PRIMARY KEY,
+    contract_address VARCHAR(100) NOT NULL UNIQUE,
+    chain            VARCHAR(20) DEFAULT 'solana',
+    token_symbol     VARCHAR(20),
+    token_name       VARCHAR(100),
+    added_at         TIMESTAMP DEFAULT NOW(),
+    added_by         VARCHAR(30) DEFAULT 'auto_scan',
+    last_scanned     TIMESTAMP,
+    last_score       FLOAT,
+    status           VARCHAR(20) DEFAULT 'watching',
+    notes            TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ignored_tokens (
+    id               SERIAL PRIMARY KEY,
+    contract_address VARCHAR(100) NOT NULL UNIQUE,
+    token_symbol     VARCHAR(20),
+    ignored_at       TIMESTAMP DEFAULT NOW(),
+    expires_at       TIMESTAMP,
+    reason           VARCHAR(100)
+);
+
+CREATE TABLE IF NOT EXISTS scanner_settings (
+    id                    SERIAL PRIMARY KEY,
+    enabled               BOOLEAN DEFAULT TRUE,
+    interval_minutes      INT DEFAULT 60,
+    min_liquidity         FLOAT DEFAULT 50000,
+    max_liquidity         FLOAT DEFAULT 5000000,
+    min_volume_1h         FLOAT DEFAULT 10000,
+    max_age_hours         FLOAT DEFAULT 72,
+    min_probability_score FLOAT DEFAULT 55,
+    chains                JSONB DEFAULT '["solana"]',
+    min_rug_grade         VARCHAR(5) DEFAULT 'C',
+    require_mint_revoked  BOOLEAN DEFAULT TRUE,
+    require_lp_locked     BOOLEAN DEFAULT TRUE,
+    max_top_holder_pct    FLOAT DEFAULT 15,
+    updated_at            TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO scanner_settings (id) VALUES (1)
+ON CONFLICT (id) DO NOTHING;
