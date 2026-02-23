@@ -38,11 +38,6 @@ BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 BINANCE_BASE_URL = "https://api.binance.com"
 
-# Backward-compatible symbols for legacy modules.
-CRYPTOCOMPARE_API_KEY = ""
-CRYPTOCOMPARE_BASE_URL = ""
-CRYPTOCOMPARE_EXTRA_PARAMS = ""
-
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
 ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY", "")
 GOPLUSLABS_BASE = "https://api.gopluslabs.io/api/v1"
