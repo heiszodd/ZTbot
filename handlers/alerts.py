@@ -293,7 +293,8 @@ async def promote_to_full_alert(context, setup: dict, score_result: dict):
     model = db.get_model(setup["model_id"])
     if model:
         tier = "A" if score_result.get("score", 0) >= model.get("tier_a", 9.5) else "B" if score_result.get("score", 0) >= model.get("tier_b", 7.5) else "C"
-        if not _is_dup(setup["pair"], model["id"], tier):
+        direction = score_result.get("detected_direction") or score_result.get("direction") or setup.get("direction") or "Bullish"
+        if not _is_dup(setup["pair"], model["id"], tier, direction):
             await _evaluate_and_send(context.bot, model, pair_override=setup["pair"], pending_duration=format_duration(setup["first_detected_at"]), pending_checks=setup.get("check_count", 0))
 
 

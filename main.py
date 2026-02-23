@@ -572,7 +572,7 @@ def main():
     app.job_queue.run_repeating(demo_handler.demo_monitor_job, interval=30, first=360, name="demo_monitor")
     app.job_queue.run_repeating(ca_handler.ca_monitor_job, interval=120, first=180, name="ca_monitor")
 
-    app.job_queue.run_repeating(run_auto_scanner, interval=3600, first=3600, name="auto_degen_scanner")
+    app.job_queue.run_repeating(run_auto_scanner, interval=1800, first=120, name="auto_degen_scanner")
     app.job_queue.run_repeating(run_watchlist_scanner, interval=900, first=270, name="watchlist_scanner")
 
     app.job_queue.run_repeating(dev_tracker.run_dev_wallet_monitor, interval=600, first=210, name="dev_wallet_monitor")

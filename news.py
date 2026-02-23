@@ -156,21 +156,6 @@ async def fetch_crypto_news() -> list:
         except Exception:
             pass
 
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            response = await client.get("https://api.coingecko.com/api/v3/search/trending")
-            if response.status_code == 200:
-                coins = response.json().get("coins", [])
-                return [
-                    {
-                        "title": f"Trending: {coin['item']['name']} ({coin['item']['symbol']})",
-                        "url": "",
-                    }
-                    for coin in coins[:5]
-                ]
-    except Exception as exc:
-        log.warning(f"News fetch failed: {exc}")
-
     return []
 
 
