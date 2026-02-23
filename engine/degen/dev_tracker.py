@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import httpx
@@ -195,6 +196,15 @@ async def send_dev_wallet_alert(context, event: dict, scan: dict) -> None:
 
 
 async def run_dev_wallet_monitor(context) -> None:
+    try:
+        await asyncio.wait_for(_run_dev_wallet_monitor_inner(context), timeout=60)
+    except asyncio.TimeoutError:
+        log.warning("dev_wallet_monitor timed out after 60 seconds")
+    except Exception as e:
+        log.error(f"dev_wallet_monitor error: {e}")
+
+
+async def _run_dev_wallet_monitor_inner(context) -> None:
     from datetime import datetime, timezone
 
     wallets = db.get_watched_dev_wallets()

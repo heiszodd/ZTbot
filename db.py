@@ -48,28 +48,36 @@ def _cache_clear(key: str):
     _cache.pop(key, None)
 
 
-def init_pool():
+def _ensure_pool():
     global _pool
     if _pool is None:
         _pool = pg_pool.ThreadedConnectionPool(
-            minconn=2,
-            maxconn=10,
+            minconn=3,
+            maxconn=20,
             dsn=DB_URL,
             cursor_factory=psycopg2.extras.RealDictCursor,
         )
 
 
-def _ensure_pool():
-    init_pool()
-
-
-def acquire_conn():
+def acquire_conn(timeout: float = 10.0):
     _ensure_pool()
-    return _pool.getconn()
+    start = time.time()
+    while True:
+        try:
+            conn = _pool.getconn()
+            if conn:
+                return conn
+        except Exception:
+            pass
+        if time.time() - start > timeout:
+            raise RuntimeError(
+                f"DB pool exhausted — no connection available after {timeout}s"
+            )
+        time.sleep(0.1)
 
 
-def get_conn():
-    return _PooledConn(acquire_conn())
+def get_conn(timeout: float = 10.0):
+    return _PooledConn(acquire_conn(timeout=timeout))
 
 
 def release_conn(conn):
@@ -274,6 +282,11 @@ def setup_db():
     ALTER TABLE models ADD COLUMN IF NOT EXISTS phase_timeframes JSONB DEFAULT '{"1":"4h","2":"1h","3":"15m","4":"5m"}';
 
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS direction VARCHAR(20) DEFAULT 'Bullish';
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS timeframe VARCHAR(10);
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS phase VARCHAR(20);
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS quality_grade VARCHAR(5);
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS risk_level VARCHAR(10);
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
     ALTER TABLE news_events ADD COLUMN IF NOT EXISTS suppressed BOOLEAN DEFAULT FALSE;
 
@@ -1076,7 +1089,9 @@ def update_user_preferences(chat_id: int, **fields):
 # ── Alerts ────────────────────────────────────────────
 def log_alert(pair, model_id, model_name, score, tier, direction,
               entry, sl, tp, rr, valid, reason=None, price_at_tp=None):
-    with get_conn() as conn:
+    conn = None
+    try:
+        conn = acquire_conn()
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO alert_log
@@ -1086,6 +1101,16 @@ def log_alert(pair, model_id, model_name, score, tier, direction,
             """, (pair, model_id, model_name, score, tier, direction,
                   entry, sl, tp, rr, valid, reason, price_at_tp))
         conn.commit()
+    except Exception as e:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        log.error(f"alert_log insert failed: {e}")
+    finally:
+        if conn is not None:
+            release_conn(conn)
 
 def get_recent_alerts(hours=24, limit=20):
     with get_conn() as conn:

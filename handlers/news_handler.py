@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -63,6 +64,15 @@ async def _send_news_screen(sender):
 
 async def news_briefing_job(context: ContextTypes.DEFAULT_TYPE):
     try:
+        await asyncio.wait_for(_news_briefing_job_inner(context), timeout=30)
+    except asyncio.TimeoutError:
+        log.warning("news_briefing_job timed out after 30 seconds")
+    except Exception as exc:
+        log.error("news_briefing_job failed: %s", exc)
+
+
+async def _news_briefing_job_inner(context: ContextTypes.DEFAULT_TYPE):
+    try:
         pairs = _active_pairs()
         for ev in await news.get_upcoming_events(pairs, hours_ahead=8):
             try:
@@ -105,6 +115,15 @@ async def news_briefing_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def news_signal_job(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await asyncio.wait_for(_news_signal_job_inner(context), timeout=30)
+    except asyncio.TimeoutError:
+        log.warning("news_signal_job timed out after 30 seconds")
+    except Exception as exc:
+        log.error("news_signal_job failed: %s", exc)
+
+
+async def _news_signal_job_inner(context: ContextTypes.DEFAULT_TYPE):
     try:
         for event in db.get_unsent_signals():
             sentiment = news.get_event_sentiment(event)
