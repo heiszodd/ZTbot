@@ -40,13 +40,17 @@ CRYPTOCOMPARE_EXTRA_PARAMS = os.getenv("CRYPTOCOMPARE_EXTRA_PARAMS", "ztbot")
 
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
 ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY", "")
+GOPLUSLABS_BASE = "https://api.gopluslabs.io/api/v1"
+DEXSCREENER_BASE = "https://api.dexscreener.com/latest"
+HONEYPOT_BASE = "https://api.honeypot.is/v2"
 BSCSCAN_KEY = os.getenv("BSCSCAN_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# Do NOT store model as a module-level variable.
-# Store it in a mutable container so all imports
-# see the same object after init_gemini() runs.
-_gemini_state = {"model": None, "initialised": False}
+_gemini_state = {
+    "client": None,
+    "model_name": "gemini-2.0-flash",
+    "initialised": False,
+}
 
 
 def init_gemini():
@@ -54,74 +58,63 @@ def init_gemini():
     Initialise Gemini. Safe to call multiple times.
     Returns the model on success, None on failure.
     """
-    if _gemini_state["initialised"] and _gemini_state["model"] is not None:
-        return _gemini_state["model"]
+    if _gemini_state["initialised"] and _gemini_state["client"] is not None:
+        return _gemini_state["client"]
 
     if not GEMINI_API_KEY:
         log.error(
-            "GEMINI_API_KEY is not set in environment. "
-            "Chart analysis will not work. "
-            "Add GEMINI_API_KEY to Railway Variables."
+            "GEMINI_API_KEY not set. "
+            "Chart analysis disabled."
         )
         _gemini_state["initialised"] = True
         return None
 
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
 
-        genai.configure(api_key=GEMINI_API_KEY)
-
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
-                top_p=0.95,
-                max_output_tokens=2048,
-            ),
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model=_gemini_state["model_name"],
+            contents="ping",
+            config=types.GenerateContentConfig(max_output_tokens=10),
         )
-
-        # Verify with a lightweight test call
-        test = model.generate_content("Hi")
-        if not test or not test.text:
+        if not response or not response.text:
             raise ValueError("Empty test response")
 
-        _gemini_state["model"] = model
+        _gemini_state["client"] = client
         _gemini_state["initialised"] = True
-        log.info("✅ Gemini 1.5 Flash connected and verified")
-        return model
+        log.info(f"✅ Gemini connected: {_gemini_state['model_name']}")
+        return client
 
     except ImportError:
         log.error(
-            "google-generativeai package not installed. "
-            "Run: pip install google-generativeai"
+            "google-genai not installed. "
+            "Run: pip install google-genai"
         )
         _gemini_state["initialised"] = True
         return None
 
     except Exception as e:
-        log.error(
-            f"Gemini init failed: {type(e).__name__}: {e}\n"
-            f"Check GEMINI_API_KEY is correct in Railway."
-        )
+        log.error(f"Gemini init failed: {type(e).__name__}: {e}")
         _gemini_state["initialised"] = True
         return None
 
 
-def get_gemini_model():
-    """
-    Always returns the current Gemini model.
-    Tries to initialise if not already done.
-    Use this instead of importing GEMINI_MODEL directly.
-    """
-    if _gemini_state["model"] is None:
+def get_gemini_client():
+    """Always call this — never import client directly."""
+    if _gemini_state["client"] is None:
         return init_gemini()
-    return _gemini_state["model"]
+    return _gemini_state["client"]
 
 
-# Keep GEMINI_MODEL as an alias for backwards compat
-# but it will always be None at import time.
-# Code must use get_gemini_model() instead.
-GEMINI_MODEL = None
+def get_gemini_model_name() -> str:
+    return _gemini_state["model_name"]
+
+
+# Backward-compatible alias used by older code paths.
+def get_gemini_model():
+    return get_gemini_client()
 
 # ── Tier risk sizing ──────────────────────────────────
 TIER_RISK = {"A": 2.0, "B": 1.0, "C": 0.5}
@@ -170,7 +163,7 @@ TIMEFRAMES = ["1m", "5m", "15m", "30m", "1H", "4H"]
 SESSIONS_LIST = ["London", "NY", "Asia", "Overlap", "Any"]
 BIASES = ["Bullish", "Bearish"]
 
-SCANNER_INTERVAL = 60
+SCANNER_INTERVAL = 300
 CRYPTOPANIC_API_TOKEN = os.getenv("CRYPTOPANIC_API_TOKEN", "")
 CRYPTOPANIC_TOKEN = os.getenv("CRYPTOPANIC_TOKEN", "")
 SUPPORTED_PAIRS = ALL_PAIRS

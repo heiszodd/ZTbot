@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
+import logging
+from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -8,7 +11,10 @@ from telegram.ext import ContextTypes
 import db
 from degen.rule_library import RULES_BY_ID
 from degen.templates import TEMPLATES
-
+from engine.degen.contract_scanner import format_scan_result, scan_contract
+from engine.degen.narrative_detector import format_narrative_dashboard
+from engine.degen.auto_scanner import run_auto_scanner
+from handlers.degen_journal_handler import show_degen_journal_home
 
 
 
@@ -184,12 +190,79 @@ async def degen_stats_screen(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await sender("\n".join(txt))
 
 
+
+
+async def handle_manual_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+    text = update.message.text.strip()
+    parts = text.split()
+
+    address = None
+    for part in parts:
+        if (part.startswith("0x") and len(part) == 42) or (len(part) in range(32, 45) and not part.startswith("0x")):
+            address = part
+            break
+
+    if not address:
+        await update.message.reply_text("Please include a contract address.\nExample: scan 0x1234...abcd")
+        return
+
+    force_refresh = text.lower().startswith("scan ")
+    msg = await update.message.reply_text(
+        "🔍 Scanning contract...\n⏳ Checking GoPlus, DexScreener, honeypot.is..."
+    )
+    scan = await scan_contract(address, force_refresh=force_refresh)
+    result = format_scan_result(scan)
+
+    await msg.edit_text(
+        result,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("👁 Watch Dev Wallet", callback_data=f"degen:watch_dev:{address}"),
+                    InlineKeyboardButton("🔄 Refresh Scan", callback_data=f"degen:scan:{address}"),
+                ]
+            ]
+        ),
+    )
 async def handle_degen_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
     if data == "degen:stats":
         return await degen_stats_screen(update, context)
+    if data == "degen:scan_prompt":
+        return await q.message.reply_text("Send a contract address or type: scan 0x...")
+    if data == "degen:exit_plan":
+        from engine.degen.exit_planner import format_exit_plan
+        return await q.message.reply_text(format_exit_plan(0.0001, 100), parse_mode="Markdown")
+    if data == "degen:narratives":
+        narratives = {n["narrative"]: {"count": n.get("mention_count",0), "velocity": n.get("velocity",0), "trend": n.get("trend","stable"), "tokens": n.get("tokens", []) or []} for n in db.get_all_narratives()}
+        return await q.message.reply_text(format_narrative_dashboard(narratives), parse_mode="Markdown")
+    if data == "degen:journal_home":
+        return await show_degen_journal_home(q, context)
+    if data == "degen:scanner_settings":
+        return await show_scanner_settings(q, context)
+    if data == "degen:watchlist":
+        return await show_watchlist(q, context)
+    if data.startswith("degen:scan:"):
+        address = data.split(":", 2)[2]
+        scan = await scan_contract(address, force_refresh=True)
+        return await q.message.reply_text(format_scan_result(scan), parse_mode="Markdown")
+    if data.startswith("degen:watch_dev:"):
+        address = data.split(":", 2)[2]
+        scan = db.get_contract_scan(address, "eth") or {}
+        wallet = scan.get("dev_wallet")
+        if wallet:
+            db.save_dev_wallet({"contract_address": address, "chain": scan.get("chain", "eth"), "wallet_address": wallet, "label": "deployer", "watching": True})
+            return await q.message.reply_text(f"👁 Now watching dev wallet `{wallet[:6]}...{wallet[-4:]}`", parse_mode="Markdown")
+        return await q.message.reply_text("No dev wallet detected in latest scan.")
+    if data.startswith("degen:unwatch:"):
+        _, _, wallet, contract = data.split(":", 3)
+        db.update_dev_wallet(wallet, contract, {"watching": False})
+        return await q.message.reply_text("🛑 Dev wallet watch disabled.")
     if data == "degen:portfolio_risk":
         open_degen = db.get_open_demo_trades("degen") if hasattr(db, "get_open_demo_trades") else []
         open_copy = [r for r in db.get_wallet_copy_trades(limit=200) if r.get("result") is None] if hasattr(db, "get_wallet_copy_trades") else []
@@ -219,12 +292,51 @@ async def handle_degen_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["compare_candidates"] = rows
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{t.get('symbol')}", callback_data=f"degen:compare:a:{t.get('address')}")] for t in rows[:10]])
         return await q.message.reply_text("Select first token to compare:", reply_markup=kb)
+    if data.startswith("degen_journal:"):
+        if data == "degen_journal:all":
+            entries = db.get_degen_journal_entries(limit=20)
+            lines = ["🎲 *All Degen Plays*", "━━━━━━━━━━━━━━━━━━━━━━━━"]
+            for e in entries[:20]:
+                out = e.get("outcome") or "OPEN"
+                lines.append(f"• {e.get('token_symbol','?')} — {out} — ${float(e.get('pnl_usd',0) or 0):+.2f}")
+            await q.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
+        if data == "degen_journal:by_narrative":
+            entries = db.get_degen_journal_entries(limit=200)
+            bucket = {}
+            for e in entries:
+                n = e.get("narrative") or "Other"
+                bucket[n] = bucket.get(n, 0) + 1
+            txt = "📊 *Journal by Narrative*\n" + "\n".join([f"• {k}: {v}" for k, v in sorted(bucket.items(), key=lambda x: x[1], reverse=True)])
+            await q.message.reply_text(txt, parse_mode="Markdown")
+            return
+        if data == "degen_journal:best":
+            entries = db.get_degen_journal_entries(limit=200)
+            closed = [e for e in entries if e.get("final_multiplier")]
+            best = sorted(closed, key=lambda e: float(e.get("final_multiplier", 1) or 1), reverse=True)[:10]
+            txt = "🏆 *Best Plays*\n" + "\n".join([f"• {e.get('token_symbol','?')}: {float(e.get('final_multiplier',1) or 1):.1f}x" for e in best])
+            await q.message.reply_text(txt, parse_mode="Markdown")
+            return
+
     if data.startswith("degen:compare:a:"):
         a = data.split(":")[-1]
         context.user_data["compare_a"] = a
         rows = [t for t in context.user_data.get("compare_candidates", []) if t.get("address") != a]
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{t.get('symbol')}", callback_data=f"degen:compare:b:{t.get('address')}")] for t in rows[:10]])
         return await q.message.reply_text("Select second token:", reply_markup=kb)
+    if data.startswith("degen:sold:"):
+        _, _, journal_id, target = data.split(":", 3)
+        journal = next((x for x in db.get_degen_journal_entries(limit=500) if int(x.get("id")) == int(journal_id)), None)
+        if journal:
+            entry = float(journal.get("entry_price") or 0)
+            peak = float(journal.get("peak_price") or entry or 0)
+            final_multiplier = (peak / entry) if entry > 0 else float(target)
+            pnl = (float(journal.get("position_size_usd") or 0) * max(final_multiplier - 1, 0))
+            db.update_degen_journal(int(journal_id), {"exit_time": __import__("datetime").datetime.utcnow().isoformat(), "final_multiplier": final_multiplier, "pnl_usd": pnl, "outcome": "closed", "followed_exit_plan": True})
+        return await q.message.reply_text("✅ Journal updated with sale.")
+    if data.startswith("degen:hold:"):
+        return await q.message.reply_text("⏭ Holding. Reminder logged.")
+
     if data.startswith("degen:compare:b:"):
         b = data.split(":")[-1]
         a = context.user_data.get("compare_a")
@@ -246,3 +358,257 @@ async def handle_degen_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ Ape {ta.get('symbol')}", callback_data=f"wallet:watch:{ta.get('address')}"), InlineKeyboardButton(f"✅ Ape {tb.get('symbol')}", callback_data=f"wallet:watch:{tb.get('address')}")], [InlineKeyboardButton("👀 Watch Both", callback_data="wallet:dismiss"), InlineKeyboardButton("❌ Skip Both", callback_data="wallet:dismiss")]])
         return await q.message.reply_text(msg, reply_markup=kb)
+
+
+log = logging.getLogger(__name__)
+
+
+async def handle_scan_action(query, context) -> None:
+    """Handles whitelist, ignore, ape-in, and full-scan callbacks."""
+    data = query.data
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    address = parts[2] if len(parts) > 2 else ""
+
+    if action == "whitelist":
+        await handle_whitelist(query, context, address)
+    elif action == "ignore":
+        await handle_ignore(query, context, address)
+    elif action == "ape":
+        await handle_ape_in(query, context, address)
+    elif action == "full":
+        await handle_full_scan(query, context, address)
+
+
+async def handle_whitelist(query, context, address: str) -> None:
+    scan_result = db.get_latest_auto_scan(address)
+    symbol = scan_result.get("token_symbol", "?") if scan_result else "?"
+
+    db.add_to_watchlist({
+        "contract_address": address,
+        "chain": scan_result.get("chain", "solana") if scan_result else "solana",
+        "token_symbol": scan_result.get("token_symbol", "") if scan_result else "",
+        "token_name": scan_result.get("token_name", "") if scan_result else "",
+        "last_score": scan_result.get("probability_score", 0) if scan_result else 0,
+        "added_by": "user_whitelist",
+    })
+    db.update_auto_scan_action(address, "whitelist")
+
+    try:
+        await query.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ Whitelisted — watching {symbol}", callback_data="noop")]])
+        )
+    except Exception as exc:
+        log.error("Whitelist edit markup failed: %s", exc)
+
+    try:
+        await query.answer(f"✅ {symbol} added to watchlist. Will alert on score changes.", show_alert=False)
+    except Exception as exc:
+        log.error("Whitelist query answer failed: %s", exc)
+
+
+async def handle_ignore(query, context, address: str) -> None:
+    scan_result = db.get_latest_auto_scan(address)
+    symbol = scan_result.get("token_symbol", "?") if scan_result else "?"
+
+    db.add_to_ignored({
+        "contract_address": address,
+        "token_symbol": symbol,
+        "ignored_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(),
+        "reason": "user_ignored",
+    })
+    db.update_auto_scan_action(address, "ignore")
+    db.update_watchlist_item(address, {"status": "ignored"})
+
+    try:
+        await query.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Ignored for 24h", callback_data="noop")]])
+        )
+    except Exception as exc:
+        log.error("Ignore edit markup failed: %s", exc)
+
+    try:
+        await query.answer(f"{symbol} ignored for 24 hours.", show_alert=False)
+    except Exception as exc:
+        log.error("Ignore query answer failed: %s", exc)
+
+
+async def handle_ape_in(query, context, address: str) -> None:
+    from engine.degen.early_entry import calculate_early_score
+    from engine.degen.contract_scanner import calculate_degen_position
+
+    scan_result = db.get_latest_auto_scan(address)
+    symbol = scan_result.get("token_symbol", "?") if scan_result else "?"
+    db.update_auto_scan_action(address, "ape_in")
+
+    chain = scan_result.get("chain", "solana") if scan_result else "solana"
+    scan = await scan_contract(address, chain)
+    early = calculate_early_score(scan)
+
+    degen_settings = db.get_degen_risk_settings()
+    position = calculate_degen_position(
+        account_size=degen_settings["account_size"],
+        max_position_pct=degen_settings["max_position_pct"],
+        rug_score=scan.get("rug_score", 0),
+        early_score=early.get("early_score", 0),
+    )
+
+    price = scan.get("price_usd", 0) or 0
+    sl = price * 0.75
+    tp1 = price * 1.5
+    size = position["final_size"]
+
+    journal_id = db.create_degen_journal({
+        "contract_address": address,
+        "chain": chain,
+        "token_symbol": symbol,
+        "token_name": scan.get("token_name", "Unknown"),
+        "entry_price": price,
+        "entry_mcap": scan.get("market_cap", 0),
+        "entry_liquidity": scan.get("liquidity_usd", 0),
+        "entry_holders": scan.get("holder_count", 0),
+        "entry_age_hours": early.get("age_hours", 0),
+        "entry_rug_grade": scan.get("rug_grade", "?"),
+        "position_size_usd": size,
+        "early_score": early.get("early_score", 0),
+        "rug_score": scan.get("rug_score", 0),
+        "entry_time": datetime.utcnow().isoformat(),
+    })
+
+    try:
+        await query.message.reply_text(
+            f"📲 *Aping In — {symbol}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Position size: *${size:.2f}*\n"
+            f"Entry price:   ${price:.8f}\n"
+            f"Stop loss:     ${sl:.8f} (-25%)\n"
+            f"TP1:           ${tp1:.8f} (1.5x)\n\n"
+            f"Journal entry #{journal_id} created.\n"
+            f"Exit reminders will fire automatically\n"
+            f"at 2x, 5x, 10x, and 20x.\n\n"
+            f"_Good luck. Respect the exits._",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📓 View Journal Entry", callback_data=f"degen_journal:view:{journal_id}"),
+                InlineKeyboardButton("❌ Cancel Entry", callback_data=f"degen_journal:cancel:{journal_id}"),
+            ]]),
+        )
+    except Exception as exc:
+        log.error("Ape-in reply failed: %s", exc)
+
+    try:
+        await query.answer(f"Journal entry created for {symbol}", show_alert=False)
+    except Exception as exc:
+        log.error("Ape-in query answer failed: %s", exc)
+
+
+async def handle_full_scan(query, context, address: str) -> None:
+    try:
+        scan = await scan_contract(address, force_refresh=True)
+        await query.message.reply_text(format_scan_result(scan), parse_mode="Markdown")
+    except Exception as exc:
+        log.error("Full scan failed for %s: %s", address, exc)
+        try:
+            await query.answer("Full scan failed. Try again.", show_alert=True)
+        except Exception:
+            pass
+
+
+async def show_scanner_settings(query, context) -> None:
+    settings = db.get_scanner_settings()
+    text = (
+        f"⚙️ *Auto Scanner Settings*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Status:        {'✅ Active' if settings['enabled'] else '⏸ Paused'}\n"
+        f"Interval:      {settings['interval_minutes']}min\n"
+        f"Min liquidity: ${settings['min_liquidity']:,.0f}\n"
+        f"Max liquidity: ${settings['max_liquidity']:,.0f}\n"
+        f"Min vol (1h):  ${settings['min_volume_1h']:,.0f}\n"
+        f"Max age:       {settings['max_age_hours']}h\n"
+        f"Min score:     {settings['min_probability_score']}/100\n"
+        f"Min safety:    {settings['min_rug_grade']} grade\n"
+        f"Mint revoked:  {'Required ✅' if settings['require_mint_revoked'] else 'Optional'}\n"
+        f"LP locked:     {'Required ✅' if settings['require_lp_locked'] else 'Optional'}\n"
+    )
+
+    buttons = [
+        [InlineKeyboardButton(f"{'⏸ Pause' if settings['enabled'] else '▶️ Enable'} Scanner", callback_data="scanner:toggle")],
+        [InlineKeyboardButton(f"💧 Min Liq: ${settings['min_liquidity']:,.0f}", callback_data="scanner:set:min_liquidity")],
+        [InlineKeyboardButton(f"📊 Min Score: {settings['min_probability_score']}", callback_data="scanner:cycle:min_score")],
+        [InlineKeyboardButton(f"⏱ Max Age: {settings['max_age_hours']}h", callback_data="scanner:cycle:max_age")],
+        [InlineKeyboardButton(f"🛡 Min Grade: {settings['min_rug_grade']}", callback_data="scanner:cycle:min_grade")],
+        [InlineKeyboardButton(f"🔒 Require Mint Revoked: {'Yes' if settings['require_mint_revoked'] else 'No'}", callback_data="scanner:toggle:mint_revoked")],
+        [InlineKeyboardButton(f"🔒 Require LP Lock: {'Yes' if settings['require_lp_locked'] else 'No'}", callback_data="scanner:toggle:lp_locked")],
+        [InlineKeyboardButton("▶️ Run Scan Now", callback_data="scanner:run_now")],
+        [InlineKeyboardButton("📋 View Watchlist", callback_data="scanner:watchlist")],
+        [InlineKeyboardButton("🏠 Degen Home", callback_data="nav:degen_home")],
+    ]
+
+    try:
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
+    except Exception as exc:
+        log.error("show_scanner_settings failed: %s", exc)
+
+
+async def show_watchlist(query, context) -> None:
+    rows = db.get_active_watchlist()
+    if not rows:
+        text = "📋 *Watchlist*\n━━━━━━━━━━━━━━━━━━━━━━━━\nNo active watchlist tokens yet."
+    else:
+        lines = ["📋 *Watchlist*", "━━━━━━━━━━━━━━━━━━━━━━━━"]
+        for item in rows[:20]:
+            lines.append(
+                f"• {item.get('token_symbol','?')} — score {float(item.get('last_score',0) or 0):.0f}\n"
+                f"  `{item.get('contract_address','')}`"
+            )
+        text = "\n".join(lines)
+
+    try:
+        await query.message.reply_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Scanner Settings", callback_data="degen:scanner_settings")]]),
+        )
+    except Exception as exc:
+        log.error("show_watchlist failed: %s", exc)
+
+
+async def handle_scanner_settings_action(query, context) -> None:
+    settings = db.get_scanner_settings()
+    data = query.data
+
+    if data == "scanner:toggle":
+        db.update_scanner_settings({"enabled": not settings.get("enabled", True)})
+    elif data == "scanner:cycle:min_score":
+        values = [40, 45, 50, 55, 60, 65, 70]
+        cur = int(settings.get("min_probability_score", 55))
+        nxt = values[(values.index(cur) + 1) % len(values)] if cur in values else 55
+        db.update_scanner_settings({"min_probability_score": nxt})
+    elif data == "scanner:cycle:max_age":
+        values = [6, 12, 24, 48, 72]
+        cur = int(settings.get("max_age_hours", 72))
+        nxt = values[(values.index(cur) + 1) % len(values)] if cur in values else 72
+        db.update_scanner_settings({"max_age_hours": nxt})
+    elif data == "scanner:cycle:min_grade":
+        values = ["F", "D", "C", "B", "A"]
+        cur = str(settings.get("min_rug_grade", "C"))
+        nxt = values[(values.index(cur) + 1) % len(values)] if cur in values else "C"
+        db.update_scanner_settings({"min_rug_grade": nxt})
+    elif data == "scanner:toggle:mint_revoked":
+        db.update_scanner_settings({"require_mint_revoked": not settings.get("require_mint_revoked", True)})
+    elif data == "scanner:toggle:lp_locked":
+        db.update_scanner_settings({"require_lp_locked": not settings.get("require_lp_locked", True)})
+    elif data == "scanner:set:min_liquidity":
+        values = [25000, 50000, 75000, 100000]
+        cur = int(float(settings.get("min_liquidity", 50000) or 50000))
+        nxt = values[(values.index(cur) + 1) % len(values)] if cur in values else 50000
+        db.update_scanner_settings({"min_liquidity": nxt})
+    elif data == "scanner:run_now":
+        await query.answer("Running scan now...", show_alert=False)
+        asyncio.create_task(run_auto_scanner(context))
+    elif data == "scanner:watchlist":
+        await show_watchlist(query, context)
+        return
+
+    await show_scanner_settings(query, context)

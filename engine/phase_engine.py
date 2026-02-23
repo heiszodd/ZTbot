@@ -1,10 +1,9 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
 import db
 from config import CHAT_ID, SUPPORTED_PAIRS
-
-ALLOWED_PHASE_PAIRS = {"BTCUSDT", "SOLUSDT"}
 from engine.rules import calc_atr, evaluate_rule, get_candles
 
 log = logging.getLogger(__name__)
@@ -13,21 +12,25 @@ PHASE_EXPIRY = {1: 4 * 3600, 2: 1 * 3600, 3: 0, 4: 3 * 900}
 PHASE_THRESHOLDS = {1: 60, 2: 55, 3: 70, 4: 50}
 
 
+DEFAULT_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XAUUSD"]
+
+
 def get_pairs_for_model(model: dict) -> list[str]:
-    pair = str(model.get("pair", "BTCUSDT") or "BTCUSDT").upper()
-    allowed_supported = [p for p in SUPPORTED_PAIRS if p in ALLOWED_PHASE_PAIRS]
+    pair = model.get("pair", "BTCUSDT")
     if pair != "ALL":
-        return [pair] if pair in ALLOWED_PHASE_PAIRS else []
+        return [pair]
     prefs = db.get_user_preferences(CHAT_ID) or {}
-    preferred = [p for p in (prefs.get("preferred_pairs") or []) if p in allowed_supported]
-    return preferred or allowed_supported
+    preferred = [p for p in (prefs.get("preferred_pairs") or []) if p in SUPPORTED_PAIRS]
+    return preferred or list(SUPPORTED_PAIRS)
 
 
-def get_directions(model: dict) -> list[str]:
-    bias = str(model.get("bias", "Both")).lower()
-    if bias == "bullish":
+def get_directions_for_model(model: dict) -> list[str]:
+    bias = str(model.get("bias", "Both") or "").strip().lower()
+    if not bias or bias in {"both", "all", "any"}:
+        return ["bullish", "bearish"]
+    if bias in {"bullish", "bull", "long"}:
         return ["bullish"]
-    if bias == "bearish":
+    if bias in {"bearish", "bear", "short"}:
         return ["bearish"]
     return ["bullish", "bearish"]
 
@@ -49,46 +52,80 @@ async def passes_volatility_gate(pair: str, timeframe: str, cache: dict) -> bool
 
 
 async def evaluate_phase(phase_num: int, rules: list, pair: str, timeframe: str, candle_cache: dict, direction: str) -> dict:
-    phase_rules = [r for r in rules if int(r.get("phase", 1)) == phase_num]
+    phase_rules = [r for r in rules if (int(r.get("phase") or 1) if str(r.get("phase") or "").strip() else 1) == phase_num]
+    log.info("Phase %s | %s | %s | %s | %s rules", phase_num, pair, direction.capitalize(), timeframe, len(phase_rules))
+    if not phase_rules:
+        log.info("Phase %s: no rules assigned — auto-passing", phase_num)
+        return {
+            "phase": phase_num,
+            "passed": True,
+            "score": 0,
+            "max_score": 0,
+            "score_pct": 100,
+            "passed_rules": [],
+            "failed_rules": [],
+            "mandatory_failed": [],
+            "invalidated": False,
+            "phase_data": {},
+        }
+
     passed_rules, failed_rules, mandatory_failed = [], [], []
     score = 0.0
     max_score = sum(float(r.get("weight", 1)) for r in phase_rules)
     phase_data = {"pair": pair, "timeframe": timeframe, "direction": direction}
     for rule in phase_rules:
         ok = await evaluate_rule(rule, pair, timeframe, direction, candle_cache)
+        rule_display = rule.get("tag") or rule.get("name") or rule.get("id") or "unknown"
         if ok:
-            passed_rules.append(rule["id"])
+            passed_rules.append(rule_display)
             score += float(rule.get("weight", 1))
+            log.debug("  ✅ %s", rule_display)
         else:
-            failed_rules.append(rule["id"])
+            failed_rules.append(rule_display)
+            log.debug("  ❌ %s", rule_display)
             if rule.get("mandatory"):
-                mandatory_failed.append(rule["id"])
+                mandatory_failed.append(rule_display)
     score_pct = (score / max_score * 100) if max_score > 0 else 0
     invalidated = bool(mandatory_failed)
-    passed = (not invalidated) and score_pct >= PHASE_THRESHOLDS[phase_num]
+    threshold = PHASE_THRESHOLDS.get(phase_num, 60)
+    passed = (not invalidated) and score_pct >= threshold
+    log.info(
+        "Phase %s result: %.1f/%.1f (%.0f%% vs %s%% threshold) → %s%s",
+        phase_num,
+        score,
+        max_score,
+        score_pct,
+        threshold,
+        "PASS" if passed else "FAIL",
+        f" [mandatory failed: {mandatory_failed}]" if mandatory_failed else "",
+    )
     return {"phase": phase_num, "passed": passed, "score": score, "max_score": max_score, "score_pct": score_pct, "passed_rules": passed_rules, "failed_rules": failed_rules, "mandatory_failed": mandatory_failed, "invalidated": invalidated, "phase_data": phase_data}
 
 
 async def run_phase_engine(context):
+    try:
+        await asyncio.wait_for(_run_phase_engine_inner(context), timeout=240)
+    except asyncio.TimeoutError:
+        log.warning("phase_engine timed out after 4 minutes")
+    except Exception as e:
+        log.error(f"phase_engine error: {e}")
+
+
+async def _run_phase_engine_inner(context):
     models = db.get_active_models()
+    if not models:
+        log.info("Phase engine: no active models")
+        return
+
     candle_cache = {}
-    missing_phase_tables = False
     for model in models:
         rules = model.get("rules", [])
         if not rules:
+            log.warning("Model '%s' has no rules — skipping", model.get("name"))
             continue
         for pair in get_pairs_for_model(model):
             for direction in get_directions(model):
-                try:
-                    await evaluate_model_phases(context, model, pair, direction, rules, candle_cache)
-                except Exception as exc:
-                    msg = str(exc).lower()
-                    if "setup_phases" in msg and "does not exist" in msg:
-                        missing_phase_tables = True
-                        continue
-                    raise
-    if missing_phase_tables:
-        log.error("Phase engine disabled this cycle: setup_phases table is missing. Run db.setup_db() migration on Railway.")
+                await evaluate_model_phases(context, model, pair, direction, rules, candle_cache)
 
 
 async def evaluate_model_phases(context, model, pair, direction, rules, candle_cache):
@@ -151,6 +188,13 @@ async def _complete_phase(context, existing, phase_num, result, model, pair, dir
 
 
 async def _fire_alert(context, existing, result, model, pair):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from engine import get_session
+    from engine.correlation_guard import check_correlation
+    from engine.notification_filter import should_suppress_alert, record_alert_fired
+    from engine.quality_scorer import score_setup_quality, format_quality_badge
+    from engine.risk_engine import run_risk_checks
+
     candles = await get_candles(pair, "15m", 20, {})
     price = candles[-1]["close"] if candles else 0
     direction = existing.get("direction", "bullish")
@@ -159,9 +203,54 @@ async def _fire_alert(context, existing, result, model, pair):
     tp1 = price + rr if direction == "bullish" else price - rr
     tp2 = price + rr * 2 if direction == "bullish" else price - rr * 2
     tp3 = price + rr * 3 if direction == "bullish" else price - rr * 3
-    msg = await context.bot.send_message(chat_id=CHAT_ID, text=f"🚨 *PHASE ALERT — ALL 3 PHASES COMPLETE*\n✅ P1: HTF Context\n✅ P2: MTF Setup\n✅ P3: LTF Trigger ({len(result['passed_rules'])} rules)\n⏳ P4: Awaiting confirmation...\n\n{model['name']} {pair}\nEntry: {price:.4f}\nSL: {sl:.4f}\nTP1: {tp1:.4f}\nTP2: {tp2:.4f}\nTP3: {tp3:.4f}", parse_mode="Markdown")
+
+    try:
+        quality = score_setup_quality(
+            phase1_result={"score_pct": existing.get("phase1_score", 0) / max(existing.get("phase1_max_score", 1), 1) * 100, "passed": True, "passed_rules": existing.get("phase1_passed_rules", []), "mandatory_failed": [], "completed_at": existing.get("phase1_completed_at")},
+            phase2_result={"score_pct": existing.get("phase2_score", 0) / max(existing.get("phase2_max_score", 1), 1) * 100, "passed": True, "passed_rules": existing.get("phase2_passed_rules", []), "mandatory_failed": [], "completed_at": existing.get("phase2_completed_at")},
+            phase3_result=result, pair=pair, direction=direction, model=model,
+        )
+    except Exception as exc:
+        log.error("Quality scorer failed: %s", exc)
+        quality = {"grade": "C", "score": 50, "grade_emoji": "⚠️", "phase_pcts": {"p1": 0, "p2": 0, "p3": 0}, "session": "Unknown"}
+
+    settings = db.get_risk_settings()
+    min_grade = settings.get("min_quality_grade", "C")
+    order = ["D", "C", "B", "A", "A+"]
+    if order.index(quality["grade"]) < order.index(min_grade):
+        await context.bot.send_message(chat_id=CHAT_ID, text=f"⚠️ *Alert Filtered — Low Quality*\n━━━━━━━━━━━━━━━━━━━━━━━━\n⚙️ {model['name']} | {pair}\nGrade: {quality['grade_emoji']} {quality['grade']} ({quality['score']}/100)\nMinimum grade set to: {min_grade}", parse_mode="Markdown")
+        return
+
+    suppress = should_suppress_alert({"session": get_session(), "pair": pair, "model_id": model["id"], "direction": direction, "quality_grade": quality["grade"]})
+    if suppress["suppress"]:
+        await context.bot.send_message(chat_id=CHAT_ID, text=f"🔕 *Alert Filtered*\n{pair} | {direction}\n_{suppress['reason']}_", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👁 Show This Alert", callback_data=f"filter:override:{model['id']}:{pair}")]]))
+        return
+
+    try:
+        risk = await run_risk_checks(pair, direction, price, sl, tp1)
+    except Exception as exc:
+        log.error("Risk checks failed: %s", exc)
+        risk = {"approved": True, "risk_level": "yellow", "summary": "⚠️ Risk check unavailable", "position": {"risk_amount": 0, "position_size": 0, "leverage_needed": 0, "rr_ratio": 0}}
+
+    if not risk.get("approved") and risk.get("risk_level") == "red":
+        await context.bot.send_message(chat_id=CHAT_ID, text=f"🚫 *Alert Suppressed — Risk Check Failed*\n⚙️ {model['name']} | 🪙 {pair}\n{risk['summary']}", parse_mode="Markdown")
+        return
+
+    quality_badge = format_quality_badge(quality)
+    alert_text = f"🚨 *PHASE ALERT — ALL 3 PHASES COMPLETE*\n✅ P1: HTF Context\n✅ P2: MTF Setup\n✅ P3: LTF Trigger ({len(result['passed_rules'])} rules)\n⏳ P4: Awaiting confirmation...\n\n{model['name']} {pair}\nEntry: {price:.4f}\nSL: {sl:.4f}\nTP1: {tp1:.4f}\nTP2: {tp2:.4f}\nTP3: {tp3:.4f}"
+    alert_text += f"\n━━━━━━━━━━━━━━━━━━━━━━━━\n{quality_badge}\n━━━━━━━━━━━━━━━━━━━━━━━━\n💰 *Risk Analysis*\n{risk['summary']}"
+
+    corr = check_correlation(pair, direction, db.get_open_demo_trades_all())
+    if corr["conflict"]:
+        if corr["severity"] == "high":
+            alert_text += f"\n\n🔗 *Correlation Warning*\n⚠️ {corr['reason']}"
+        else:
+            alert_text += f"\n\n🔗 _{corr['reason']}_"
+
+    msg = await context.bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="Markdown")
+    record_alert_fired({"session": get_session(), "pair": pair, "model_id": model["id"], "direction": direction, "quality_grade": quality["grade"]})
     db.save_setup_phase({"id": existing["id"], "overall_status": "phase4", "alert_message_id": msg.message_id, "entry_price": price, "stop_loss": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3})
-    lc_id = db.save_alert_lifecycle({"setup_phase_id": existing["id"], "model_id": model["id"], "pair": pair, "direction": direction, "entry_price": price})
+    lc_id = db.save_alert_lifecycle({"setup_phase_id": existing["id"], "model_id": model["id"], "pair": pair, "direction": direction, "entry_price": price, "risk_level": risk.get("risk_level"), "risk_amount": risk.get("position", {}).get("risk_amount"), "position_size": risk.get("position", {}).get("position_size"), "leverage": risk.get("position", {}).get("leverage_needed"), "rr_ratio": risk.get("position", {}).get("rr_ratio"), "quality_grade": quality["grade"], "quality_score": quality["score"]})
     context.job_queue.run_once(phase4_check_job, when=900, data={"setup_phase_id": existing["id"], "lifecycle_id": lc_id})
 
 
@@ -182,6 +271,9 @@ async def _send_phase4_result(context, existing, result, model, pair):
     if lc:
         db.update_alert_lifecycle(lc["id"], {"phase4_result": "confirmed" if passed else "failed", "phase4_message": text, "phase4_sent_at": datetime.utcnow(), "outcome": "active" if passed else "failed"})
     db.update_model_performance(existing["model_id"])
+    current_regime = db.get_latest_regime()
+    if current_regime:
+        db.update_model_regime_performance(model.get("id", existing["model_id"]), current_regime["regime"], confirmed=passed)
     db.save_setup_phase({"id": existing["id"], "overall_status": "phase1", "phase1_status": "pending", "phase2_status": "waiting", "phase3_status": "waiting", "phase4_status": "waiting"})
 
 
@@ -197,6 +289,8 @@ async def alert_lifecycle_job(context):
             band = entry * 0.001
             if abs(current - entry) <= band:
                 db.update_alert_lifecycle(lc["id"], {"entry_touched": True, "entry_touched_at": datetime.utcnow()})
+                from engine.notification_filter import record_entry_touched
+                record_entry_touched({"session": lc.get("session", "Unknown"), "pair": lc["pair"], "model_id": lc.get("model_id", ""), "direction": lc.get("direction", ""), "quality_grade": lc.get("quality_grade", "C")})
         elapsed = (datetime.utcnow() - lc["alert_sent_at"]).seconds
         if elapsed > 1800 and not lc.get("entry_touched"):
             await context.bot.send_message(chat_id=CHAT_ID, text=f"⏰ *Entry Missed — {lc['pair']}*\nPrice never reached entry zone.\nAlert is now stale.", parse_mode="Markdown")

@@ -281,6 +281,26 @@ def _fmt_age(minutes: int) -> str:
     return f"{m/1440:.1f} days"
 
 
+def _format_rugcheck_score(score: int) -> str:
+    s = int(score or 0)
+    if s <= 300:
+        return f"✅ {s}/1000 (Low Risk)"
+    if s <= 600:
+        return f"⚠️ {s}/1000 (Medium Risk)"
+    return f"🚨 {s}/1000 (High Risk)"
+
+
+def _format_dev_wallet_age(days: float) -> str:
+    age = int(days or 0)
+    if age == 0:
+        return "🚨 0 days (created for this launch)"
+    if age < 7:
+        return f"🚨 {age} days (brand new)"
+    if age < 30:
+        return f"⚠️ {age} days (new)"
+    return f"✅ {age} days"
+
+
 def fmt_ca_report(token_data, risk, moon, dev, curve, auth, nlp, net) -> str:
     if token_data.get("not_found"):
         return (
@@ -339,13 +359,13 @@ def fmt_ca_report(token_data, risk, moon, dev, curve, auth, nlp, net) -> str:
         f"   Freeze revoked:  {'✅ Yes' if token_data.get('freeze_revoked') else '❌ NO — devs can freeze'}\n"
         f"   LP locked:       {float(token_data.get('lp_locked_pct') or 0):.1f}%\n"
         f"   LP burned:       {'✅ Yes' if token_data.get('lp_burned') else '❌ No'}\n"
-        f"   Verified:        {'✅ Yes' if token_data.get('verified') else '❌ No'}\n"
+        f"   Metadata verified: {'✅ Yes' if token_data.get('verified') else '❌ No'} (pump.fun tokens are rarely verified)\n"
         f"   Honeypot:        {'💀 DETECTED' if token_data.get('is_honeypot') else '✅ Safe'}\n"
-        f"   RugCheck score:  {int(token_data.get('rugcheck_score') or 0)}/1000\n\n"
+        f"   RugCheck score:  {_format_rugcheck_score(int(token_data.get('rugcheck_score') or 0))}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "👨‍💻 *Developer*\n"
         f"   Wallet:      `{(token_data.get('dev_wallet') or 'N/A')[:8]}...`\n"
-        f"   Age:         {int(token_data.get('dev_wallet_age_days') or 0)} days\n"
+        f"   Age:         {_format_dev_wallet_age(token_data.get('dev_wallet_age_days') or 0)}\n"
         f"   Reputation:  {dev.get('reputation_label')}\n"
         f"   Supply held: {dev.get('supply_held_pct',0):.2f}%\n"
         f"   Past rugs:   {dev.get('past_rugs',0)}\n"

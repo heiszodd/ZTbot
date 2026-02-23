@@ -4,15 +4,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from bs4 import BeautifulSoup
-
 from config import CRYPTOPANIC_TOKEN, WAT
 
 log = logging.getLogger(__name__)
 
 CRYPTO_PANIC_URL = "https://cryptopanic.com/api/v1/posts/"
-COINGECKO_NEWS_URL = "https://api.coingecko.com/api/v3/news"
-INVESTING_CALENDAR_URL = "https://www.investing.com/economic-calendar/"
+FOREX_FACTORY_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 
 CACHE_TTL = timedelta(minutes=15)
 _EVENT_CACHE: dict[str, Any] = {"expires_at": datetime.min.replace(tzinfo=timezone.utc), "data": []}
@@ -89,46 +86,6 @@ async def _fetch_cryptopanic_events(pairs: list[str], horizon_end: datetime) -> 
         return []
 
 
-async def _fetch_coingecko_events(pairs: list[str], horizon_end: datetime) -> list[dict]:
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(COINGECKO_NEWS_URL)
-            resp.raise_for_status()
-            payload = resp.json()
-        now = datetime.now(timezone.utc)
-        events: list[dict] = []
-        items = payload.get("data") if isinstance(payload, dict) else payload
-        for item in items or []:
-            updated = item.get("updated_at") or item.get("created_at")
-            try:
-                event_time = datetime.fromtimestamp(int(updated), tz=timezone.utc) if updated else now
-            except Exception:
-                event_time = now
-            if event_time > horizon_end:
-                continue
-            title = item.get("title") or "Crypto News"
-            desc = item.get("description") or ""
-            for pair in pairs:
-                events.append(
-                    {
-                        "name": title,
-                        "pair": pair,
-                        "time_utc": event_time,
-                        "time_wat": event_time.astimezone(WAT),
-                        "impact": "high",
-                        "forecast": None,
-                        "previous": None,
-                        "actual": None,
-                        "source": "coingecko",
-                        "description": desc,
-                    }
-                )
-        return events
-    except Exception as exc:
-        log.error("CoinGecko news fetch failed: %s", exc)
-        return []
-
-
 def _parse_calendar_time(raw_time: str, now_utc: datetime) -> datetime | None:
     cleaned = (raw_time or "").strip()
     if not cleaned:
@@ -145,56 +102,76 @@ def _parse_calendar_time(raw_time: str, now_utc: datetime) -> datetime | None:
     return None
 
 
-async def _fetch_investing_calendar(pairs: list[str], horizon_end: datetime) -> list[dict]:
-    now = datetime.now(timezone.utc)
+async def fetch_economic_calendar() -> list:
+    """Fetch today's economic events using ForexFactory JSON feed."""
+    from datetime import datetime, timezone
+
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        async with httpx.AsyncClient(timeout=12) as client:
-            resp = await client.get(INVESTING_CALENDAR_URL, headers=headers)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "lxml")
-        rows = soup.select("tr.js-event-item")
-        events: list[dict] = []
-        pair_set = set(pairs)
-        for row in rows:
-            name_el = row.select_one("td.event")
-            cur_el = row.select_one("td.flagCur")
-            impact_el = row.select_one("td.sentiment")
-            time_el = row.select_one("td.time")
-            forecast_el = row.select_one("td.fore")
-            prev_el = row.select_one("td.prev")
-            actual_el = row.select_one("td.act")
-            if not name_el or not time_el:
-                continue
-            impact = _normalize_impact(impact_el.get_text(" ", strip=True) if impact_el else "")
-            if impact != "high":
-                continue
-            event_name = name_el.get_text(" ", strip=True)
-            currency = cur_el.get_text(" ", strip=True) if cur_el else "USD"
-            event_time = _parse_calendar_time(time_el.get_text(" ", strip=True), now)
-            if not event_time or event_time > horizon_end:
-                continue
-            mapped_pairs = [p for p in pair_set if currency in p or p.startswith("BTC") or p.startswith("ETH") or p == "XAUUSD"]
-            if not mapped_pairs:
-                mapped_pairs = [p for p in pair_set if p.endswith("USD")]
-            for pair in mapped_pairs:
-                events.append(
-                    {
-                        "name": event_name,
-                        "pair": pair,
-                        "time_utc": event_time,
-                        "time_wat": event_time.astimezone(WAT),
-                        "impact": impact,
-                        "forecast": (forecast_el.get_text(" ", strip=True) if forecast_el else None) or None,
-                        "previous": (prev_el.get_text(" ", strip=True) if prev_el else None) or None,
-                        "actual": (actual_el.get_text(" ", strip=True) if actual_el else None) or None,
-                        "source": "investing",
-                    }
-                )
-        return events
+        async with httpx.AsyncClient(
+            timeout=8,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; bot)"},
+        ) as client:
+            response = await client.get(FOREX_FACTORY_CALENDAR_URL)
+            if response.status_code != 200:
+                return []
+            events = response.json()
+
+        today = datetime.now(timezone.utc).strftime("%m-%d-%Y")
+        return [
+            {
+                "title": event.get("title", ""),
+                "impact": event.get("impact", ""),
+                "country": event.get("country", ""),
+                "time": event.get("date", ""),
+            }
+            for event in events
+            if event.get("date", "").startswith(today)
+            and event.get("impact") in ("High", "Medium")
+        ][:10]
     except Exception as exc:
-        log.error("Investing calendar fetch failed: %s", exc)
+        log.warning(f"Economic calendar fetch failed: {exc}")
         return []
+
+
+async def fetch_crypto_news() -> list:
+    """Fetch crypto headlines from CryptoPanic or CoinGecko trending."""
+    if CRYPTOPANIC_TOKEN:
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                response = await client.get(
+                    CRYPTO_PANIC_URL,
+                    params={
+                        "auth_token": CRYPTOPANIC_TOKEN,
+                        "filter": "hot",
+                        "public": "true",
+                        "kind": "news",
+                    },
+                )
+                if response.status_code == 200:
+                    posts = response.json().get("results", [])
+                    return [
+                        {"title": post.get("title", ""), "url": post.get("url", "")}
+                        for post in posts[:5]
+                    ]
+        except Exception:
+            pass
+
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.get("https://api.coingecko.com/api/v3/search/trending")
+            if response.status_code == 200:
+                coins = response.json().get("coins", [])
+                return [
+                    {
+                        "title": f"Trending: {coin['item']['name']} ({coin['item']['symbol']})",
+                        "url": "",
+                    }
+                    for coin in coins[:5]
+                ]
+    except Exception as exc:
+        log.warning(f"News fetch failed: {exc}")
+
+    return []
 
 
 def _fallback_recurring_events(pairs: list[str], horizon_end: datetime) -> list[dict]:
@@ -232,15 +209,51 @@ async def get_upcoming_events(pairs: list, hours_ahead: int = 8) -> list[dict]:
         return _EVENT_CACHE["data"]
 
     horizon_end = now + timedelta(hours=hours_ahead)
-    events = await _fetch_investing_calendar(pairs, horizon_end)
+    cal_rows = await fetch_economic_calendar()
+    events = []
+    for row in cal_rows:
+        raw_dt = row.get("time", "")
+        try:
+            event_time = datetime.strptime(raw_dt, "%m-%d-%Y %H:%M:%S").replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if event_time > horizon_end:
+            continue
+        for pair in pairs:
+            events.append({
+                "name": row.get("title", "Economic Event"),
+                "pair": pair,
+                "time_utc": event_time,
+                "time_wat": event_time.astimezone(WAT),
+                "impact": "high" if row.get("impact") == "High" else "medium",
+                "forecast": None,
+                "previous": None,
+                "actual": None,
+                "source": "forexfactory",
+                "description": row.get("country", ""),
+            })
+
     if not events:
         events = _fallback_recurring_events(pairs, horizon_end)
 
-    crypto_news = await _fetch_cryptopanic_events(pairs, horizon_end)
-    if not crypto_news:
-        crypto_news = await _fetch_coingecko_events(pairs, horizon_end)
+    crypto_news_rows = await fetch_crypto_news()
+    crypto_news = []
+    for item in crypto_news_rows:
+        for pair in pairs:
+            crypto_news.append({
+                "name": item.get("title") or "Crypto News",
+                "pair": pair,
+                "time_utc": now,
+                "time_wat": now.astimezone(WAT),
+                "impact": "high",
+                "forecast": None,
+                "previous": None,
+                "actual": None,
+                "source": "cryptonews",
+                "description": item.get("url", ""),
+            })
 
-    all_events = [e for e in (events + crypto_news) if e.get("impact") == "high" and now <= e.get("time_utc", now) <= horizon_end]
+    all_events = [e for e in (events + crypto_news) if e.get("impact") in {"high", "medium"} and now <= e.get("time_utc", now) <= horizon_end]
     all_events.sort(key=lambda x: x["time_utc"])
     _EVENT_CACHE.update({"key": cache_key, "data": all_events, "expires_at": now + CACHE_TTL})
     return all_events

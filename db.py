@@ -3,7 +3,7 @@ import psycopg2.extras
 from psycopg2 import pool as pg_pool
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from config import DB_URL
 
 _pool = None
@@ -48,28 +48,41 @@ def _cache_clear(key: str):
     _cache.pop(key, None)
 
 
-def init_pool():
+def _ensure_pool():
     global _pool
     if _pool is None:
         _pool = pg_pool.ThreadedConnectionPool(
-            minconn=2,
-            maxconn=10,
+            minconn=3,
+            maxconn=20,
             dsn=DB_URL,
             cursor_factory=psycopg2.extras.RealDictCursor,
         )
 
 
-def _ensure_pool():
-    init_pool()
-
-
-def acquire_conn():
+def init_pool():
+    """Backward-compatible public pool initializer used by main startup."""
     _ensure_pool()
-    return _pool.getconn()
 
 
-def get_conn():
-    return _PooledConn(acquire_conn())
+def acquire_conn(timeout: float = 10.0):
+    _ensure_pool()
+    start = time.time()
+    while True:
+        try:
+            conn = _pool.getconn()
+            if conn:
+                return conn
+        except Exception:
+            pass
+        if time.time() - start > timeout:
+            raise RuntimeError(
+                f"DB pool exhausted — no connection available after {timeout}s"
+            )
+        time.sleep(0.1)
+
+
+def get_conn(timeout: float = 10.0):
+    return _PooledConn(acquire_conn(timeout=timeout))
 
 
 def release_conn(conn):
@@ -274,6 +287,11 @@ def setup_db():
     ALTER TABLE models ADD COLUMN IF NOT EXISTS phase_timeframes JSONB DEFAULT '{"1":"4h","2":"1h","3":"15m","4":"5m"}';
 
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS direction VARCHAR(20) DEFAULT 'Bullish';
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS timeframe VARCHAR(10);
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS phase VARCHAR(20);
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS quality_grade VARCHAR(5);
+    ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS risk_level VARCHAR(10);
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS price_at_tp FLOAT;
     ALTER TABLE news_events ADD COLUMN IF NOT EXISTS suppressed BOOLEAN DEFAULT FALSE;
 
@@ -743,7 +761,7 @@ def get_all_models():
                        bias, status, rules, phase_timeframes, tier_a_threshold,
                        tier_b_threshold, tier_c_threshold, rr_target,
                        min_score, description, created_at,
-                       tier_a, tier_b, tier_c
+                       tier_a, tier_b, tier_c, regime_managed
                 FROM models
                 ORDER BY
                     CASE WHEN id LIKE 'MM_%' THEN 0 ELSE 1 END,
@@ -780,7 +798,7 @@ def get_active_models():
                        bias, status, rules, phase_timeframes, tier_a_threshold,
                        tier_b_threshold, tier_c_threshold, rr_target,
                        min_score, description, created_at,
-                       tier_a, tier_b, tier_c
+                       tier_a, tier_b, tier_c, regime_managed
                 FROM models
                 WHERE status='active'
                 ORDER BY created_at DESC
@@ -1170,7 +1188,9 @@ def update_user_preferences(chat_id: int, **fields):
 # ── Alerts ────────────────────────────────────────────
 def log_alert(pair, model_id, model_name, score, tier, direction,
               entry, sl, tp, rr, valid, reason=None, price_at_tp=None):
-    with get_conn() as conn:
+    conn = None
+    try:
+        conn = acquire_conn()
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO alert_log
@@ -1180,6 +1200,16 @@ def log_alert(pair, model_id, model_name, score, tier, direction,
             """, (pair, model_id, model_name, score, tier, direction,
                   entry, sl, tp, rr, valid, reason, price_at_tp))
         conn.commit()
+    except Exception as e:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        log.error(f"alert_log insert failed: {e}")
+    finally:
+        if conn is not None:
+            release_conn(conn)
 
 def get_recent_alerts(hours=24, limit=20):
     with get_conn() as conn:
@@ -2514,10 +2544,33 @@ def close_demo_trade(trade_id: int, exit_price: float, result: str) -> dict:
     return {**tr, "exit_price": exit_price, "final_pnl_usd": pnl_usd, "final_pnl_pct": pnl_pct, "final_x": final_x, "balance": acct.get("balance")}
 
 
-def get_open_demo_trades(section: str) -> list:
+def get_open_demo_trades(section: str = None) -> list:
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM demo_trades WHERE section=%s AND result IS NULL ORDER BY opened_at DESC", (section,))
+            if section:
+                cur.execute("SELECT * FROM demo_trades WHERE section=%s AND result IS NULL ORDER BY opened_at DESC", (section,))
+            else:
+                cur.execute("SELECT * FROM demo_trades WHERE result IS NULL ORDER BY opened_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_open_demo_trades_all() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    pair,
+                    direction,
+                    entry_price,
+                    COALESCE(sl, 0) AS stop_loss,
+                    COALESCE(position_size_usd, 0) AS position_size,
+                    COALESCE(risk_amount_usd, 0) AS risk_amount
+                FROM demo_trades
+                WHERE result IS NULL
+                ORDER BY opened_at DESC
+                """
+            )
             return [dict(r) for r in cur.fetchall()]
 
 
@@ -2918,7 +2971,21 @@ def expire_old_phases() -> None:
 def save_alert_lifecycle(data: dict) -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("""INSERT INTO alert_lifecycle (setup_phase_id,model_id,pair,direction,entry_price,alert_sent_at) VALUES (%s,%s,%s,%s,%s,COALESCE(%s,NOW())) RETURNING id""", (data.get("setup_phase_id"), data.get("model_id"), data.get("pair"), data.get("direction"), data.get("entry_price"), data.get("alert_sent_at")))
+            cur.execute(
+                """
+                INSERT INTO alert_lifecycle (
+                    setup_phase_id,model_id,pair,direction,entry_price,alert_sent_at,
+                    risk_level,risk_amount,position_size,leverage,rr_ratio,
+                    quality_grade,quality_score
+                ) VALUES (%s,%s,%s,%s,%s,COALESCE(%s,NOW()),%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    data.get("setup_phase_id"), data.get("model_id"), data.get("pair"), data.get("direction"), data.get("entry_price"), data.get("alert_sent_at"),
+                    data.get("risk_level"), data.get("risk_amount"), data.get("position_size"), data.get("leverage"), data.get("rr_ratio"),
+                    data.get("quality_grade"), data.get("quality_score"),
+                ),
+            )
             row = cur.fetchone()
         conn.commit()
     return row[0] if row else 0
@@ -3021,3 +3088,1052 @@ def get_session_journal(pair: str, days: int = 30) -> list:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM session_journal WHERE pair=%s AND session_date >= CURRENT_DATE - make_interval(days => %s) ORDER BY session_date DESC", (pair, days))
             return cur.fetchall()
+
+
+def _ensure_risk_tables() -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS risk_settings (
+                    id                  SERIAL PRIMARY KEY,
+                    account_size        FLOAT DEFAULT 1000.0,
+                    risk_per_trade_pct  FLOAT DEFAULT 1.0,
+                    max_daily_loss_pct  FLOAT DEFAULT 3.0,
+                    max_open_trades     INT DEFAULT 3,
+                    max_exposure_pct    FLOAT DEFAULT 5.0,
+                    max_pair_exposure   FLOAT DEFAULT 2.0,
+                    risk_reward_min     FLOAT DEFAULT 1.5,
+                    enabled             BOOLEAN DEFAULT TRUE,
+                    min_quality_grade   VARCHAR(5) DEFAULT 'C',
+                    updated_at          TIMESTAMP DEFAULT NOW()
+                );
+                INSERT INTO risk_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+                CREATE TABLE IF NOT EXISTS daily_risk_tracker (
+                    id               SERIAL PRIMARY KEY,
+                    track_date       DATE NOT NULL UNIQUE,
+                    starting_balance FLOAT,
+                    current_balance  FLOAT,
+                    realised_pnl     FLOAT DEFAULT 0,
+                    open_risk        FLOAT DEFAULT 0,
+                    trades_taken     INT DEFAULT 0,
+                    daily_loss_hit   BOOLEAN DEFAULT FALSE,
+                    updated_at       TIMESTAMP DEFAULT NOW()
+                );
+                """
+            )
+        conn.commit()
+
+
+def get_risk_settings() -> dict:
+    _ensure_risk_tables()
+    _ensure_degen_intel_tables()
+    defaults = {
+        "id": 1,
+        "account_size": 1000.0,
+        "risk_per_trade_pct": 1.0,
+        "max_daily_loss_pct": 3.0,
+        "max_open_trades": 3,
+        "max_exposure_pct": 5.0,
+        "max_pair_exposure": 2.0,
+        "risk_reward_min": 1.5,
+        "enabled": True,
+        "min_quality_grade": "C",
+    }
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM risk_settings WHERE id=1")
+            row = cur.fetchone()
+            if row:
+                data = dict(row)
+                return {**defaults, **data}
+            cur.execute("INSERT INTO risk_settings (id) VALUES (1) RETURNING *")
+            row = cur.fetchone()
+        conn.commit()
+    return {**defaults, **dict(row or {})}
+
+
+def update_risk_settings(fields: dict) -> None:
+    if not fields:
+        return
+    _ensure_risk_tables()
+    _ensure_degen_intel_tables()
+    payload = dict(fields)
+    payload["updated_at"] = datetime.utcnow()
+    sets = ", ".join(f"{k}=%s" for k in payload)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE risk_settings SET {sets} WHERE id=1", tuple(payload.values()))
+        conn.commit()
+
+
+def get_daily_tracker() -> dict:
+    _ensure_risk_tables()
+    _ensure_degen_intel_tables()
+    today = date.today()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM daily_risk_tracker WHERE track_date=%s", (today,))
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+            settings = get_risk_settings()
+            acct = float(settings.get("account_size") or 1000.0)
+            cur.execute(
+                """
+                INSERT INTO daily_risk_tracker (track_date, starting_balance, current_balance)
+                VALUES (%s,%s,%s)
+                RETURNING *
+                """,
+                (today, acct, acct),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return dict(row)
+
+
+def update_daily_tracker(fields: dict) -> None:
+    if not fields:
+        return
+    tracker = get_daily_tracker()
+    payload = dict(fields)
+    payload["updated_at"] = datetime.utcnow()
+    sets = ", ".join(f"{k}=%s" for k in payload)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE daily_risk_tracker SET {sets} WHERE id=%s", (*payload.values(), tracker["id"]))
+        conn.commit()
+
+
+def get_notification_pattern(key: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM notification_patterns WHERE pattern_key=%s", (key,))
+            row = cur.fetchone()
+            return dict(row) if row else {}
+
+
+def increment_pattern_alert(key: str) -> None:
+    pattern_type = key.split("_", 1)[0]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO notification_patterns (pattern_key, pattern_type, total_alerts, entries_touched, action_rate, updated_at)
+                VALUES (%s,%s,1,0,0,NOW())
+                ON CONFLICT (pattern_key) DO UPDATE SET
+                    total_alerts=notification_patterns.total_alerts+1,
+                    updated_at=NOW()
+                """,
+                (key, pattern_type),
+            )
+        conn.commit()
+    recalculate_action_rate(key)
+
+
+def increment_pattern_action(key: str) -> None:
+    pattern_type = key.split("_", 1)[0]
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO notification_patterns (pattern_key, pattern_type, total_alerts, entries_touched, action_rate, updated_at)
+                VALUES (%s,%s,1,1,1,NOW())
+                ON CONFLICT (pattern_key) DO UPDATE SET
+                    entries_touched=notification_patterns.entries_touched+1,
+                    updated_at=NOW()
+                """,
+                (key, pattern_type),
+            )
+        conn.commit()
+
+
+def recalculate_action_rate(key: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE notification_patterns
+                SET action_rate = COALESCE(entries_touched::float / NULLIF(total_alerts, 0), 0),
+                    updated_at = NOW()
+                WHERE pattern_key=%s
+                """,
+                (key,),
+            )
+        conn.commit()
+
+
+def update_notification_pattern(key, fields) -> None:
+    if not fields:
+        return
+    payload = dict(fields)
+    payload["updated_at"] = datetime.utcnow()
+    sets = ", ".join(f"{k}=%s" for k in payload)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE notification_patterns SET {sets} WHERE pattern_key=%s", (*payload.values(), key))
+        conn.commit()
+
+
+def get_all_notification_patterns() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM notification_patterns ORDER BY action_rate ASC, total_alerts DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def save_market_regime(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO market_regimes (regime_date, regime, confidence, btc_atr_pct, btc_trend, range_size, details, detected_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT (regime_date) DO UPDATE SET
+                    regime=EXCLUDED.regime,
+                    confidence=EXCLUDED.confidence,
+                    btc_atr_pct=EXCLUDED.btc_atr_pct,
+                    btc_trend=EXCLUDED.btc_trend,
+                    range_size=EXCLUDED.range_size,
+                    details=EXCLUDED.details,
+                    detected_at=NOW()
+                """,
+                (
+                    data.get("regime_date"),
+                    data.get("regime"),
+                    data.get("confidence", 0),
+                    data.get("btc_atr_pct", 0),
+                    data.get("btc_trend"),
+                    data.get("range_size", 0),
+                    json.dumps(data.get("details", {})),
+                ),
+            )
+        conn.commit()
+
+
+def get_latest_regime() -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM market_regimes ORDER BY regime_date DESC LIMIT 1")
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_model_regime_performance(model_id, regime) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM model_regime_performance WHERE model_id=%s AND regime=%s", (model_id, regime))
+            row = cur.fetchone()
+            return dict(row) if row else {}
+
+
+def update_model_regime_performance(model_id, regime, confirmed: bool) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO model_regime_performance (model_id, regime, total_alerts, p4_confirms, confirm_rate, updated_at)
+                VALUES (%s,%s,1,%s,%s,NOW())
+                ON CONFLICT (model_id, regime) DO UPDATE SET
+                    total_alerts=model_regime_performance.total_alerts+1,
+                    p4_confirms=model_regime_performance.p4_confirms+EXCLUDED.p4_confirms,
+                    confirm_rate=(model_regime_performance.p4_confirms+EXCLUDED.p4_confirms)::float/(model_regime_performance.total_alerts+1),
+                    updated_at=NOW()
+                """,
+                (model_id, regime, 1 if confirmed else 0, 1.0 if confirmed else 0.0),
+            )
+        conn.commit()
+
+
+def set_model_active(model_id: str, active: bool, regime_managed: bool = False) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE models SET status=%s, regime_managed=%s, updated_at=NOW() WHERE id=%s",
+                ("active" if active else "inactive", regime_managed, model_id),
+            )
+            _cache_clear("active_models")
+        conn.commit()
+
+
+def ensure_intelligence_tables() -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                ALTER TABLE models ADD COLUMN IF NOT EXISTS regime_managed BOOLEAN DEFAULT FALSE;
+                CREATE TABLE IF NOT EXISTS alert_lifecycle (
+                    id SERIAL PRIMARY KEY,
+                    setup_phase_id INT,
+                    model_id VARCHAR(100),
+                    pair VARCHAR(20),
+                    direction VARCHAR(10),
+                    entry_price FLOAT,
+                    alert_sent_at TIMESTAMP DEFAULT NOW(),
+                    entry_touched BOOLEAN DEFAULT FALSE,
+                    entry_touched_at TIMESTAMP,
+                    phase4_result VARCHAR(20),
+                    phase4_message TEXT,
+                    phase4_sent_at TIMESTAMP,
+                    demo_trade_id INT,
+                    outcome VARCHAR(20),
+                    closed_at TIMESTAMP
+                );
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS risk_level VARCHAR(10);
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS risk_amount FLOAT;
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS position_size FLOAT;
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS leverage FLOAT;
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS rr_ratio FLOAT;
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS quality_grade VARCHAR(5);
+                ALTER TABLE alert_lifecycle ADD COLUMN IF NOT EXISTS quality_score FLOAT;
+                CREATE TABLE IF NOT EXISTS notification_patterns (
+                    id              SERIAL PRIMARY KEY,
+                    pattern_key     VARCHAR(100) UNIQUE NOT NULL,
+                    pattern_type    VARCHAR(30),
+                    total_alerts    INT DEFAULT 0,
+                    entries_touched INT DEFAULT 0,
+                    action_rate     FLOAT DEFAULT 0,
+                    suppressed      BOOLEAN DEFAULT FALSE,
+                    suppressed_at   TIMESTAMP,
+                    override        BOOLEAN DEFAULT FALSE,
+                    updated_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS market_regimes (
+                    id           SERIAL PRIMARY KEY,
+                    regime_date  DATE NOT NULL UNIQUE,
+                    regime       VARCHAR(30) NOT NULL,
+                    confidence   FLOAT DEFAULT 0,
+                    btc_atr_pct  FLOAT,
+                    btc_trend    VARCHAR(20),
+                    range_size   FLOAT,
+                    details      JSONB DEFAULT '{}',
+                    detected_at  TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS model_regime_performance (
+                    id           SERIAL PRIMARY KEY,
+                    model_id     VARCHAR(100) NOT NULL,
+                    regime       VARCHAR(30) NOT NULL,
+                    total_alerts INT DEFAULT 0,
+                    p4_confirms  INT DEFAULT 0,
+                    confirm_rate FLOAT DEFAULT 0,
+                    updated_at   TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(model_id, regime)
+                );
+                """
+            )
+        conn.commit()
+    _ensure_risk_tables()
+    _ensure_degen_intel_tables()
+
+
+def _ensure_degen_intel_tables() -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS contract_scans (
+                    id                  SERIAL PRIMARY KEY,
+                    contract_address    VARCHAR(100) NOT NULL,
+                    chain               VARCHAR(20) NOT NULL,
+                    token_name          VARCHAR(100),
+                    token_symbol        VARCHAR(20),
+                    is_honeypot         BOOLEAN,
+                    honeypot_reason     TEXT,
+                    mint_enabled        BOOLEAN,
+                    owner_can_blacklist BOOLEAN,
+                    owner_can_whitelist BOOLEAN,
+                    is_proxy            BOOLEAN,
+                    is_open_source      BOOLEAN,
+                    trading_cooldown    BOOLEAN,
+                    transfer_pausable   BOOLEAN,
+                    buy_tax             FLOAT,
+                    sell_tax            FLOAT,
+                    holder_count        INT,
+                    top10_holder_pct    FLOAT,
+                    dev_wallet          VARCHAR(100),
+                    dev_holding_pct     FLOAT,
+                    lp_holder_count     INT,
+                    lp_locked_pct       FLOAT,
+                    liquidity_usd       FLOAT,
+                    volume_24h          FLOAT,
+                    price_usd           FLOAT,
+                    market_cap          FLOAT,
+                    pair_created_at     TIMESTAMP,
+                    dex_name            VARCHAR(50),
+                    rug_score           FLOAT,
+                    rug_grade           VARCHAR(5),
+                    safety_flags        JSONB DEFAULT '[]',
+                    passed_checks       JSONB DEFAULT '[]',
+                    scanned_at          TIMESTAMP DEFAULT NOW(),
+                    raw_goplus          JSONB DEFAULT '{}',
+                    UNIQUE(contract_address, chain)
+                );
+                CREATE TABLE IF NOT EXISTS dev_wallets (
+                    id               SERIAL PRIMARY KEY,
+                    contract_address VARCHAR(100) NOT NULL,
+                    chain            VARCHAR(20) NOT NULL,
+                    wallet_address   VARCHAR(100) NOT NULL,
+                    label            VARCHAR(50) DEFAULT 'deployer',
+                    watching         BOOLEAN DEFAULT TRUE,
+                    first_seen       TIMESTAMP DEFAULT NOW(),
+                    last_activity    TIMESTAMP,
+                    alert_on_sell    BOOLEAN DEFAULT TRUE,
+                    alert_on_buy     BOOLEAN DEFAULT TRUE,
+                    UNIQUE(contract_address, wallet_address)
+                );
+                CREATE TABLE IF NOT EXISTS dev_wallet_events (
+                    id               SERIAL PRIMARY KEY,
+                    wallet_address   VARCHAR(100) NOT NULL,
+                    contract_address VARCHAR(100),
+                    chain            VARCHAR(20),
+                    event_type       VARCHAR(30),
+                    token_amount     FLOAT,
+                    usd_value        FLOAT,
+                    tx_hash          VARCHAR(100) UNIQUE,
+                    detected_at      TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS degen_risk_settings (
+                    id                   SERIAL PRIMARY KEY,
+                    account_size         FLOAT DEFAULT 500.0,
+                    max_position_pct     FLOAT DEFAULT 2.0,
+                    max_degen_exposure   FLOAT DEFAULT 10.0,
+                    min_liquidity_usd    FLOAT DEFAULT 50000.0,
+                    max_buy_tax          FLOAT DEFAULT 5.0,
+                    max_sell_tax         FLOAT DEFAULT 5.0,
+                    max_top10_holder_pct FLOAT DEFAULT 50.0,
+                    min_rug_grade        VARCHAR(5) DEFAULT 'C',
+                    block_honeypots      BOOLEAN DEFAULT TRUE,
+                    block_no_lp_lock     BOOLEAN DEFAULT FALSE,
+                    updated_at           TIMESTAMP DEFAULT NOW()
+                );
+                INSERT INTO degen_risk_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+                CREATE TABLE IF NOT EXISTS narrative_tracking (
+                    id              SERIAL PRIMARY KEY,
+                    narrative       VARCHAR(50) NOT NULL UNIQUE,
+                    mention_count   INT DEFAULT 0,
+                    prev_count      INT DEFAULT 0,
+                    velocity        FLOAT DEFAULT 0,
+                    trend           VARCHAR(20) DEFAULT 'neutral',
+                    tokens          JSONB DEFAULT '[]',
+                    last_updated    TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS degen_journal (
+                    id                 SERIAL PRIMARY KEY,
+                    contract_address   VARCHAR(100),
+                    chain              VARCHAR(20),
+                    token_symbol       VARCHAR(20),
+                    token_name         VARCHAR(100),
+                    narrative          VARCHAR(50),
+                    entry_price        FLOAT,
+                    entry_time         TIMESTAMP,
+                    entry_mcap         FLOAT,
+                    entry_liquidity    FLOAT,
+                    entry_holders      INT,
+                    entry_age_hours    FLOAT,
+                    entry_rug_grade    VARCHAR(5),
+                    position_size_usd  FLOAT,
+                    risk_usd           FLOAT,
+                    exit_price         FLOAT,
+                    exit_time          TIMESTAMP,
+                    exit_reason        VARCHAR(100),
+                    peak_price         FLOAT,
+                    peak_multiplier    FLOAT,
+                    final_multiplier   FLOAT,
+                    followed_exit_plan BOOLEAN,
+                    pnl_usd            FLOAT,
+                    outcome            VARCHAR(20),
+                    early_score        FLOAT,
+                    social_velocity    FLOAT,
+                    rug_score          FLOAT,
+                    notes              TEXT,
+                    tags               JSONB DEFAULT '[]',
+                    created_at         TIMESTAMP DEFAULT NOW(),
+                    updated_at         TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS exit_reminders (
+                    id               SERIAL PRIMARY KEY,
+                    journal_id       INT REFERENCES degen_journal(id),
+                    contract_address VARCHAR(100),
+                    token_symbol     VARCHAR(20),
+                    entry_price      FLOAT,
+                    current_price    FLOAT,
+                    multiplier       FLOAT,
+                    reminder_type    VARCHAR(30),
+                    sent             BOOLEAN DEFAULT FALSE,
+                    sent_at          TIMESTAMP,
+                    created_at       TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(journal_id, reminder_type)
+                );
+                INSERT INTO narrative_tracking (narrative)
+                VALUES
+                  ('AI'), ('DeFi'), ('Gaming'), ('Meme'),
+                  ('RWA'), ('Layer2'), ('DePIN'), ('SocialFi'),
+                  ('Liquid Staking'), ('NFT'), ('DAO'), ('Metaverse')
+                ON CONFLICT (narrative) DO NOTHING;
+                """
+            )
+        conn.commit()
+
+
+def save_contract_scan(scan: dict) -> None:
+    payload = {
+        **scan,
+        "safety_flags_json": json.dumps(scan.get("safety_flags", [])),
+        "passed_checks_json": json.dumps(scan.get("passed_checks", [])),
+        "raw_goplus_json": json.dumps(scan.get("raw_goplus", {})),
+    }
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO contract_scans (
+                    contract_address,chain,token_name,token_symbol,is_honeypot,honeypot_reason,mint_enabled,
+                    owner_can_blacklist,owner_can_whitelist,is_proxy,is_open_source,trading_cooldown,transfer_pausable,
+                    buy_tax,sell_tax,holder_count,top10_holder_pct,dev_wallet,dev_holding_pct,lp_holder_count,lp_locked_pct,
+                    liquidity_usd,volume_24h,price_usd,market_cap,pair_created_at,dex_name,rug_score,rug_grade,safety_flags,
+                    passed_checks,scanned_at,raw_goplus
+                ) VALUES (
+                    %(contract_address)s,%(chain)s,%(token_name)s,%(token_symbol)s,%(is_honeypot)s,%(honeypot_reason)s,%(mint_enabled)s,
+                    %(owner_can_blacklist)s,%(owner_can_whitelist)s,%(is_proxy)s,%(is_open_source)s,%(trading_cooldown)s,%(transfer_pausable)s,
+                    %(buy_tax)s,%(sell_tax)s,%(holder_count)s,%(top10_holder_pct)s,%(dev_wallet)s,%(dev_holding_pct)s,%(lp_holder_count)s,%(lp_locked_pct)s,
+                    %(liquidity_usd)s,%(volume_24h)s,%(price_usd)s,%(market_cap)s,%(pair_created_at)s,%(dex_name)s,%(rug_score)s,%(rug_grade)s,%(safety_flags_json)s,
+                    %(passed_checks_json)s,NOW(),%(raw_goplus_json)s
+                )
+                ON CONFLICT (contract_address, chain) DO UPDATE SET
+                    token_name=EXCLUDED.token_name,
+                    token_symbol=EXCLUDED.token_symbol,
+                    is_honeypot=EXCLUDED.is_honeypot,
+                    honeypot_reason=EXCLUDED.honeypot_reason,
+                    mint_enabled=EXCLUDED.mint_enabled,
+                    owner_can_blacklist=EXCLUDED.owner_can_blacklist,
+                    owner_can_whitelist=EXCLUDED.owner_can_whitelist,
+                    is_proxy=EXCLUDED.is_proxy,
+                    is_open_source=EXCLUDED.is_open_source,
+                    trading_cooldown=EXCLUDED.trading_cooldown,
+                    transfer_pausable=EXCLUDED.transfer_pausable,
+                    buy_tax=EXCLUDED.buy_tax,
+                    sell_tax=EXCLUDED.sell_tax,
+                    holder_count=EXCLUDED.holder_count,
+                    top10_holder_pct=EXCLUDED.top10_holder_pct,
+                    dev_wallet=EXCLUDED.dev_wallet,
+                    dev_holding_pct=EXCLUDED.dev_holding_pct,
+                    lp_holder_count=EXCLUDED.lp_holder_count,
+                    lp_locked_pct=EXCLUDED.lp_locked_pct,
+                    liquidity_usd=EXCLUDED.liquidity_usd,
+                    volume_24h=EXCLUDED.volume_24h,
+                    price_usd=EXCLUDED.price_usd,
+                    market_cap=EXCLUDED.market_cap,
+                    pair_created_at=EXCLUDED.pair_created_at,
+                    dex_name=EXCLUDED.dex_name,
+                    rug_score=EXCLUDED.rug_score,
+                    rug_grade=EXCLUDED.rug_grade,
+                    safety_flags=EXCLUDED.safety_flags,
+                    passed_checks=EXCLUDED.passed_checks,
+                    scanned_at=NOW(),
+                    raw_goplus=EXCLUDED.raw_goplus
+                """,
+                payload,
+            )
+        conn.commit()
+
+
+def get_contract_scan(address: str, chain: str) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM contract_scans WHERE LOWER(contract_address)=LOWER(%s) AND LOWER(chain)=LOWER(%s)",
+                (address, chain),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            data = dict(row)
+            for field in ("safety_flags", "passed_checks", "raw_goplus"):
+                data[field] = _decode_json_field(data.get(field), [] if field != "raw_goplus" else {})
+            return data
+
+
+def save_dev_wallet(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO dev_wallets (contract_address,chain,wallet_address,label,watching)
+                VALUES (%s,%s,%s,%s,%s)
+                ON CONFLICT (contract_address, wallet_address) DO NOTHING
+                """,
+                (
+                    data.get("contract_address"),
+                    data.get("chain", "eth"),
+                    data.get("wallet_address"),
+                    data.get("label", "deployer"),
+                    bool(data.get("watching", True)),
+                ),
+            )
+        conn.commit()
+
+
+def get_watched_dev_wallets() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM dev_wallets WHERE watching=TRUE ORDER BY first_seen DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def save_dev_wallet_event(event: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO dev_wallet_events (wallet_address,contract_address,chain,event_type,token_amount,usd_value,tx_hash,detected_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (tx_hash) DO NOTHING
+                """,
+                (
+                    event.get("wallet_address"),
+                    event.get("contract_address"),
+                    event.get("chain"),
+                    event.get("event_type"),
+                    event.get("token_amount"),
+                    event.get("usd_value"),
+                    event.get("tx_hash"),
+                    event.get("detected_at"),
+                ),
+            )
+        conn.commit()
+
+
+def dev_wallet_event_exists(tx_hash: str) -> bool:
+    if not tx_hash:
+        return False
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM dev_wallet_events WHERE tx_hash=%s LIMIT 1", (tx_hash,))
+            return cur.fetchone() is not None
+
+
+def update_dev_wallet(wallet: str, contract: str, fields: dict) -> None:
+    if not fields:
+        return
+    allowed = {"watching", "last_activity", "alert_on_sell", "alert_on_buy", "label"}
+    updates = []
+    values = []
+    for key, val in fields.items():
+        if key in allowed:
+            updates.append(f"{key}=%s")
+            values.append(val)
+    if not updates:
+        return
+    values.extend([wallet, contract])
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE dev_wallets SET {', '.join(updates)} WHERE wallet_address=%s AND contract_address=%s",
+                tuple(values),
+            )
+        conn.commit()
+
+
+def get_degen_risk_settings() -> dict:
+    defaults = {
+        "account_size": 500.0,
+        "max_position_pct": 2.0,
+        "max_degen_exposure": 10.0,
+        "min_liquidity_usd": 50000.0,
+        "max_buy_tax": 5.0,
+        "max_sell_tax": 5.0,
+        "max_top10_holder_pct": 50.0,
+        "min_rug_grade": "C",
+        "block_honeypots": True,
+        "block_no_lp_lock": False,
+    }
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM degen_risk_settings WHERE id=1")
+            row = cur.fetchone()
+            return {**defaults, **(dict(row) if row else {})}
+
+
+def create_degen_journal(entry: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO degen_journal (
+                    contract_address,chain,token_symbol,token_name,narrative,entry_price,entry_time,entry_mcap,entry_liquidity,
+                    entry_holders,entry_age_hours,entry_rug_grade,position_size_usd,risk_usd,early_score,social_velocity,rug_score
+                ) VALUES (%s,%s,%s,%s,%s,%s,NOW(),%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    entry.get("contract_address"),
+                    entry.get("chain"),
+                    entry.get("token_symbol"),
+                    entry.get("token_name"),
+                    entry.get("narrative"),
+                    entry.get("entry_price"),
+                    entry.get("entry_mcap"),
+                    entry.get("entry_liquidity"),
+                    entry.get("entry_holders"),
+                    entry.get("entry_age_hours"),
+                    entry.get("entry_rug_grade"),
+                    entry.get("position_size_usd"),
+                    entry.get("risk_usd"),
+                    entry.get("early_score"),
+                    entry.get("social_velocity"),
+                    entry.get("rug_score"),
+                ),
+            )
+            jid = int(cur.fetchone()["id"])
+        conn.commit()
+    return jid
+
+
+def update_degen_journal(id: int, fields: dict) -> None:
+    if not fields:
+        return
+    allowed = {
+        "exit_price", "exit_time", "exit_reason", "peak_price", "peak_multiplier", "final_multiplier", "followed_exit_plan",
+        "pnl_usd", "outcome", "notes", "tags",
+    }
+    sets, values = [], []
+    for k, v in fields.items():
+        if k in allowed:
+            if k == "tags":
+                sets.append(f"{k}=%s")
+                values.append(json.dumps(v or []))
+            else:
+                sets.append(f"{k}=%s")
+                values.append(v)
+    if not sets:
+        return
+    values.append(id)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE degen_journal SET {', '.join(sets)}, updated_at=NOW() WHERE id=%s", tuple(values))
+        conn.commit()
+
+
+def get_degen_journal_entries(limit: int = 50, outcome: str = None) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if outcome:
+                cur.execute("SELECT * FROM degen_journal WHERE outcome=%s ORDER BY created_at DESC LIMIT %s", (outcome, limit))
+            else:
+                cur.execute("SELECT * FROM degen_journal ORDER BY created_at DESC LIMIT %s", (limit,))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_open_degen_journal_entries() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM degen_journal WHERE outcome IS NULL ORDER BY created_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def save_exit_reminder(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO exit_reminders (journal_id,contract_address,token_symbol,entry_price,current_price,multiplier,reminder_type,sent,sent_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,CASE WHEN %s THEN NOW() ELSE NULL END)
+                ON CONFLICT (journal_id, reminder_type) DO NOTHING
+                """,
+                (
+                    data.get("journal_id"),
+                    data.get("contract_address"),
+                    data.get("token_symbol"),
+                    data.get("entry_price"),
+                    data.get("current_price"),
+                    data.get("multiplier"),
+                    data.get("reminder_type"),
+                    bool(data.get("sent", False)),
+                    bool(data.get("sent", False)),
+                ),
+            )
+        conn.commit()
+
+
+def exit_reminder_sent(journal_id: int, multiplier: float) -> bool:
+    reminder_type = f"{float(multiplier):g}x"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM exit_reminders WHERE journal_id=%s AND reminder_type=%s AND sent=TRUE LIMIT 1",
+                (journal_id, reminder_type),
+            )
+            return cur.fetchone() is not None
+
+
+def get_narrative_count(narrative: str) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT mention_count FROM narrative_tracking WHERE narrative=%s", (narrative,))
+            row = cur.fetchone()
+            return int((row or {}).get("mention_count", 0)) if row else 0
+
+
+def update_narrative(narrative: str, data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO narrative_tracking (narrative,mention_count,prev_count,velocity,trend,tokens,last_updated)
+                VALUES (%s,%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT (narrative) DO UPDATE SET
+                    mention_count=EXCLUDED.mention_count,
+                    prev_count=EXCLUDED.prev_count,
+                    velocity=EXCLUDED.velocity,
+                    trend=EXCLUDED.trend,
+                    tokens=EXCLUDED.tokens,
+                    last_updated=NOW()
+                """,
+                (
+                    narrative,
+                    data.get("mention_count", 0),
+                    data.get("prev_count", 0),
+                    data.get("velocity", 0),
+                    data.get("trend", "stable"),
+                    json.dumps(data.get("tokens", [])),
+                ),
+            )
+        conn.commit()
+
+
+def get_all_narratives() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM narrative_tracking ORDER BY velocity DESC, mention_count DESC")
+            rows = [dict(r) for r in cur.fetchall()]
+            for row in rows:
+                row["tokens"] = _decode_json_field(row.get("tokens"), [])
+            return rows
+
+
+def get_scanner_settings() -> dict:
+    defaults = {
+        "id": 1,
+        "enabled": True,
+        "interval_minutes": 60,
+        "min_liquidity": 50000.0,
+        "max_liquidity": 5000000.0,
+        "min_volume_1h": 10000.0,
+        "max_age_hours": 72.0,
+        "min_probability_score": 55.0,
+        "chains": ["solana"],
+        "min_rug_grade": "C",
+        "require_mint_revoked": True,
+        "require_lp_locked": True,
+        "max_top_holder_pct": 15.0,
+    }
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM scanner_settings WHERE id=1")
+            row = cur.fetchone()
+            if not row:
+                cur.execute("INSERT INTO scanner_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+                conn.commit()
+                return defaults
+            data = dict(row)
+            data["chains"] = _decode_json_field(data.get("chains"), ["solana"])
+            return {**defaults, **data}
+
+
+def update_scanner_settings(fields: dict) -> None:
+    if not fields:
+        return
+    allowed = {
+        "enabled", "interval_minutes", "min_liquidity", "max_liquidity", "min_volume_1h", "max_age_hours",
+        "min_probability_score", "chains", "min_rug_grade", "require_mint_revoked", "require_lp_locked",
+        "max_top_holder_pct",
+    }
+    sets, values = [], []
+    for key, value in fields.items():
+        if key in allowed:
+            sets.append(f"{key}=%s")
+            values.append(json.dumps(value) if key == "chains" else value)
+    if not sets:
+        return
+    values.append(1)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO scanner_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+            cur.execute(f"UPDATE scanner_settings SET {', '.join(sets)}, updated_at=NOW() WHERE id=%s", tuple(values))
+        conn.commit()
+
+
+def save_auto_scan_result(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO auto_scan_results (
+                    scan_run_id, contract_address, chain, token_symbol, token_name,
+                    probability_score, risk_score, early_score, social_score,
+                    momentum_score, rank, alert_message_id, user_action, action_at, scan_data
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    data.get("scan_run_id"),
+                    data.get("contract_address"),
+                    data.get("chain", "solana"),
+                    data.get("token_symbol"),
+                    data.get("token_name"),
+                    data.get("probability_score", 0),
+                    data.get("risk_score", 0),
+                    data.get("early_score", 0),
+                    data.get("social_score", 0),
+                    data.get("momentum_score", 0),
+                    data.get("rank", 1),
+                    data.get("alert_message_id"),
+                    data.get("user_action"),
+                    data.get("action_at"),
+                    json.dumps(data.get("scan_data", {})),
+                ),
+            )
+        conn.commit()
+
+
+def get_latest_auto_scan(address: str) -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM auto_scan_results
+                WHERE contract_address=%s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (address,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return {}
+            data = dict(row)
+            data["scan_data"] = _decode_json_field(data.get("scan_data"), {})
+            return data
+
+
+def update_auto_scan_action(address: str, action: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE auto_scan_results
+                SET user_action=%s, action_at=NOW()
+                WHERE id = (
+                    SELECT id
+                    FROM auto_scan_results
+                    WHERE contract_address=%s AND user_action IS NULL
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                """,
+                (action, address),
+            )
+        conn.commit()
+
+
+def add_to_watchlist(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO watchlist (
+                    contract_address, chain, token_symbol, token_name,
+                    added_by, last_scanned, last_score, status, notes
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (contract_address) DO UPDATE SET
+                    chain=EXCLUDED.chain,
+                    token_symbol=EXCLUDED.token_symbol,
+                    token_name=EXCLUDED.token_name,
+                    last_scanned=COALESCE(EXCLUDED.last_scanned, watchlist.last_scanned),
+                    last_score=EXCLUDED.last_score,
+                    status='watching',
+                    notes=COALESCE(EXCLUDED.notes, watchlist.notes)
+                """,
+                (
+                    data.get("contract_address"),
+                    data.get("chain", "solana"),
+                    data.get("token_symbol", ""),
+                    data.get("token_name", ""),
+                    data.get("added_by", "auto_scan"),
+                    data.get("last_scanned"),
+                    data.get("last_score", 0),
+                    data.get("status", "watching"),
+                    data.get("notes"),
+                ),
+            )
+        conn.commit()
+
+
+def get_active_watchlist() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM watchlist
+                WHERE status='watching'
+                ORDER BY added_at DESC
+                """
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+
+def update_watchlist_item(address: str, fields: dict) -> None:
+    if not fields:
+        return
+    allowed = {"chain", "token_symbol", "token_name", "last_scanned", "last_score", "status", "notes"}
+    sets, values = [], []
+    for key, value in fields.items():
+        if key in allowed:
+            sets.append(f"{key}=%s")
+            values.append(value)
+    if not sets:
+        return
+    values.append(address)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE watchlist SET {', '.join(sets)} WHERE contract_address=%s", tuple(values))
+        conn.commit()
+
+
+def add_to_ignored(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ignored_tokens (
+                    contract_address, token_symbol, ignored_at,
+                    expires_at, reason
+                ) VALUES (%s,%s,%s,%s,%s)
+                ON CONFLICT (contract_address) DO UPDATE SET
+                    token_symbol=EXCLUDED.token_symbol,
+                    ignored_at=EXCLUDED.ignored_at,
+                    expires_at=EXCLUDED.expires_at,
+                    reason=EXCLUDED.reason
+                """,
+                (
+                    data.get("contract_address"),
+                    data.get("token_symbol", ""),
+                    data.get("ignored_at"),
+                    data.get("expires_at"),
+                    data.get("reason", "user_ignored"),
+                ),
+            )
+        conn.commit()
+
+
+def get_ignored_addresses() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT contract_address
+                FROM ignored_tokens
+                WHERE expires_at > NOW()
+                """
+            )
+            return [row["contract_address"] for row in cur.fetchall()]

@@ -65,29 +65,25 @@ def landing_keyboard():
 
 def perps_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="nav:models")],
-        [InlineKeyboardButton("🧪 Backtest", callback_data="backtest:start"), InlineKeyboardButton("📊 Stats", callback_data="nav:stats")],
-        [InlineKeyboardButton("🧪 Pro Simulator", callback_data="nav:simulator")],
-        [InlineKeyboardButton("⏳ Pending", callback_data="nav:pending"), InlineKeyboardButton("🛡️ Discipline", callback_data="nav:discipline")],
-        [InlineKeyboardButton("📋 Alert Log", callback_data="nav:alerts"), InlineKeyboardButton("🔍 Scan", callback_data="nav:scan")],
-        [InlineKeyboardButton("📓 Journal", callback_data="nav:journal"), InlineKeyboardButton("📊 Charts", callback_data="nav:charts")],
-        [InlineKeyboardButton("📓 Session Journal", callback_data="nav:session_journal")],
-        [InlineKeyboardButton("📰 News", callback_data="nav:news"), InlineKeyboardButton("🎮 Demo", callback_data="demo:perps:home")],
-        [InlineKeyboardButton("➕ New Model", callback_data="wizard:start"), InlineKeyboardButton("⚡ Status", callback_data="nav:status")],
-        [InlineKeyboardButton("🎰 Go to Degen", callback_data="nav:degen_home")],
+        [InlineKeyboardButton("⚡ Scanner", callback_data="nav:scan"), InlineKeyboardButton("📊 Models", callback_data="nav:models")],
+        [InlineKeyboardButton("📓 Journal", callback_data="nav:journal"), InlineKeyboardButton("📖 Playbook", callback_data="nav:guide")],
+        [InlineKeyboardButton("🌅 Briefing", callback_data="nav:news"), InlineKeyboardButton("📅 Weekly Review", callback_data="nav:rolling10")],
+        [InlineKeyboardButton("🔥 Heatmap", callback_data="nav:heatmap"), InlineKeyboardButton("📍 Key Levels", callback_data="nav:session_journal")],
+        [InlineKeyboardButton("🔍 Validate Idea", callback_data="nav:charts"), InlineKeyboardButton("🧠 Patterns", callback_data="nav:pending")],
+        [InlineKeyboardButton("💰 Risk Settings", callback_data="nav:risk"), InlineKeyboardButton("✅ Checklist", callback_data="nav:checklist")],
+        [InlineKeyboardButton("🌐 Market Regime", callback_data="nav:regime"), InlineKeyboardButton("🔔 Notif Filter", callback_data="nav:notif_filter")],
+        [InlineKeyboardButton("🎮 Demo Trades", callback_data="demo:perps:home"), InlineKeyboardButton("⏳ Pending", callback_data="nav:pending")],
+        [InlineKeyboardButton("📓 Session Journal", callback_data="nav:session_journal"), InlineKeyboardButton("🏠 Home", callback_data="nav:home")],
     ])
 
 
 def degen_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠 Home", callback_data="nav:home"), InlineKeyboardButton("⚙️ Models", callback_data="degen_model:list")],
-        [InlineKeyboardButton("🆕 Latest Finds", callback_data="wallet:activity"), InlineKeyboardButton("👀 Watchlist", callback_data="wallet:list")],
-        [InlineKeyboardButton("🐋 Wallets", callback_data="wallet:dash"), InlineKeyboardButton("📰 News Trades", callback_data="nav:news")],
-        [InlineKeyboardButton("📊 Degen Stats", callback_data="degen:stats"), InlineKeyboardButton("🎮 Demo", callback_data="demo:degen:home")],
-        [InlineKeyboardButton("📊 Charts", callback_data="nav:charts")],
-        [InlineKeyboardButton("🔍 Search Token", callback_data="wallet:activity"), InlineKeyboardButton("⚙️ Scanner Settings", callback_data="nav:status")],
-        [InlineKeyboardButton("➕ New Model", callback_data="degen_model:new"), InlineKeyboardButton("⚖️ Compare", callback_data="degen:compare")],
-        [InlineKeyboardButton("📈 Go to Perps", callback_data="nav:perps_home")],
+        [InlineKeyboardButton("⚡ Degen Scanner", callback_data="wallet:activity"), InlineKeyboardButton("⚙️ Scanner Settings", callback_data="degen:scanner_settings")],
+        [InlineKeyboardButton("🔍 Scan Contract", callback_data="degen:scan_prompt"), InlineKeyboardButton("🌊 Narratives", callback_data="degen:narratives")],
+        [InlineKeyboardButton("🎲 Degen Journal", callback_data="degen:journal_home"), InlineKeyboardButton("📤 Exit Planner", callback_data="degen:exit_plan")],
+        [InlineKeyboardButton("👁 Dev Wallets", callback_data="wallet:dash"), InlineKeyboardButton("📋 Watchlist", callback_data="degen:watchlist")],
+        [InlineKeyboardButton("🧠 Patterns", callback_data="degen:stats"), InlineKeyboardButton("🏠 Home", callback_data="nav:home")],
     ])
 
 
@@ -191,6 +187,8 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await news_handler._send_news_screen(q.message.reply_text)
     elif dest == "journal":
         await journal_cmd_like(q.message.reply_text)
+    elif dest == "guide":
+        await q.message.reply_text(formatters.fmt_help(), parse_mode="Markdown")
     elif dest == "heatmap":
         await q.message.reply_text(formatters.fmt_heatmap(db.get_hourly_breakdown()), parse_mode="Markdown")
     elif dest == "rolling10":
@@ -247,6 +245,24 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 New Analysis", callback_data="chart:resend"), InlineKeyboardButton("🏠 Home", callback_data="nav:home")]])
         await q.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb)
+    elif dest == "risk":
+        from handlers import risk_handler
+        await risk_handler.show_risk_home(q, context)
+    elif dest == "checklist":
+        from engine.session_checklist import run_pre_session_checklist
+        await run_pre_session_checklist(context)
+    elif dest == "regime":
+        regime = db.get_latest_regime()
+        models = db.get_all_models()
+        active = [m for m in models if m.get("status") == "active"]
+        if regime:
+            await q.message.reply_text(f"🌐 *Market Regime*\n━━━━━━━━━━━━━━━━━━━━━━━━\nRegime: {regime.get('regime')}\nConfidence: {float(regime.get('confidence') or 0):.0%}\nActive models: {len(active)}/{len(models)}", parse_mode="Markdown")
+        else:
+            await q.message.reply_text("🌐 No regime detected yet.")
+    elif dest == "notif_filter":
+        from handlers import risk_handler
+        await risk_handler.show_notification_filter(q)
+
     elif dest == "scan":
         pairs = [[InlineKeyboardButton(p, callback_data=f"scan:{p}")] for p in SUPPORTED_PAIRS]
         await q.message.reply_text("Choose pair to scan", reply_markup=InlineKeyboardMarkup(pairs))

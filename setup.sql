@@ -710,3 +710,294 @@ ALTER TABLE IF EXISTS public.degen_trades ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS public.degen_models ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS public.degen_model_alerts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS public.degen_model_versions ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS risk_settings (
+    id                  SERIAL PRIMARY KEY,
+    account_size        FLOAT DEFAULT 1000.0,
+    risk_per_trade_pct  FLOAT DEFAULT 1.0,
+    max_daily_loss_pct  FLOAT DEFAULT 3.0,
+    max_open_trades     INT DEFAULT 3,
+    max_exposure_pct    FLOAT DEFAULT 5.0,
+    max_pair_exposure   FLOAT DEFAULT 2.0,
+    risk_reward_min     FLOAT DEFAULT 1.5,
+    enabled             BOOLEAN DEFAULT TRUE,
+    min_quality_grade   VARCHAR(5) DEFAULT 'C',
+    updated_at          TIMESTAMP DEFAULT NOW()
+);
+INSERT INTO risk_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS daily_risk_tracker (
+    id               SERIAL PRIMARY KEY,
+    track_date       DATE NOT NULL UNIQUE,
+    starting_balance FLOAT,
+    current_balance  FLOAT,
+    realised_pnl     FLOAT DEFAULT 0,
+    open_risk        FLOAT DEFAULT 0,
+    trades_taken     INT DEFAULT 0,
+    daily_loss_hit   BOOLEAN DEFAULT FALSE,
+    updated_at       TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE alert_lifecycle
+    ADD COLUMN IF NOT EXISTS risk_level VARCHAR(10),
+    ADD COLUMN IF NOT EXISTS risk_amount FLOAT,
+    ADD COLUMN IF NOT EXISTS position_size FLOAT,
+    ADD COLUMN IF NOT EXISTS leverage FLOAT,
+    ADD COLUMN IF NOT EXISTS rr_ratio FLOAT,
+    ADD COLUMN IF NOT EXISTS quality_grade VARCHAR(5),
+    ADD COLUMN IF NOT EXISTS quality_score FLOAT;
+
+CREATE TABLE IF NOT EXISTS notification_patterns (
+    id              SERIAL PRIMARY KEY,
+    pattern_key     VARCHAR(100) UNIQUE NOT NULL,
+    pattern_type    VARCHAR(30),
+    total_alerts    INT DEFAULT 0,
+    entries_touched INT DEFAULT 0,
+    action_rate     FLOAT DEFAULT 0,
+    suppressed      BOOLEAN DEFAULT FALSE,
+    suppressed_at   TIMESTAMP,
+    override        BOOLEAN DEFAULT FALSE,
+    updated_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS market_regimes (
+    id           SERIAL PRIMARY KEY,
+    regime_date  DATE NOT NULL UNIQUE,
+    regime       VARCHAR(30) NOT NULL,
+    confidence   FLOAT DEFAULT 0,
+    btc_atr_pct  FLOAT,
+    btc_trend    VARCHAR(20),
+    range_size   FLOAT,
+    details      JSONB DEFAULT '{}',
+    detected_at  TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS model_regime_performance (
+    id           SERIAL PRIMARY KEY,
+    model_id     VARCHAR(100) NOT NULL,
+    regime       VARCHAR(30) NOT NULL,
+    total_alerts INT DEFAULT 0,
+    p4_confirms  INT DEFAULT 0,
+    confirm_rate FLOAT DEFAULT 0,
+    updated_at   TIMESTAMP DEFAULT NOW(),
+    UNIQUE(model_id, regime)
+);
+
+ALTER TABLE models
+    ADD COLUMN IF NOT EXISTS regime_managed BOOLEAN DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS contract_scans (
+    id                  SERIAL PRIMARY KEY,
+    contract_address    VARCHAR(100) NOT NULL,
+    chain               VARCHAR(20) NOT NULL,
+    token_name          VARCHAR(100),
+    token_symbol        VARCHAR(20),
+    is_honeypot         BOOLEAN,
+    honeypot_reason     TEXT,
+    mint_enabled        BOOLEAN,
+    owner_can_blacklist BOOLEAN,
+    owner_can_whitelist BOOLEAN,
+    is_proxy            BOOLEAN,
+    is_open_source      BOOLEAN,
+    trading_cooldown    BOOLEAN,
+    transfer_pausable   BOOLEAN,
+    buy_tax             FLOAT,
+    sell_tax            FLOAT,
+    holder_count        INT,
+    top10_holder_pct    FLOAT,
+    dev_wallet          VARCHAR(100),
+    dev_holding_pct     FLOAT,
+    lp_holder_count     INT,
+    lp_locked_pct       FLOAT,
+    liquidity_usd       FLOAT,
+    volume_24h          FLOAT,
+    price_usd           FLOAT,
+    market_cap          FLOAT,
+    pair_created_at     TIMESTAMP,
+    dex_name            VARCHAR(50),
+    rug_score           FLOAT,
+    rug_grade           VARCHAR(5),
+    safety_flags        JSONB DEFAULT '[]',
+    passed_checks       JSONB DEFAULT '[]',
+    scanned_at          TIMESTAMP DEFAULT NOW(),
+    raw_goplus          JSONB DEFAULT '{}',
+    UNIQUE(contract_address, chain)
+);
+
+CREATE TABLE IF NOT EXISTS dev_wallets (
+    id               SERIAL PRIMARY KEY,
+    contract_address VARCHAR(100) NOT NULL,
+    chain            VARCHAR(20) NOT NULL,
+    wallet_address   VARCHAR(100) NOT NULL,
+    label            VARCHAR(50) DEFAULT 'deployer',
+    watching         BOOLEAN DEFAULT TRUE,
+    first_seen       TIMESTAMP DEFAULT NOW(),
+    last_activity    TIMESTAMP,
+    alert_on_sell    BOOLEAN DEFAULT TRUE,
+    alert_on_buy     BOOLEAN DEFAULT TRUE,
+    UNIQUE(contract_address, wallet_address)
+);
+
+CREATE TABLE IF NOT EXISTS dev_wallet_events (
+    id               SERIAL PRIMARY KEY,
+    wallet_address   VARCHAR(100) NOT NULL,
+    contract_address VARCHAR(100),
+    chain            VARCHAR(20),
+    event_type       VARCHAR(30),
+    token_amount     FLOAT,
+    usd_value        FLOAT,
+    tx_hash          VARCHAR(100),
+    detected_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS degen_risk_settings (
+    id                   SERIAL PRIMARY KEY,
+    account_size         FLOAT DEFAULT 500.0,
+    max_position_pct     FLOAT DEFAULT 2.0,
+    max_degen_exposure   FLOAT DEFAULT 10.0,
+    min_liquidity_usd    FLOAT DEFAULT 50000.0,
+    max_buy_tax          FLOAT DEFAULT 5.0,
+    max_sell_tax         FLOAT DEFAULT 5.0,
+    max_top10_holder_pct FLOAT DEFAULT 50.0,
+    min_rug_grade        VARCHAR(5) DEFAULT 'C',
+    block_honeypots      BOOLEAN DEFAULT TRUE,
+    block_no_lp_lock     BOOLEAN DEFAULT FALSE,
+    updated_at           TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO degen_risk_settings (id) VALUES (1)
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS narrative_tracking (
+    id              SERIAL PRIMARY KEY,
+    narrative       VARCHAR(50) NOT NULL UNIQUE,
+    mention_count   INT DEFAULT 0,
+    prev_count      INT DEFAULT 0,
+    velocity        FLOAT DEFAULT 0,
+    trend           VARCHAR(20) DEFAULT 'neutral',
+    tokens          JSONB DEFAULT '[]',
+    last_updated    TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS degen_journal (
+    id                SERIAL PRIMARY KEY,
+    contract_address  VARCHAR(100),
+    chain             VARCHAR(20),
+    token_symbol      VARCHAR(20),
+    token_name        VARCHAR(100),
+    narrative         VARCHAR(50),
+    entry_price       FLOAT,
+    entry_time        TIMESTAMP,
+    entry_mcap        FLOAT,
+    entry_liquidity   FLOAT,
+    entry_holders     INT,
+    entry_age_hours   FLOAT,
+    entry_rug_grade   VARCHAR(5),
+    position_size_usd FLOAT,
+    risk_usd          FLOAT,
+    exit_price        FLOAT,
+    exit_time         TIMESTAMP,
+    exit_reason       VARCHAR(100),
+    peak_price        FLOAT,
+    peak_multiplier   FLOAT,
+    final_multiplier  FLOAT,
+    followed_exit_plan BOOLEAN,
+    pnl_usd           FLOAT,
+    outcome           VARCHAR(20),
+    early_score       FLOAT,
+    social_velocity   FLOAT,
+    rug_score         FLOAT,
+    notes             TEXT,
+    tags              JSONB DEFAULT '[]',
+    created_at        TIMESTAMP DEFAULT NOW(),
+    updated_at        TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS exit_reminders (
+    id               SERIAL PRIMARY KEY,
+    journal_id       INT REFERENCES degen_journal(id),
+    contract_address VARCHAR(100),
+    token_symbol     VARCHAR(20),
+    entry_price      FLOAT,
+    current_price    FLOAT,
+    multiplier       FLOAT,
+    reminder_type    VARCHAR(30),
+    sent             BOOLEAN DEFAULT FALSE,
+    sent_at          TIMESTAMP,
+    created_at       TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO narrative_tracking (narrative)
+VALUES
+  ('AI'), ('DeFi'), ('Gaming'), ('Meme'),
+  ('RWA'), ('Layer2'), ('DePIN'), ('SocialFi'),
+  ('Liquid Staking'), ('NFT'), ('DAO'), ('Metaverse')
+ON CONFLICT (narrative) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS auto_scan_results (
+    id               SERIAL PRIMARY KEY,
+    scan_run_id      VARCHAR(50) NOT NULL,
+    contract_address VARCHAR(100) NOT NULL,
+    chain            VARCHAR(20) DEFAULT 'solana',
+    token_symbol     VARCHAR(20),
+    token_name       VARCHAR(100),
+    probability_score FLOAT DEFAULT 0,
+    risk_score       FLOAT DEFAULT 0,
+    early_score      FLOAT DEFAULT 0,
+    social_score     FLOAT DEFAULT 0,
+    momentum_score   FLOAT DEFAULT 0,
+    rank             INT DEFAULT 1,
+    alert_message_id INT,
+    user_action      VARCHAR(20),
+    action_at        TIMESTAMP,
+    scan_data        JSONB DEFAULT '{}',
+    created_at       TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_auto_scan_address
+    ON auto_scan_results(contract_address);
+CREATE INDEX IF NOT EXISTS idx_auto_scan_action
+    ON auto_scan_results(user_action);
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    id               SERIAL PRIMARY KEY,
+    contract_address VARCHAR(100) NOT NULL UNIQUE,
+    chain            VARCHAR(20) DEFAULT 'solana',
+    token_symbol     VARCHAR(20),
+    token_name       VARCHAR(100),
+    added_at         TIMESTAMP DEFAULT NOW(),
+    added_by         VARCHAR(30) DEFAULT 'auto_scan',
+    last_scanned     TIMESTAMP,
+    last_score       FLOAT,
+    status           VARCHAR(20) DEFAULT 'watching',
+    notes            TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ignored_tokens (
+    id               SERIAL PRIMARY KEY,
+    contract_address VARCHAR(100) NOT NULL UNIQUE,
+    token_symbol     VARCHAR(20),
+    ignored_at       TIMESTAMP DEFAULT NOW(),
+    expires_at       TIMESTAMP,
+    reason           VARCHAR(100)
+);
+
+CREATE TABLE IF NOT EXISTS scanner_settings (
+    id                    SERIAL PRIMARY KEY,
+    enabled               BOOLEAN DEFAULT TRUE,
+    interval_minutes      INT DEFAULT 60,
+    min_liquidity         FLOAT DEFAULT 50000,
+    max_liquidity         FLOAT DEFAULT 5000000,
+    min_volume_1h         FLOAT DEFAULT 10000,
+    max_age_hours         FLOAT DEFAULT 72,
+    min_probability_score FLOAT DEFAULT 55,
+    chains                JSONB DEFAULT '["solana"]',
+    min_rug_grade         VARCHAR(5) DEFAULT 'C',
+    require_mint_revoked  BOOLEAN DEFAULT TRUE,
+    require_lp_locked     BOOLEAN DEFAULT TRUE,
+    max_top_holder_pct    FLOAT DEFAULT 15,
+    updated_at            TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO scanner_settings (id) VALUES (1)
+ON CONFLICT (id) DO NOTHING;

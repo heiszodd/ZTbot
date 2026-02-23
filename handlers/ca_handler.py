@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 from datetime import datetime, timezone
@@ -88,6 +87,13 @@ async def _http_get_json(url: str, headers: dict | None = None, timeout: float =
         return None
 
 
+SOLANA_BURN_ADDRESSES = {
+    "1nc1nerator11111111111111111111111111111111",
+    "So11111111111111111111111111111111111111112",
+    "11111111111111111111111111111111",
+}
+
+
 async def fetch_dexscreener_data(address: str) -> dict:
     payload = await _http_get_json(f"https://api.dexscreener.com/latest/dex/tokens/{address}")
     pairs = (payload or {}).get("pairs") or []
@@ -132,23 +138,67 @@ async def fetch_dexscreener_data(address: str) -> dict:
 
 
 async def fetch_rugcheck_data(address: str) -> dict | None:
-    payload = await _http_get_json(f"https://api.rugcheck.xyz/v1/tokens/{address}/report", timeout=10)
+    payload = await _http_get_json(
+        f"https://api.rugcheck.xyz/v1/tokens/{address}/report",
+        headers={"accept": "application/json", "User-Agent": "Mozilla/5.0"},
+        timeout=10,
+    )
     if not payload:
         return None
     th = payload.get("topHolders") or []
     markets = payload.get("markets") or [{}]
     lp = (markets[0].get("lp") if markets else {}) or {}
-    top5 = sum(float((x or {}).get("pct") or 0) for x in th[:5])
+    risks = payload.get("risks") or []
+
+    def _to_pct(raw: float) -> float:
+        return raw * 100 if 0 <= raw < 1 else raw
+
+    top5 = sum(_to_pct(float((x or {}).get("pct") or 0)) for x in th[:5])
+    top1 = _to_pct(float((th[0] or {}).get("pct") or 0)) if th else 0.0
+
+    raw_score = payload.get("score")
+    if raw_score is None:
+        norm = payload.get("score_normalised")
+        raw_score = int(float(norm) * 1000) if isinstance(norm, (int, float)) else 0
+
+    lp_holders = lp.get("holders") or []
+    lp_burned = bool(lp.get("lpBurned"))
+    if not lp_burned and lp_holders:
+        for holder in lp_holders:
+            holder_addr = (holder.get("address") or holder.get("owner") or "").strip()
+            if holder_addr in SOLANA_BURN_ADDRESSES:
+                lp_burned = True
+                break
+
+            pct = _to_pct(float(holder.get("pct") or 0))
+            holder_low = holder_addr.lower()
+            if pct >= 90 and (
+                holder_addr.endswith("pump")
+                or "burn" in holder_low
+                or "dead" in holder_low
+            ):
+                lp_burned = True
+                break
+
+    log.info(
+        "RugCheck parsed %s: score=%s risk_count=%s top1=%s lp_locked=%s",
+        _short(address),
+        int(raw_score or 0),
+        len(risks),
+        round(top1, 4),
+        float(lp.get("lpLockedPct") or 0),
+    )
+
     return {
-        "rugcheck_score": int(payload.get("score") or 0),
-        "rugcheck_risks": payload.get("risks") or [],
+        "rugcheck_score": int(raw_score or 0),
+        "rugcheck_risks": risks,
         "name": ((payload.get("tokenMeta") or {}).get("name")),
         "symbol": ((payload.get("tokenMeta") or {}).get("symbol")),
         "top_holders": th,
-        "top1_holder_pct": float((th[0] or {}).get("pct") or 0) if th else 0.0,
+        "top1_holder_pct": float(top1),
         "top5_holders_pct": float(top5),
         "lp_locked_pct": float(lp.get("lpLockedPct") or 0),
-        "lp_burned": bool(lp.get("lpBurned")),
+        "lp_burned": lp_burned,
         "mint_revoked": payload.get("mintAuthority") is None,
         "freeze_revoked": payload.get("freezeAuthority") is None,
         "dev_wallet": payload.get("creator"),
@@ -157,28 +207,97 @@ async def fetch_rugcheck_data(address: str) -> dict | None:
     }
 
 
-async def fetch_dev_wallet_data(address: str) -> dict | None:
-    if not address:
-        return None
-    payload = await _http_get_json(f"https://api.solscan.io/account?address={address}")
-    if not payload:
-        return {"dev_wallet": address}
-    first = int(payload.get("firstBlockTime") or 0)
-    txc = int(payload.get("txCount") or 0)
-    age_days = int((time.time() - first) / 86400) if first else 0
-    return {"dev_wallet": address, "dev_wallet_age_days": age_days, "dev_tx_count": txc}
+async def fetch_wallet_age_days(wallet_address: str) -> float:
+    if not wallet_address:
+        return 0.0
+    headers = {"accept": "application/json", "User-Agent": "Mozilla/5.0"}
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            resp = await client.get(
+                "https://public-api.solscan.io/account/info",
+                params={"account": wallet_address},
+                headers=headers,
+            )
+            if resp.status_code == 429:
+                log.warning("Solscan account/info rate limited for %s", wallet_address)
+            elif resp.status_code != 200:
+                log.warning("Solscan account/info %s for %s", resp.status_code, wallet_address)
+            else:
+                data = resp.json() or {}
+                first_ts = data.get("first_tx_time") or data.get("firstTxTime") or data.get("created_at")
+                if isinstance(first_ts, (int, float)) and first_ts > 0:
+                    return float(max(0, int((time.time() - float(first_ts)) / 86400)))
+
+            tx_resp = await client.get(
+                "https://public-api.solscan.io/account/transactions",
+                params={"account": wallet_address, "limit": 50, "offset": 0},
+                headers=headers,
+            )
+            if tx_resp.status_code == 429:
+                log.warning("Solscan account/transactions rate limited for %s", wallet_address)
+                return 0.0
+            if tx_resp.status_code != 200:
+                log.warning("Solscan account/transactions %s for %s", tx_resp.status_code, wallet_address)
+                return 0.0
+
+            txs = tx_resp.json() or []
+            if not isinstance(txs, list) or not txs:
+                return 0.0
+
+            oldest_ts = None
+            for tx in txs:
+                block_time = tx.get("blockTime") or tx.get("block_time") or tx.get("timestamp")
+                if isinstance(block_time, (int, float)) and block_time > 0:
+                    oldest_ts = block_time if oldest_ts is None else min(oldest_ts, block_time)
+
+            if not oldest_ts:
+                return 0.0
+            return float(max(0, int((time.time() - float(oldest_ts)) / 86400)))
+    except Exception as exc:
+        log.warning("fetch_wallet_age_days failed for %s: %s", wallet_address, exc)
+        return 0.0
 
 
 async def fetch_holder_data(address: str) -> dict | None:
-    api_key = os.getenv("BIRDEYE_API_KEY", "")
-    if not api_key:
-        return None
-    payload = await _http_get_json(
-        f"https://public-api.birdeye.so/public/token_overview?address={address}",
-        headers={"X-API-KEY": api_key},
-    )
-    data = (payload or {}).get("data") or {}
-    return {"holder_count": int(data.get("holder") or data.get("holders") or 0), "top_holders": data.get("topHolders") or []}
+    headers = {"accept": "application/json", "User-Agent": "Mozilla/5.0"}
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            r = await client.get(
+                "https://public-api.solscan.io/token/holders",
+                params={"tokenAddress": address, "limit": 1, "offset": 0},
+                headers=headers,
+            )
+            if r.status_code == 429:
+                log.warning("Solscan holders rate limited for %s", address)
+            elif r.status_code != 200:
+                log.warning("Solscan holders %s for %s", r.status_code, address)
+            else:
+                data = r.json() or {}
+                total = data.get("total")
+                if total is not None:
+                    return {"holder_count": int(total)}
+                items = data.get("data") or []
+                if items:
+                    log.warning("Solscan holders missing total for %s; using item count fallback", address)
+                    return {"holder_count": len(items)}
+
+            r2 = await client.get(
+                f"https://api-v2.solscan.io/v2/token/holders/total?address={address}",
+                headers={
+                    "accept": "application/json",
+                    "User-Agent": "Mozilla/5.0",
+                    "origin": "https://solscan.io",
+                    "referer": "https://solscan.io/",
+                },
+            )
+            if r2.status_code != 200:
+                log.warning("Solscan v2 holders %s for %s", r2.status_code, address)
+                return {"holder_count": 0}
+            data2 = r2.json() or {}
+            return {"holder_count": int(((data2.get("data") or {}).get("total") or 0))}
+    except Exception as exc:
+        log.warning("fetch_holder_data failed for %s: %s", address, exc)
+        return {"holder_count": 0}
 
 
 async def fetch_pumpfun_data(address: str) -> dict | None:
@@ -232,19 +351,37 @@ async def process_ca(update: Update, context: ContextTypes.DEFAULT_TYPE, ca: dic
         except Exception:
             return None
 
-    dex, rug, dev_seed, holders, pump = await asyncio.gather(
+    dex, rug, holders, pump = await asyncio.gather(
         _run(fetch_dexscreener_data(addr)),
         _run(fetch_rugcheck_data(addr)),
-        _run(fetch_dev_wallet_data(addr)),
         _run(fetch_holder_data(addr)),
         _run(fetch_pumpfun_data(addr)),
         return_exceptions=False,
     )
 
     token_data = {"address": addr, "chain": ca.get("chain_guess", "unknown")}
-    for part in (dex, rug, dev_seed, holders, pump):
+    for part in (dex, rug, holders, pump):
         if isinstance(part, dict):
             token_data.update(part)
+
+    dev_wallet = token_data.get("dev_wallet") or ""
+    dev_age = 0.0
+    if dev_wallet:
+        dev_age = await fetch_wallet_age_days(dev_wallet)
+        token_data["dev_wallet_age_days"] = dev_age
+
+    if token_data.get("holder_count", 0) == 0 and token_data.get("top_holders"):
+        token_data["holder_count"] = len(token_data.get("top_holders") or [])
+
+    log.info(
+        "SCAN DEBUG %s holder_count=%s dev_age_days=%s rugcheck_score=%s top_holder_pct=%s liquidity=%s",
+        _short(addr),
+        int(token_data.get("holder_count") or 0),
+        token_data.get("dev_wallet_age_days", 0),
+        int(token_data.get("rugcheck_score") or 0),
+        float(token_data.get("top1_holder_pct") or 0),
+        float(token_data.get("liquidity_usd") or 0),
+    )
 
     if token_data.get("not_found"):
         token_data["dex_note"] = "not found on DEX — may be too new or invalid CA"
