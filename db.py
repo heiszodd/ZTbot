@@ -3294,12 +3294,15 @@ def _ensure_risk_tables() -> None:
                     max_open_trades     INT DEFAULT 3,
                     max_exposure_pct    FLOAT DEFAULT 5.0,
                     max_pair_exposure   FLOAT DEFAULT 2.0,
-                    risk_reward_min     FLOAT DEFAULT 1.5,
+                    risk_reward_min     FLOAT DEFAULT 1.0,
                     enabled             BOOLEAN DEFAULT TRUE,
                     min_quality_grade   VARCHAR(5) DEFAULT 'C',
                     updated_at          TIMESTAMP DEFAULT NOW()
                 );
                 INSERT INTO risk_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+                UPDATE risk_settings
+                SET risk_reward_min = 1.0
+                WHERE id = 1 AND (risk_reward_min IS NULL OR risk_reward_min = 1.5);
                 CREATE TABLE IF NOT EXISTS daily_risk_tracker (
                     id               SERIAL PRIMARY KEY,
                     track_date       DATE NOT NULL UNIQUE,
@@ -3327,7 +3330,7 @@ def get_risk_settings() -> dict:
         "max_open_trades": 3,
         "max_exposure_pct": 5.0,
         "max_pair_exposure": 2.0,
-        "risk_reward_min": 1.5,
+        "risk_reward_min": 1.0,
         "enabled": True,
         "min_quality_grade": "C",
     }

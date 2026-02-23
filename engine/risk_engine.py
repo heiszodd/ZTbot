@@ -86,7 +86,7 @@ def check_total_exposure(settings: dict, open_trades: list, new_risk_amount: flo
 
 def check_rr_minimum(settings: dict, entry: float, stop_loss: float, tp1: float, direction: str) -> dict:
     rr = calculate_rr(entry, stop_loss, tp1, direction)
-    minimum = settings.get("risk_reward_min", 1.5)
+    minimum = settings.get("risk_reward_min", 1.0)
     if rr < minimum:
         return {"ok": False, "reason": f"RR too low: {rr:.1f} (minimum {minimum:.1f})"}
     return {"ok": True, "rr": rr}
