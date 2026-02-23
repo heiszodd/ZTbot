@@ -9,6 +9,8 @@ from telegram.ext import ContextTypes
 import db
 import prices
 
+PERPS_DEFAULT_LEVERAGE = 10.0
+
 
 def _section_title(section: str) -> str:
     return "PERPS" if section == "perps" else "DEGEN"
@@ -131,8 +133,7 @@ async def handle_demo_risk_input(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("Could not open demo trade: invalid alert entry/SL values.")
         return
 
-    sl_distance_pct = abs((entry - sl) / entry)
-    position = (risk_amount / sl_distance_pct) if sl_distance_pct > 0 else risk_amount
+    position = risk_amount * PERPS_DEFAULT_LEVERAGE
     tp1 = tp if tp > 0 else (entry * (1.01 if direction in {"BUY", "LONG"} else 0.99))
     tp2 = entry + (tp1 - entry) * 1.5
     tp3 = entry + (tp1 - entry) * 2.0
