@@ -59,6 +59,11 @@ def _ensure_pool():
         )
 
 
+def init_pool():
+    """Backward-compatible public pool initializer used by main startup."""
+    _ensure_pool()
+
+
 def acquire_conn(timeout: float = 10.0):
     _ensure_pool()
     start = time.time()
