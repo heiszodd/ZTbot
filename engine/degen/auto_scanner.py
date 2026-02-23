@@ -349,6 +349,15 @@ async def send_scanner_alert(context, token: dict, rank: int, run_id: str, total
 
 
 async def run_auto_scanner(context) -> None:
+    try:
+        await asyncio.wait_for(_run_auto_scanner_inner(context), timeout=300)
+    except asyncio.TimeoutError:
+        log.warning("auto_scanner timed out after 5 minutes")
+    except Exception as e:
+        log.error(f"auto_scanner error: {e}")
+
+
+async def _run_auto_scanner_inner(context) -> None:
     settings = db.get_scanner_settings()
     if not settings.get("enabled", True):
         log.info("Auto scanner disabled — skipping")
@@ -446,6 +455,15 @@ async def run_auto_scanner(context) -> None:
 
 
 async def run_watchlist_scanner(context) -> None:
+    try:
+        await asyncio.wait_for(_run_watchlist_scanner_inner(context), timeout=120)
+    except asyncio.TimeoutError:
+        log.warning("watchlist_scanner timed out after 2 minutes")
+    except Exception as e:
+        log.error(f"watchlist_scanner error: {e}")
+
+
+async def _run_watchlist_scanner_inner(context) -> None:
     watchlist = db.get_active_watchlist()
     if not watchlist:
         return

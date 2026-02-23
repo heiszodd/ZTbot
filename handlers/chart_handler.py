@@ -31,59 +31,74 @@ async def download_image(update) -> bytes:
     return buf.getvalue()
 
 
-def make_image_part(image_bytes: bytes) -> dict:
-    if image_bytes[:4] == b"\x89PNG":
-        mime = "image/png"
-    elif image_bytes[:2] == b"\xff\xd8":
+def make_image_part(image_bytes: bytes):
+    from google.genai import types
+
+    if image_bytes[:2] == b"\xff\xd8":
         mime = "image/jpeg"
-    elif image_bytes[:4] == b"RIFF":
+    elif image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+        mime = "image/png"
+    elif image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
         mime = "image/webp"
     else:
         mime = "image/jpeg"
-    return {"mime_type": mime, "data": image_bytes}
+
+    return types.Part.from_bytes(data=image_bytes, mime_type=mime)
+
 
 
 async def call_gemini(parts: list, retries: int = 3) -> str:
-    import google.generativeai as genai  # noqa: F401
-    from config import get_gemini_model
+    from config import get_gemini_client, get_gemini_model_name
 
-    # Use get_gemini_model() — never import GEMINI_MODEL
-    # directly because it is always None at import time.
-    model = get_gemini_model()
-    if model is None:
-        raise RuntimeError(
-            "Gemini not available — GEMINI_API_KEY may be "
-            "wrong or missing. Check Railway Variables."
-        )
+    client = get_gemini_client()
+    if client is None:
+        raise RuntimeError("Gemini not available — check GEMINI_API_KEY")
+
+    model_name = get_gemini_model_name()
     last_error = None
+
     for attempt in range(retries):
         try:
+            from google.genai import types
+
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, lambda: model.generate_content(parts))
+            response = await loop.run_in_executor(
+                None,
+                lambda: client.models.generate_content(
+                    model=model_name,
+                    contents=parts,
+                    config=types.GenerateContentConfig(
+                        temperature=0.1,
+                        max_output_tokens=2048,
+                    ),
+                ),
+            )
+
             if not response or not response.text:
                 raise ValueError("Empty Gemini response")
             return response.text
         except Exception as e:
             last_error = e
-            err = str(e).lower()
-            if "429" in err or "quota" in err:
+            err_str = str(e).lower()
+
+            if "429" in err_str or "quota" in err_str or "rate" in err_str:
                 wait = 30 * (attempt + 1)
-                log.warning(
-                    f"Gemini rate limited - waiting {wait}s "
-                    f"(attempt {attempt + 1}/{retries})"
-                )
+                log.warning(f"Gemini rate limited — waiting {wait}s")
                 await asyncio.sleep(wait)
-            elif "api_key" in err or "401" in err or "invalid" in err:
+            elif "401" in err_str or "api_key" in err_str or "invalid" in err_str:
                 raise RuntimeError(
                     "Gemini API key rejected. "
-                    "Regenerate at aistudio.google.com "
-                    "and update GEMINI_API_KEY in Railway."
+                    "Check GEMINI_API_KEY in Railway."
                 )
+            elif "404" in err_str or "not found" in err_str:
+                log.warning(
+                    f"Model {model_name} not found — trying gemini-2.0-flash-lite"
+                )
+                model_name = "gemini-2.0-flash-lite"
             elif attempt < retries - 1:
-                await asyncio.sleep(5)
-            else:
-                raise
-    raise last_error or RuntimeError("Gemini call failed")
+                await asyncio.sleep(3)
+
+    raise last_error or RuntimeError("Gemini call failed after retries")
 
 
 async def analyse_single_chart(image_bytes: bytes, context) -> dict:

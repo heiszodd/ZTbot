@@ -1,6 +1,10 @@
+import asyncio
+import logging
 from datetime import datetime
 
 import db
+
+log = logging.getLogger(__name__)
 
 
 def get_pattern_keys(alert_data: dict) -> list:
@@ -40,6 +44,15 @@ def record_entry_touched(alert_data: dict) -> None:
 
 
 async def run_pattern_analysis(context) -> None:
+    try:
+        await asyncio.wait_for(_run_pattern_analysis_inner(context), timeout=60)
+    except asyncio.TimeoutError:
+        log.warning("pattern_analysis timed out after 60 seconds")
+    except Exception as e:
+        log.error(f"pattern_analysis error: {e}")
+
+
+async def _run_pattern_analysis_inner(context) -> None:
     from config import CHAT_ID
 
     patterns = db.get_all_notification_patterns()

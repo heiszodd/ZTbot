@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -102,6 +103,15 @@ async def evaluate_phase(phase_num: int, rules: list, pair: str, timeframe: str,
 
 
 async def run_phase_engine(context):
+    try:
+        await asyncio.wait_for(_run_phase_engine_inner(context), timeout=240)
+    except asyncio.TimeoutError:
+        log.warning("phase_engine timed out after 4 minutes")
+    except Exception as e:
+        log.error(f"phase_engine error: {e}")
+
+
+async def _run_phase_engine_inner(context):
     models = db.get_active_models()
     if not models:
         log.info("Phase engine: no active models")
