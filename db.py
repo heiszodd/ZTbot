@@ -285,6 +285,9 @@ def setup_db():
     ALTER TABLE models ADD COLUMN IF NOT EXISTS tier_c_threshold FLOAT;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
     ALTER TABLE models ADD COLUMN IF NOT EXISTS phase_timeframes JSONB DEFAULT '{"1":"4h","2":"1h","3":"15m","4":"5m"}';
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS regime_managed BOOLEAN DEFAULT FALSE;
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS quality_grade VARCHAR(5);
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS min_quality_grade VARCHAR(5);
 
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS direction VARCHAR(20) DEFAULT 'Bullish';
@@ -470,15 +473,27 @@ def setup_db():
         name                  VARCHAR(100) NOT NULL,
         description           TEXT,
         status                VARCHAR(20)  DEFAULT 'inactive',
+        active                BOOLEAN      DEFAULT FALSE,
+        regime_managed        BOOLEAN      DEFAULT FALSE,
+        strategy              VARCHAR(50)  DEFAULT 'momentum',
+        bias                  VARCHAR(20)  DEFAULT 'Both',
+        pair                  VARCHAR(20)  DEFAULT 'ALL',
         chains                JSONB        DEFAULT '["SOL"]',
         rules                 JSONB        NOT NULL DEFAULT '[]',
+        mandatory_rules       JSONB        NOT NULL DEFAULT '[]',
+        phase_timeframes      JSONB        DEFAULT '{}',
         min_score             FLOAT        DEFAULT 50,
+        min_score_threshold   FLOAT        DEFAULT 50.0,
         max_risk_level        VARCHAR(20)  DEFAULT 'HIGH',
         min_moon_score        INT          DEFAULT 40,
         max_risk_score        INT          DEFAULT 60,
         min_liquidity         FLOAT        DEFAULT 5000,
+        min_age_minutes       INT          DEFAULT 5,
+        max_age_minutes       INT          DEFAULT 120,
         max_token_age_minutes INT          DEFAULT 120,
         min_token_age_minutes INT          DEFAULT 2,
+        risk_per_trade_pct    FLOAT        DEFAULT 1.0,
+        max_open_trades       INT          DEFAULT 3,
         require_lp_locked     BOOLEAN      DEFAULT FALSE,
         require_mint_revoked  BOOLEAN      DEFAULT FALSE,
         require_verified      BOOLEAN      DEFAULT FALSE,
@@ -487,8 +502,13 @@ def setup_db():
         max_top1_holder_pct   FLOAT        DEFAULT 20,
         min_holder_count      INT          DEFAULT 10,
         alert_count           INT          DEFAULT 0,
+        total_alerts          INT          DEFAULT 0,
+        total_wins            INT          DEFAULT 0,
+        total_losses          INT          DEFAULT 0,
+        quality_grade         VARCHAR(5),
         last_alert_at         TIMESTAMP,
         created_at            TIMESTAMP    DEFAULT NOW(),
+        updated_at            TIMESTAMP    DEFAULT NOW(),
         version               INT          DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS degen_model_alerts (
@@ -512,15 +532,27 @@ def setup_db():
     );
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS description TEXT;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'inactive';
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT FALSE;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS regime_managed BOOLEAN DEFAULT FALSE;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS strategy VARCHAR(50) DEFAULT 'momentum';
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS bias VARCHAR(20) DEFAULT 'Both';
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS pair VARCHAR(20) DEFAULT 'ALL';
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS chains JSONB DEFAULT '["SOL"]';
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS rules JSONB NOT NULL DEFAULT '[]';
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS mandatory_rules JSONB DEFAULT '[]';
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS phase_timeframes JSONB DEFAULT '{}';
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_score FLOAT DEFAULT 50;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_score_threshold FLOAT DEFAULT 50.0;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_risk_level VARCHAR(20) DEFAULT 'HIGH';
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_moon_score INT DEFAULT 40;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_risk_score INT DEFAULT 60;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_liquidity FLOAT DEFAULT 5000;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_age_minutes INT DEFAULT 5;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_age_minutes INT DEFAULT 120;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_token_age_minutes INT DEFAULT 120;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_token_age_minutes INT DEFAULT 2;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS risk_per_trade_pct FLOAT DEFAULT 1.0;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_open_trades INT DEFAULT 3;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS require_lp_locked BOOLEAN DEFAULT FALSE;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS require_mint_revoked BOOLEAN DEFAULT FALSE;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS require_verified BOOLEAN DEFAULT FALSE;
@@ -529,8 +561,13 @@ def setup_db():
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS max_top1_holder_pct FLOAT DEFAULT 20;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS min_holder_count INT DEFAULT 10;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS alert_count INT DEFAULT 0;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS total_alerts INT DEFAULT 0;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS total_wins INT DEFAULT 0;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS total_losses INT DEFAULT 0;
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS quality_grade VARCHAR(5);
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS last_alert_at TIMESTAMP;
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+    ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
     ALTER TABLE degen_models ADD COLUMN IF NOT EXISTS version INT DEFAULT 1;
 
     CREATE TABLE IF NOT EXISTS tracked_wallets (
@@ -646,6 +683,7 @@ def setup_db():
                 section VARCHAR(10) NOT NULL,
                 balance FLOAT NOT NULL DEFAULT 0,
                 initial_deposit FLOAT NOT NULL DEFAULT 0,
+                starting_balance FLOAT DEFAULT 1000,
                 total_pnl FLOAT DEFAULT 0,
                 total_pnl_pct FLOAT DEFAULT 0,
                 peak_balance FLOAT DEFAULT 0,
@@ -658,6 +696,9 @@ def setup_db():
                 last_reset_at TIMESTAMP,
                 UNIQUE(section)
             );
+            ALTER TABLE demo_accounts ADD COLUMN IF NOT EXISTS starting_balance FLOAT DEFAULT 1000;
+            UPDATE demo_accounts
+            SET starting_balance = COALESCE(starting_balance, initial_deposit, 1000);
             CREATE TABLE IF NOT EXISTS demo_trades (
                 id SERIAL PRIMARY KEY,
                 section VARCHAR(10) NOT NULL,
@@ -695,6 +736,10 @@ def setup_db():
             ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS remaining_size_usd FLOAT;
             ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS partial_closes JSONB DEFAULT '[]';
             ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS time_stop_minutes INT DEFAULT 30;
+            ALTER TABLE demo_trades ADD COLUMN IF NOT EXISTS margin_reserved FLOAT DEFAULT 0;
+            UPDATE demo_trades
+            SET margin_reserved = COALESCE(risk_amount_usd, 0)
+            WHERE margin_reserved IS NULL OR margin_reserved = 0;
             CREATE TABLE IF NOT EXISTS chart_analyses (
                 id               SERIAL PRIMARY KEY,
                 analysis_type    VARCHAR(10),
@@ -750,6 +795,7 @@ def setup_db():
             );
             """)
         conn.commit()
+    validate_schema()
 
 
 # ── Models ────────────────────────────────────────────
@@ -976,9 +1022,39 @@ def get_open_trades(limit: int = 100):
             return [dict(r) for r in cur.fetchall()]
 
 
-def get_daily_realized_loss_pct() -> float:
+def get_daily_realized_loss_pct(account_id: int = None) -> float:
+    """
+    If account_id is provided, returns today's realized demo loss percentage
+    using actual closed-trade pnl_usd and starting_balance.
+    Otherwise returns legacy live-trade realized loss based on risk_pct.
+    """
     with get_conn() as conn:
         with conn.cursor() as cur:
+            if account_id is not None:
+                cur.execute(
+                    """
+                    SELECT
+                        COALESCE(SUM(dt.final_pnl_usd), 0) AS total_loss,
+                        da.starting_balance
+                    FROM demo_trades dt
+                    JOIN demo_accounts da ON da.section = dt.section
+                    WHERE da.id = %s
+                      AND dt.result IS NOT NULL
+                      AND dt.closed_at::date = CURRENT_DATE
+                      AND COALESCE(dt.final_pnl_usd, 0) < 0
+                    GROUP BY da.starting_balance
+                    """,
+                    (account_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return 0.0
+                total_loss = float((row or {}).get("total_loss") or 0.0)
+                starting = float((row or {}).get("starting_balance") or 0.0)
+                if starting <= 0:
+                    return 0.0
+                return abs(total_loss) / starting * 100.0
+
             cur.execute(
                 """
                 SELECT COALESCE(SUM(risk_pct), 0) AS loss_pct
@@ -1640,6 +1716,8 @@ def _normalize_degen_model(row):
     d = dict(row)
     d["chains"] = _decode_json_field(d.get("chains"), ["SOL"])
     d["rules"] = _decode_json_field(d.get("rules"), [])
+    d["mandatory_rules"] = _decode_json_field(d.get("mandatory_rules"), [])
+    d["phase_timeframes"] = _decode_json_field(d.get("phase_timeframes"), {})
     return d
 
 
@@ -1663,7 +1741,24 @@ def get_active_degen_models() -> list:
         return cached
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM degen_models WHERE status='active' ORDER BY created_at DESC")
+            cur.execute(
+                """
+                SELECT
+                    id, name, description, status, active, regime_managed,
+                    strategy, bias, pair,
+                    chains, rules, mandatory_rules, phase_timeframes,
+                    min_score, min_score_threshold, min_age_minutes, max_age_minutes,
+                    max_risk_level, min_moon_score, max_risk_score, min_liquidity,
+                    max_token_age_minutes, min_token_age_minutes, risk_per_trade_pct, max_open_trades,
+                    require_lp_locked, require_mint_revoked, require_verified,
+                    block_serial_ruggers, max_dev_rug_count, max_top1_holder_pct, min_holder_count,
+                    alert_count, total_alerts, total_wins, total_losses, quality_grade,
+                    last_alert_at, created_at, updated_at, version
+                FROM degen_models
+                WHERE status='active' OR active=TRUE
+                ORDER BY name
+                """
+            )
             rows = [_normalize_degen_model(r) for r in cur.fetchall()]
     _cache_set("active_degen_models", rows)
     return rows
@@ -1707,75 +1802,112 @@ def insert_degen_model(model: dict) -> None:
 
 
 def save_degen_model(model: dict) -> str:
-    import json
-    _ensure_pool()
-    conn = None
-    try:
-        conn = acquire_conn()
+    payload = dict(model or {})
+    model_id = str(payload.get("id") or "").strip()
+    if not model_id:
+        model_id = str(__import__("uuid").uuid4())[:12]
+
+    with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO degen_models
-                    (id, name, chains, strategy, rules,
-                     mandatory_rules, min_liquidity,
-                     min_age_minutes, max_age_minutes,
-                     max_risk_score, min_moon_score,
-                     block_serial_ruggers,
-                     min_score_threshold, min_score,
-                     status, created_at, updated_at)
-                VALUES
-                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+            cur.execute(
+                """
+                INSERT INTO degen_models (
+                    id, name, description, status, active, regime_managed,
+                    strategy, bias, pair,
+                    chains, rules, mandatory_rules, phase_timeframes,
+                    min_score, min_score_threshold, min_age_minutes, max_age_minutes,
+                    max_risk_level, min_moon_score, max_risk_score, min_liquidity,
+                    max_token_age_minutes, min_token_age_minutes, risk_per_trade_pct, max_open_trades,
+                    require_lp_locked, require_mint_revoked, require_verified,
+                    block_serial_ruggers, max_dev_rug_count, max_top1_holder_pct, min_holder_count,
+                    quality_grade, updated_at
+                ) VALUES (
+                    %s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,%s,%s,
+                    %s,%s,%s,%s,
+                    %s,NOW()
+                )
                 ON CONFLICT (id) DO UPDATE SET
-                    name                 = EXCLUDED.name,
-                    chains               = EXCLUDED.chains,
-                    rules                = EXCLUDED.rules,
-                    mandatory_rules      = EXCLUDED.mandatory_rules,
-                    min_liquidity        = EXCLUDED.min_liquidity,
-                    min_age_minutes      = EXCLUDED.min_age_minutes,
-                    max_age_minutes      = EXCLUDED.max_age_minutes,
-                    max_risk_score       = EXCLUDED.max_risk_score,
-                    min_moon_score       = EXCLUDED.min_moon_score,
-                    block_serial_ruggers = EXCLUDED.block_serial_ruggers,
-                    min_score_threshold  = EXCLUDED.min_score_threshold,
-                    min_score            = EXCLUDED.min_score,
-                    status               = EXCLUDED.status,
-                    updated_at           = NOW()
+                    name=EXCLUDED.name,
+                    description=EXCLUDED.description,
+                    status=EXCLUDED.status,
+                    active=EXCLUDED.active,
+                    regime_managed=EXCLUDED.regime_managed,
+                    strategy=EXCLUDED.strategy,
+                    bias=EXCLUDED.bias,
+                    pair=EXCLUDED.pair,
+                    chains=EXCLUDED.chains,
+                    rules=EXCLUDED.rules,
+                    mandatory_rules=EXCLUDED.mandatory_rules,
+                    phase_timeframes=EXCLUDED.phase_timeframes,
+                    min_score=EXCLUDED.min_score,
+                    min_score_threshold=EXCLUDED.min_score_threshold,
+                    min_age_minutes=EXCLUDED.min_age_minutes,
+                    max_age_minutes=EXCLUDED.max_age_minutes,
+                    max_risk_level=EXCLUDED.max_risk_level,
+                    min_moon_score=EXCLUDED.min_moon_score,
+                    max_risk_score=EXCLUDED.max_risk_score,
+                    min_liquidity=EXCLUDED.min_liquidity,
+                    max_token_age_minutes=EXCLUDED.max_token_age_minutes,
+                    min_token_age_minutes=EXCLUDED.min_token_age_minutes,
+                    risk_per_trade_pct=EXCLUDED.risk_per_trade_pct,
+                    max_open_trades=EXCLUDED.max_open_trades,
+                    require_lp_locked=EXCLUDED.require_lp_locked,
+                    require_mint_revoked=EXCLUDED.require_mint_revoked,
+                    require_verified=EXCLUDED.require_verified,
+                    block_serial_ruggers=EXCLUDED.block_serial_ruggers,
+                    max_dev_rug_count=EXCLUDED.max_dev_rug_count,
+                    max_top1_holder_pct=EXCLUDED.max_top1_holder_pct,
+                    min_holder_count=EXCLUDED.min_holder_count,
+                    quality_grade=EXCLUDED.quality_grade,
+                    updated_at=NOW()
                 RETURNING id
-            """, (
-                model["id"],
-                model["name"],
-                model.get("chains", ["SOL"]),
-                model.get("strategy", "custom"),
-                json.dumps(model.get("rules", [])),
-                json.dumps(model.get("mandatory_rules", [])),
-                model.get("min_liquidity", 5000),
-                model.get("min_age_minutes", 0),
-                model.get("max_age_minutes", 120),
-                model.get("max_risk_score", 70),
-                model.get("min_moon_score", 40),
-                model.get("block_serial_ruggers", True),
-                model.get("min_score_threshold", 50),
-                model.get("min_score", 0),
-                model.get("status", "active"),
-            ))
+                """,
+                (
+                    model_id,
+                    payload.get("name", "Unnamed"),
+                    payload.get("description", ""),
+                    payload.get("status", "inactive"),
+                    bool(payload.get("active", str(payload.get("status", "inactive")).lower() == "active")),
+                    bool(payload.get("regime_managed", False)),
+                    payload.get("strategy", "momentum"),
+                    payload.get("bias", "Both"),
+                    payload.get("pair", "ALL"),
+                    json.dumps(payload.get("chains", ["SOL"])),
+                    json.dumps(payload.get("rules", [])),
+                    json.dumps(payload.get("mandatory_rules", [])),
+                    json.dumps(payload.get("phase_timeframes", {})),
+                    float(payload.get("min_score", 50)),
+                    float(payload.get("min_score_threshold", 50.0)),
+                    int(payload.get("min_age_minutes", payload.get("min_token_age_minutes", 5))),
+                    int(payload.get("max_age_minutes", payload.get("max_token_age_minutes", 120))),
+                    payload.get("max_risk_level", "HIGH"),
+                    int(payload.get("min_moon_score", 40)),
+                    int(payload.get("max_risk_score", 60)),
+                    float(payload.get("min_liquidity", 5000)),
+                    int(payload.get("max_token_age_minutes", payload.get("max_age_minutes", 120))),
+                    int(payload.get("min_token_age_minutes", payload.get("min_age_minutes", 5))),
+                    float(payload.get("risk_per_trade_pct", 1.0)),
+                    int(payload.get("max_open_trades", 3)),
+                    bool(payload.get("require_lp_locked", False)),
+                    bool(payload.get("require_mint_revoked", False)),
+                    bool(payload.get("require_verified", False)),
+                    bool(payload.get("block_serial_ruggers", True)),
+                    int(payload.get("max_dev_rug_count", 0)),
+                    float(payload.get("max_top1_holder_pct", 20)),
+                    int(payload.get("min_holder_count", 10)),
+                    payload.get("quality_grade"),
+                ),
+            )
             row = cur.fetchone()
-            conn.commit()
-            _cache_clear("active_degen_models")
-            if not row:
-                return model["id"]
-            if isinstance(row, dict):
-                return row.get("id", model["id"])
-            return row[0]
-    except Exception as e:
-        if conn:
-            try:
-                conn.rollback()
-            except:
-                pass
-        log.error(f"save_degen_model error: {e}")
-        raise
-    finally:
-        if conn:
-            release_conn(conn)
+        conn.commit()
+    _cache_clear("active_degen_models")
+    return str((row or {}).get("id", model_id))
 
 
 def get_trade_model_pair(trade_id: int) -> dict:
@@ -2413,12 +2545,12 @@ def create_demo_account(section: str, initial_deposit: float) -> dict:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO demo_accounts (section,balance,initial_deposit,peak_balance,lowest_balance)
-                VALUES (%s,%s,%s,%s,%s)
-                ON CONFLICT (section) DO UPDATE SET balance=EXCLUDED.balance,initial_deposit=EXCLUDED.initial_deposit,peak_balance=EXCLUDED.peak_balance,lowest_balance=EXCLUDED.lowest_balance
+                INSERT INTO demo_accounts (section,balance,initial_deposit,starting_balance,peak_balance,lowest_balance)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (section) DO UPDATE SET balance=EXCLUDED.balance,initial_deposit=EXCLUDED.initial_deposit,starting_balance=EXCLUDED.starting_balance,peak_balance=EXCLUDED.peak_balance,lowest_balance=EXCLUDED.lowest_balance
                 RETURNING *
                 """,
-                (section, amt, amt, amt, amt),
+                (section, amt, amt, amt, amt, amt),
             )
             row = dict(cur.fetchone())
         conn.commit()
@@ -2458,7 +2590,7 @@ def reset_demo_account(section: str) -> dict:
     new_reset = int(acct.get("reset_id") or 0) + 1
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE demo_accounts SET balance=initial_deposit,total_pnl=0,total_pnl_pct=0,total_trades=0,winning_trades=0,losing_trades=0,last_reset_at=NOW(),reset_id=%s WHERE section=%s RETURNING *", (new_reset, section))
+            cur.execute("UPDATE demo_accounts SET balance=initial_deposit,starting_balance=initial_deposit,total_pnl=0,total_pnl_pct=0,total_trades=0,winning_trades=0,losing_trades=0,last_reset_at=NOW(),reset_id=%s WHERE section=%s RETURNING *", (new_reset, section))
             row = dict(cur.fetchone())
         conn.commit()
     log_demo_transaction(section, "deposit", row.get("initial_deposit", 0), f"Demo reset #{new_reset}")
@@ -2471,23 +2603,32 @@ def open_demo_trade(trade: dict) -> int:
     if not acct:
         raise ValueError("No demo account")
     risk = max(0.0, float(trade.get("risk_amount_usd") or 0))
+    margin_reserved = risk
     balance = float(acct.get("balance") or 0)
-    if risk > balance:
-        risk = balance
+    if margin_reserved > balance:
+        margin_reserved = balance
+        risk = margin_reserved
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO demo_trades (section,pair,token_symbol,direction,entry_price,sl,tp1,tp2,tp3,position_size_usd,risk_amount_usd,risk_pct,current_price,current_pnl_usd,current_pnl_pct,current_x,model_id,model_name,tier,score,source,notes,reset_id)
-                VALUES (%(section)s,%(pair)s,%(token_symbol)s,%(direction)s,%(entry_price)s,%(sl)s,%(tp1)s,%(tp2)s,%(tp3)s,%(position_size_usd)s,%(risk_amount_usd)s,%(risk_pct)s,%(entry_price)s,0,0,1,%(model_id)s,%(model_name)s,%(tier)s,%(score)s,%(source)s,%(notes)s,%(reset_id)s)
+                INSERT INTO demo_trades (section,pair,token_symbol,direction,entry_price,sl,tp1,tp2,tp3,position_size_usd,risk_amount_usd,margin_reserved,risk_pct,current_price,current_pnl_usd,current_pnl_pct,current_x,model_id,model_name,tier,score,source,notes,reset_id,remaining_size_usd)
+                VALUES (%(section)s,%(pair)s,%(token_symbol)s,%(direction)s,%(entry_price)s,%(sl)s,%(tp1)s,%(tp2)s,%(tp3)s,%(position_size_usd)s,%(risk_amount_usd)s,%(margin_reserved)s,%(risk_pct)s,%(entry_price)s,0,0,1,%(model_id)s,%(model_name)s,%(tier)s,%(score)s,%(source)s,%(notes)s,%(reset_id)s,%(remaining_size_usd)s)
                 RETURNING id
                 """,
-                {**trade, "risk_amount_usd": risk, "reset_id": acct.get("reset_id", 0)},
+                {
+                    **trade,
+                    "risk_amount_usd": risk,
+                    "margin_reserved": margin_reserved,
+                    "reset_id": acct.get("reset_id", 0),
+                    "remaining_size_usd": float(trade.get("position_size_usd") or 0),
+                },
             )
             tid = int(cur.fetchone()["id"])
-            cur.execute("UPDATE demo_accounts SET balance=GREATEST(balance-%s,0) WHERE section=%s", (risk, section))
+            cur.execute("UPDATE demo_accounts SET balance=GREATEST(balance-%s,0) WHERE section=%s", (margin_reserved, section))
         conn.commit()
-    log_demo_transaction(section, "trade_open", -risk, f"Open demo trade #{tid}")
+    _cache_clear("demo_accounts")
+    log_demo_transaction(section, "trade_open", -margin_reserved, f"Open demo trade #{tid}")
     return tid
 
 
@@ -2514,18 +2655,29 @@ def close_demo_trade(trade_id: int, exit_price: float, result: str) -> dict:
             tr = dict(cur.fetchone() or {})
             if not tr:
                 return {}
+            if tr.get("result"):
+                return tr
             e = float(tr.get("entry_price") or 0)
-            size = float(tr.get("position_size_usd") or 0)
-            risk_amt = float(tr.get("risk_amount_usd") or 0)
+            size = float(tr.get("remaining_size_usd") or tr.get("position_size_usd") or 0)
+            margin_reserved = float(tr.get("margin_reserved") or tr.get("risk_amount_usd") or 0)
             mult = 1 if str(tr.get("direction", "LONG")).upper() in {"LONG", "BUY"} else -1
             pnl_pct = ((float(exit_price) - e) / e * 100 * mult) if e else 0
             pnl_usd = size * pnl_pct / 100
             final_x = 1 + pnl_pct / 100
-            cur.execute("UPDATE demo_trades SET result=%s,exit_price=%s,final_pnl_usd=%s,final_pnl_pct=%s,final_x=%s,closed_at=NOW(),current_price=%s,current_pnl_usd=%s,current_pnl_pct=%s WHERE id=%s", (result, exit_price, pnl_usd, pnl_pct, final_x, exit_price, pnl_usd, pnl_pct, trade_id))
+            cur.execute(
+                """
+                UPDATE demo_trades
+                SET result=%s,exit_price=%s,final_pnl_usd=%s,final_pnl_pct=%s,final_x=%s,
+                    closed_at=NOW(),current_price=%s,current_pnl_usd=%s,current_pnl_pct=%s,
+                    margin_reserved=0,remaining_size_usd=0
+                WHERE id=%s
+                """,
+                (result, exit_price, pnl_usd, pnl_pct, final_x, exit_price, pnl_usd, pnl_pct, trade_id),
+            )
             cur.execute(
                 """
                 UPDATE demo_accounts
-                SET balance=balance+%s+%s,
+                SET balance=GREATEST(balance+%s+%s, 0),
                     total_pnl=COALESCE(total_pnl,0)+%s,
                     total_pnl_pct=CASE WHEN initial_deposit>0 THEN ((COALESCE(total_pnl,0)+%s)/initial_deposit)*100 ELSE 0 END,
                     peak_balance=GREATEST(peak_balance,balance+%s+%s),
@@ -2536,10 +2688,11 @@ def close_demo_trade(trade_id: int, exit_price: float, result: str) -> dict:
                 WHERE section=%s
                 RETURNING *
                 """,
-                (size, pnl_usd, pnl_usd, pnl_usd, size, pnl_usd, size, pnl_usd, pnl_usd, pnl_usd, tr["section"]),
+                (margin_reserved, pnl_usd, pnl_usd, pnl_usd, margin_reserved, pnl_usd, margin_reserved, pnl_usd, pnl_usd, pnl_usd, tr["section"]),
             )
             acct = dict(cur.fetchone() or {})
         conn.commit()
+    _cache_clear("demo_accounts")
     log_demo_transaction(tr["section"], "trade_close", pnl_usd, f"Close demo trade #{trade_id} ({result})")
     return {**tr, "exit_price": exit_price, "final_pnl_usd": pnl_usd, "final_pnl_pct": pnl_pct, "final_x": final_x, "balance": acct.get("balance")}
 
@@ -2814,19 +2967,32 @@ def partial_close_demo_trade(trade_id: int, fraction: float = 0.5) -> dict | Non
             remaining = float(tr.get("remaining_size_usd") or tr.get("position_size_usd") or 0)
             close_size = remaining * fraction
             new_remaining = remaining - close_size
+            margin_reserved = float(tr.get("margin_reserved") or tr.get("risk_amount_usd") or 0)
+            margin_return = margin_reserved * fraction
+            new_margin = margin_reserved - margin_return
             pnl_pct = float(tr.get("current_pnl_pct") or 0)
             realized = close_size * pnl_pct / 100
             cur.execute(
                 "UPDATE demo_accounts SET balance=balance+%s+%s,total_pnl=COALESCE(total_pnl,0)+%s WHERE section=%s",
-                (close_size, realized, realized, tr.get("section")),
+                (margin_return, realized, realized, tr.get("section")),
             )
             partials = _decode_json_field(tr.get("partial_closes"), [])
-            partials.append({"ts": int(time.time()), "fraction": fraction, "size": close_size, "price": tr.get("current_price"), "pnl_usd": realized})
+            partials.append(
+                {
+                    "ts": int(time.time()),
+                    "fraction": fraction,
+                    "size": close_size,
+                    "price": tr.get("current_price"),
+                    "pnl_usd": realized,
+                    "margin_returned": margin_return,
+                }
+            )
             cur.execute(
-                "UPDATE demo_trades SET remaining_size_usd=%s, partial_closes=%s, sl=entry_price WHERE id=%s",
-                (new_remaining, json.dumps(partials), trade_id),
+                "UPDATE demo_trades SET remaining_size_usd=%s, margin_reserved=%s, partial_closes=%s, sl=entry_price WHERE id=%s",
+                (new_remaining, new_margin, json.dumps(partials), trade_id),
             )
         conn.commit()
+    _cache_clear("demo_accounts")
     return get_demo_trade_by_id(trade_id)
 
 
@@ -4137,3 +4303,45 @@ def get_ignored_addresses() -> list:
                 """
             )
             return [row["contract_address"] for row in cur.fetchall()]
+
+
+def validate_schema() -> None:
+    """
+    Read-only schema checks for critical runtime columns.
+    Logs warnings for missing columns but does not raise.
+    """
+    checks = [
+        ("demo_trades", "margin_reserved"),
+        ("demo_accounts", "starting_balance"),
+        ("degen_models", "strategy"),
+        ("degen_models", "mandatory_rules"),
+        ("degen_models", "min_age_minutes"),
+        ("degen_models", "phase_timeframes"),
+        ("alert_log", "direction"),
+        ("alert_log", "quality_grade"),
+        ("models", "phase_timeframes"),
+        ("models", "regime_managed"),
+    ]
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                for table, column in checks:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM information_schema.columns
+                        WHERE table_name = %s
+                          AND column_name = %s
+                        """,
+                        (table, column),
+                    )
+                    row = cur.fetchone()
+                    exists = int((row or {}).get("count", 0)) > 0
+                    if not exists:
+                        log.warning(
+                            "SCHEMA WARNING: %s.%s is missing — run ALTER TABLE to add it",
+                            table,
+                            column,
+                        )
+    except Exception as exc:
+        log.warning("SCHEMA WARNING: validation failed: %s", exc)
