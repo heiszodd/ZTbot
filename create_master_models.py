@@ -5,6 +5,8 @@ import psycopg2
 import db
 from config import DB_URL
 
+ALLOWED_PAIRS = {"BTCUSDT", "SOLUSDT"}
+
 
 def r(mid, i, name, w, m=False):
     return {"id": f"{mid}_rule_{i}", "name": name, "weight": float(w), "mandatory": bool(m), "description": name}
@@ -14,8 +16,10 @@ def model(mid, name, pair, tf, session, bias, desc, rulespec, rr_target=2.0):
     rules = [r(mid, i + 1, *row) for i, row in enumerate(rulespec)]
     total = sum(x["weight"] for x in rules)
     a, b, c = total * 0.8, total * 0.65, total * 0.5
+    pair = str(pair or "BTCUSDT").upper()
+    bias = str(bias or "Both")
     return {
-        "id": mid, "name": name, "pair": "ALL", "timeframe": tf, "session": session, "bias": "Both",
+        "id": mid, "name": name, "pair": pair, "timeframe": tf, "session": session, "bias": bias,
         "status": "inactive", "rules": rules,
         "tier_a_threshold": a, "tier_b_threshold": b, "tier_c_threshold": c, "min_score": c,
         "description": desc, "tier_a": a, "tier_b": b, "tier_c": c, "rr_target": float(rr_target),
@@ -147,8 +151,14 @@ def run():
     ensure_schema(cur)
     conn.commit()
 
+    cur.execute("UPDATE models SET status='inactive' WHERE UPPER(pair) NOT IN ('BTCUSDT', 'SOLUSDT')")
+    conn.commit()
+
     inserted = 0
-    for model in MODELS:
+    filtered_models = [m for m in MODELS if str(m.get("pair", "")).upper() in ALLOWED_PAIRS]
+    print(f"Filtering to BTC/SOL models only: {len(filtered_models)} of {len(MODELS)}")
+
+    for model in filtered_models:
         values = (
             model["id"],
             model["name"],

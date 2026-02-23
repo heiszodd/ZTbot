@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 
 import db
 from config import CHAT_ID, SUPPORTED_PAIRS
+
+ALLOWED_PHASE_PAIRS = {"BTCUSDT", "SOLUSDT"}
 from engine.rules import calc_atr, evaluate_rule, get_candles
 
 log = logging.getLogger(__name__)
@@ -12,12 +14,13 @@ PHASE_THRESHOLDS = {1: 60, 2: 55, 3: 70, 4: 50}
 
 
 def get_pairs_for_model(model: dict) -> list[str]:
-    pair = model.get("pair", "BTCUSDT")
+    pair = str(model.get("pair", "BTCUSDT") or "BTCUSDT").upper()
+    allowed_supported = [p for p in SUPPORTED_PAIRS if p in ALLOWED_PHASE_PAIRS]
     if pair != "ALL":
-        return [pair]
+        return [pair] if pair in ALLOWED_PHASE_PAIRS else []
     prefs = db.get_user_preferences(CHAT_ID) or {}
-    preferred = [p for p in (prefs.get("preferred_pairs") or []) if p in SUPPORTED_PAIRS]
-    return preferred or list(SUPPORTED_PAIRS)
+    preferred = [p for p in (prefs.get("preferred_pairs") or []) if p in allowed_supported]
+    return preferred or allowed_supported
 
 
 def get_directions(model: dict) -> list[str]:
@@ -69,13 +72,23 @@ async def evaluate_phase(phase_num: int, rules: list, pair: str, timeframe: str,
 async def run_phase_engine(context):
     models = db.get_active_models()
     candle_cache = {}
+    missing_phase_tables = False
     for model in models:
         rules = model.get("rules", [])
         if not rules:
             continue
         for pair in get_pairs_for_model(model):
             for direction in get_directions(model):
-                await evaluate_model_phases(context, model, pair, direction, rules, candle_cache)
+                try:
+                    await evaluate_model_phases(context, model, pair, direction, rules, candle_cache)
+                except Exception as exc:
+                    msg = str(exc).lower()
+                    if "setup_phases" in msg and "does not exist" in msg:
+                        missing_phase_tables = True
+                        continue
+                    raise
+    if missing_phase_tables:
+        log.error("Phase engine disabled this cycle: setup_phases table is missing. Run db.setup_db() migration on Railway.")
 
 
 async def evaluate_model_phases(context, model, pair, direction, rules, candle_cache):

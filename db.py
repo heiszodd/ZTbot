@@ -336,6 +336,100 @@ def setup_db():
     ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS check_count INT DEFAULT 1;
     ALTER TABLE IF EXISTS pending_setups ADD COLUMN IF NOT EXISTS peak_score_pct FLOAT;
 
+    CREATE TABLE IF NOT EXISTS setup_phases (
+        id                  SERIAL PRIMARY KEY,
+        model_id            VARCHAR(50) NOT NULL,
+        model_name          VARCHAR(120),
+        pair                VARCHAR(20) NOT NULL,
+        direction           VARCHAR(10) NOT NULL,
+        overall_status      VARCHAR(20) DEFAULT 'phase1',
+        check_count         INT DEFAULT 0,
+
+        phase1_status       VARCHAR(20) DEFAULT 'pending',
+        phase1_score        FLOAT DEFAULT 0,
+        phase1_max_score    FLOAT DEFAULT 0,
+        phase1_passed_rules JSONB DEFAULT '[]',
+        phase1_failed_rules JSONB DEFAULT '[]',
+        phase1_data         JSONB DEFAULT '{}',
+        phase1_completed_at TIMESTAMP,
+        phase1_expires_at   TIMESTAMP,
+
+        phase2_status       VARCHAR(20) DEFAULT 'waiting',
+        phase2_score        FLOAT DEFAULT 0,
+        phase2_max_score    FLOAT DEFAULT 0,
+        phase2_passed_rules JSONB DEFAULT '[]',
+        phase2_failed_rules JSONB DEFAULT '[]',
+        phase2_data         JSONB DEFAULT '{}',
+        phase2_completed_at TIMESTAMP,
+        phase2_expires_at   TIMESTAMP,
+
+        phase3_status       VARCHAR(20) DEFAULT 'waiting',
+        phase3_score        FLOAT DEFAULT 0,
+        phase3_max_score    FLOAT DEFAULT 0,
+        phase3_passed_rules JSONB DEFAULT '[]',
+        phase3_failed_rules JSONB DEFAULT '[]',
+        phase3_data         JSONB DEFAULT '{}',
+        phase3_completed_at TIMESTAMP,
+        phase3_expires_at   TIMESTAMP,
+
+        phase4_status       VARCHAR(20) DEFAULT 'waiting',
+        phase4_score        FLOAT DEFAULT 0,
+        phase4_max_score    FLOAT DEFAULT 0,
+        phase4_passed_rules JSONB DEFAULT '[]',
+        phase4_failed_rules JSONB DEFAULT '[]',
+        phase4_data         JSONB DEFAULT '{}',
+        phase4_completed_at TIMESTAMP,
+        phase4_expires_at   TIMESTAMP,
+
+        alert_message_id    BIGINT,
+        entry_price         FLOAT,
+        stop_loss           FLOAT,
+        tp1                 FLOAT,
+        tp2                 FLOAT,
+        tp3                 FLOAT,
+
+        created_at          TIMESTAMP DEFAULT NOW(),
+        last_updated_at     TIMESTAMP DEFAULT NOW(),
+
+        UNIQUE(model_id, pair, direction)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_setup_phases_status ON setup_phases (overall_status);
+
+    CREATE TABLE IF NOT EXISTS alert_lifecycle (
+        id               SERIAL PRIMARY KEY,
+        setup_phase_id   INT REFERENCES setup_phases(id) ON DELETE CASCADE,
+        model_id         VARCHAR(50) NOT NULL,
+        pair             VARCHAR(20) NOT NULL,
+        direction        VARCHAR(10) NOT NULL,
+        entry_price      FLOAT,
+        alert_sent_at    TIMESTAMP DEFAULT NOW(),
+        entry_touched    BOOLEAN DEFAULT FALSE,
+        entry_touched_at TIMESTAMP,
+        phase4_result    VARCHAR(20),
+        phase4_message   TEXT,
+        phase4_sent_at   TIMESTAMP,
+        outcome          VARCHAR(20),
+        closed_at        TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_alert_lifecycle_setup_phase_id ON alert_lifecycle (setup_phase_id);
+    CREATE INDEX IF NOT EXISTS idx_alert_lifecycle_outcome ON alert_lifecycle (outcome);
+
+    CREATE TABLE IF NOT EXISTS model_performance (
+        model_id        VARCHAR(50) PRIMARY KEY,
+        total_alerts    INT DEFAULT 0,
+        entries_touched INT DEFAULT 0,
+        phase4_confirms INT DEFAULT 0,
+        phase4_fails    INT DEFAULT 0,
+        demo_trades     INT DEFAULT 0,
+        demo_wins       INT DEFAULT 0,
+        demo_losses     INT DEFAULT 0,
+        demo_win_rate   FLOAT DEFAULT 0,
+        avg_r           FLOAT DEFAULT 0,
+        updated_at      TIMESTAMP DEFAULT NOW()
+    );
+
     """
     degen_sql = """
     CREATE TABLE IF NOT EXISTS degen_tokens (
