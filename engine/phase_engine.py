@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import db
 from config import CHAT_ID, SUPPORTED_PAIRS
 from engine.rules import calc_atr, evaluate_rule, get_candles
+import prices as px
 
 log = logging.getLogger(__name__)
 
@@ -196,13 +197,21 @@ async def _fire_alert(context, existing, result, model, pair):
     from engine.risk_engine import run_risk_checks
 
     candles = await get_candles(pair, "15m", 20, {})
-    price = candles[-1]["close"] if candles else 0
-    direction = existing.get("direction", "bullish")
-    sl = price * (0.995 if direction == "bullish" else 1.005)
+    price = float(candles[-1]["close"]) if candles else 0.0
+    if price <= 0:
+        fallback = px.get_price(pair)
+        price = float(fallback or 0)
+    if price <= 0:
+        log.warning("Phase alert skipped %s/%s: no valid live price", model.get("name"), pair)
+        return
+
+    direction = str(existing.get("direction", "bullish") or "bullish").lower()
+    bullish = direction in {"bullish", "buy", "long"}
+    sl = price * (0.995 if bullish else 1.005)
     rr = abs(price - sl)
-    tp1 = price + rr if direction == "bullish" else price - rr
-    tp2 = price + rr * 2 if direction == "bullish" else price - rr * 2
-    tp3 = price + rr * 3 if direction == "bullish" else price - rr * 3
+    tp1 = price + rr if bullish else price - rr
+    tp2 = price + rr * 2 if bullish else price - rr * 2
+    tp3 = price + rr * 3 if bullish else price - rr * 3
 
     try:
         quality = score_setup_quality(
