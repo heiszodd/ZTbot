@@ -1562,13 +1562,36 @@ def save_news_event(event: dict) -> int:
             cur.execute(
                 """
                 SELECT id FROM news_events
-                WHERE event_name=%s AND pair=%s AND event_time_utc=%s
+                WHERE event_name=%s
+                  AND pair=%s
+                  AND event_time_utc BETWEEN %s::timestamp - INTERVAL '5 minutes' AND %s::timestamp + INTERVAL '5 minutes'
+                ORDER BY ABS(EXTRACT(EPOCH FROM (event_time_utc - %s::timestamp))) ASC
                 LIMIT 1
                 """,
-                (event.get("name"), event.get("pair"), event.get("time_utc")),
+                (event.get("name"), event.get("pair"), event.get("time_utc"), event.get("time_utc"), event.get("time_utc")),
             )
             exists = cur.fetchone()
             if exists:
+                cur.execute(
+                    """
+                    UPDATE news_events
+                    SET impact=%s,
+                        forecast=%s,
+                        previous=%s,
+                        actual=%s,
+                        source=%s
+                    WHERE id=%s
+                    """,
+                    (
+                        event.get("impact"),
+                        event.get("forecast"),
+                        event.get("previous"),
+                        event.get("actual"),
+                        event.get("source"),
+                        int(exists["id"]),
+                    ),
+                )
+                conn.commit()
                 return int(exists["id"])
             cur.execute(
                 """
@@ -1601,6 +1624,7 @@ def get_unsent_briefings(minutes_ahead: int) -> list:
                 SELECT * FROM news_events
                 WHERE briefing_sent=FALSE
                   AND suppressed=FALSE
+                  AND COALESCE(source,'') <> 'cryptonews'
                   AND event_time_utc BETWEEN NOW() + (%s || ' minutes')::interval AND NOW() + (%s || ' minutes')::interval
                 ORDER BY event_time_utc ASC
                 """,
@@ -1617,6 +1641,7 @@ def get_unsent_signals() -> list:
                 SELECT * FROM news_events
                 WHERE signal_sent=FALSE
                   AND suppressed=FALSE
+                  AND COALESCE(source,'') <> 'cryptonews'
                   AND event_time_utc BETWEEN NOW() - INTERVAL '60 seconds' AND NOW() + INTERVAL '60 seconds'
                 ORDER BY event_time_utc ASC
                 """

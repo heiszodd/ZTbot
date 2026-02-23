@@ -14,15 +14,35 @@ def _section_title(section: str) -> str:
     return "PERPS" if section == "perps" else "DEGEN"
 
 
+def _trade_asset_label(trade: dict) -> str:
+    pair = (trade.get("pair") or "").strip()
+    if pair:
+        return pair
+
+    symbol = (trade.get("token_symbol") or "").strip()
+    name = (trade.get("token_name") or "").strip()
+    if symbol and name and name.lower() != symbol.lower():
+        return f"{symbol} ({name})"
+    if symbol:
+        return symbol
+    if name:
+        return name
+
+    addr = (trade.get("token_address") or "").strip()
+    if addr:
+        return f"{addr[:6]}...{addr[-4:]}"
+    return "Unknown Token"
+
+
 def _dashboard_kb(section: str):
     rows = [
-        [InlineKeyboardButton("Open Trades", callback_data=f"demo:{section}:open"), InlineKeyboardButton("Trade History", callback_data=f"demo:{section}:history")],
-        [InlineKeyboardButton("Deposit More", callback_data=f"demo:{section}:deposit"), InlineKeyboardButton("Reset Account", callback_data=f"demo:{section}:reset")],
-        [InlineKeyboardButton("Full Stats", callback_data=f"demo:{section}:stats"), InlineKeyboardButton("Best Trades", callback_data=f"demo:{section}:best")],
+        [InlineKeyboardButton("📂 Open Trades", callback_data=f"demo:{section}:open"), InlineKeyboardButton("🧾 Trade History", callback_data=f"demo:{section}:history")],
+        [InlineKeyboardButton("💵 Deposit More", callback_data=f"demo:{section}:deposit"), InlineKeyboardButton("♻️ Reset Account", callback_data=f"demo:{section}:reset")],
+        [InlineKeyboardButton("📊 Full Stats", callback_data=f"demo:{section}:stats"), InlineKeyboardButton("🏅 Best Trades", callback_data=f"demo:{section}:best")],
         [InlineKeyboardButton(f"Back to {_section_title(section)}", callback_data=f"nav:{'perps_home' if section=='perps' else 'degen_home'}")],
     ]
     if section == "degen":
-        rows.insert(3, [InlineKeyboardButton("Close All Open (Safety)", callback_data=f"demo:{section}:closeall_confirm")])
+        rows.insert(3, [InlineKeyboardButton("🛑 Close All Open (Safety)", callback_data=f"demo:{section}:closeall_confirm")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -51,7 +71,7 @@ async def _render_dashboard(sender, section: str):
         f"📌 Open Positions ({len(open_trades)}):",
     ]
     for t in open_trades[:6]:
-        lines.append(f"• 🎮 {t.get('pair') or t.get('token_symbol')} {t.get('direction')} [PAPER] {t.get('current_pnl_pct',0):+.2f}%")
+        lines.append(f"• 🎮 {_trade_asset_label(t)} {t.get('direction')} [PAPER] {t.get('current_pnl_pct',0):+.2f}%")
     lines.append("\n_Virtual funds only — not real money_")
     await sender("\n".join(lines), reply_markup=_dashboard_kb(section), parse_mode="Markdown")
 
@@ -170,7 +190,7 @@ async def handle_demo_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = [f"Open Demo Trades - {_section_title(section)}", "------------------------"]
         rows = []
         for t in trades[:20]:
-            lines.append(f"#{t['id']} {t.get('pair') or t.get('token_symbol')} {t.get('direction')} entry {t.get('entry_price')} now {t.get('current_price')} [PAPER] {t.get('current_pnl_pct',0):+.2f}%")
+            lines.append(f"#{t['id']} {_trade_asset_label(t)} {t.get('direction')} entry {t.get('entry_price')} now {t.get('current_price')} [PAPER] {t.get('current_pnl_pct',0):+.2f}%")
             rows.append([InlineKeyboardButton(f"Manage #{t['id']}", callback_data=f"demo:{section}:manage:{t['id']}")])
         rows.append([InlineKeyboardButton("Back", callback_data=f"demo:{section}:home")])
         return await q.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows))
@@ -179,7 +199,7 @@ async def handle_demo_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = db.get_demo_trade_history(section)
         lines = ["🎮 Demo Trade History", "━━━━━━━━━━━━━━━━━━━━━━━━"]
         for r in rows[:20]:
-            lines.append(f"🎮 #{r['id']} {r.get('pair') or r.get('token_symbol')} {r.get('result') or 'OPEN'} [PAPER] {r.get('final_pnl_pct') or r.get('current_pnl_pct') or 0:+.2f}%")
+            lines.append(f"🎮 #{r['id']} {_trade_asset_label(r)} {r.get('result') or 'OPEN'} [PAPER] {r.get('final_pnl_pct') or r.get('current_pnl_pct') or 0:+.2f}%")
         return await q.message.reply_text("\n".join(lines))
     if action == "manage":
         trade_id = int(parts[3]) if len(parts) > 3 else 0
@@ -189,7 +209,7 @@ async def handle_demo_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = [
             f"Manage Demo Trade #{tr['id']}",
             "------------------------",
-            f"Asset: {tr.get('pair') or tr.get('token_symbol')}",
+            f"Asset: {_trade_asset_label(tr)}",
             f"Direction: {tr.get('direction')}",
             f"Entry: {tr.get('entry_price')}",
             f"Now: {tr.get('current_price')}",
