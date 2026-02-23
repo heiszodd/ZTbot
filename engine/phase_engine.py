@@ -124,7 +124,7 @@ async def _run_phase_engine_inner(context):
             log.warning("Model '%s' has no rules — skipping", model.get("name"))
             continue
         for pair in get_pairs_for_model(model):
-            for direction in get_directions(model):
+            for direction in get_directions_for_model(model):
                 await evaluate_model_phases(context, model, pair, direction, rules, candle_cache)
 
 
