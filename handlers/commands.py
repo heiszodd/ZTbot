@@ -79,11 +79,12 @@ def perps_keyboard():
 
 def degen_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚡ Degen Scanner", callback_data="wallet:activity"), InlineKeyboardButton("⚙️ Scanner Settings", callback_data="degen:scanner_settings")],
-        [InlineKeyboardButton("🔍 Scan Contract", callback_data="degen:scan_prompt"), InlineKeyboardButton("🌊 Narratives", callback_data="degen:narratives")],
-        [InlineKeyboardButton("🎲 Degen Journal", callback_data="degen:journal_home"), InlineKeyboardButton("📤 Exit Planner", callback_data="degen:exit_plan")],
-        [InlineKeyboardButton("👁 Dev Wallets", callback_data="wallet:dash"), InlineKeyboardButton("📋 Watchlist", callback_data="degen:watchlist")],
-        [InlineKeyboardButton("🧠 Patterns", callback_data="degen:stats"), InlineKeyboardButton("🏠 Home", callback_data="nav:home")],
+        [InlineKeyboardButton("Degen Scanner", callback_data="wallet:activity"), InlineKeyboardButton("Scanner Settings", callback_data="degen:scanner_settings")],
+        [InlineKeyboardButton("Scan Contract", callback_data="degen:scan_prompt"), InlineKeyboardButton("Narratives", callback_data="degen:narratives")],
+        [InlineKeyboardButton("Degen Journal", callback_data="degen:journal_home"), InlineKeyboardButton("Exit Planner", callback_data="degen:exit_plan")],
+        [InlineKeyboardButton("Demo Dashboard", callback_data="demo:degen:home"), InlineKeyboardButton("Manage Positions", callback_data="demo:degen:open")],
+        [InlineKeyboardButton("Dev Wallets", callback_data="wallet:dash"), InlineKeyboardButton("Watchlist", callback_data="degen:watchlist")],
+        [InlineKeyboardButton("Patterns", callback_data="degen:stats"), InlineKeyboardButton("Home", callback_data="nav:home")],
     ])
 
 

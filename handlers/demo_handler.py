@@ -15,12 +15,15 @@ def _section_title(section: str) -> str:
 
 
 def _dashboard_kb(section: str):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📌 Open Trades", callback_data=f"demo:{section}:open"), InlineKeyboardButton("📋 Trade History", callback_data=f"demo:{section}:history")],
-        [InlineKeyboardButton("💰 Deposit More", callback_data=f"demo:{section}:deposit"), InlineKeyboardButton("🔄 Reset Account", callback_data=f"demo:{section}:reset")],
-        [InlineKeyboardButton("📊 Full Stats", callback_data=f"demo:{section}:stats"), InlineKeyboardButton("🏆 Best Trades", callback_data=f"demo:{section}:best")],
-        [InlineKeyboardButton(f"« Back to {_section_title(section)}", callback_data=f"nav:{'perps_home' if section=='perps' else 'degen_home'}")],
-    ])
+    rows = [
+        [InlineKeyboardButton("Open Trades", callback_data=f"demo:{section}:open"), InlineKeyboardButton("Trade History", callback_data=f"demo:{section}:history")],
+        [InlineKeyboardButton("Deposit More", callback_data=f"demo:{section}:deposit"), InlineKeyboardButton("Reset Account", callback_data=f"demo:{section}:reset")],
+        [InlineKeyboardButton("Full Stats", callback_data=f"demo:{section}:stats"), InlineKeyboardButton("Best Trades", callback_data=f"demo:{section}:best")],
+        [InlineKeyboardButton(f"Back to {_section_title(section)}", callback_data=f"nav:{'perps_home' if section=='perps' else 'degen_home'}")],
+    ]
+    if section == "degen":
+        rows.insert(3, [InlineKeyboardButton("Close All Open (Safety)", callback_data=f"demo:{section}:closeall_confirm")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _setup_kb(section: str):
@@ -164,18 +167,141 @@ async def handle_demo_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trades = db.get_open_demo_trades(section)
         if not trades:
             return await q.message.reply_text("No open demo trades.")
-        lines = [f"🎮 Open Demo Trades — {_section_title(section)}", "━━━━━━━━━━━━━━━━━━━━━━━━"]
-        for t in trades:
+        lines = [f"Open Demo Trades - {_section_title(section)}", "------------------------"]
+        rows = []
+        for t in trades[:20]:
             lines.append(f"#{t['id']} {t.get('pair') or t.get('token_symbol')} {t.get('direction')} entry {t.get('entry_price')} now {t.get('current_price')} [PAPER] {t.get('current_pnl_pct',0):+.2f}%")
-        return await q.message.reply_text("\n".join(lines))
+            rows.append([InlineKeyboardButton(f"Manage #{t['id']}", callback_data=f"demo:{section}:manage:{t['id']}")])
+        rows.append([InlineKeyboardButton("Back", callback_data=f"demo:{section}:home")])
+        return await q.message.reply_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows))
+
     if action == "history":
         rows = db.get_demo_trade_history(section)
         lines = ["🎮 Demo Trade History", "━━━━━━━━━━━━━━━━━━━━━━━━"]
         for r in rows[:20]:
             lines.append(f"🎮 #{r['id']} {r.get('pair') or r.get('token_symbol')} {r.get('result') or 'OPEN'} [PAPER] {r.get('final_pnl_pct') or r.get('current_pnl_pct') or 0:+.2f}%")
         return await q.message.reply_text("\n".join(lines))
+    if action == "manage":
+        trade_id = int(parts[3]) if len(parts) > 3 else 0
+        tr = db.get_demo_trade_by_id(trade_id)
+        if not tr or tr.get("section") != section or tr.get("result"):
+            return await q.message.reply_text("Trade not found or already closed.")
+        lines = [
+            f"Manage Demo Trade #{tr['id']}",
+            "------------------------",
+            f"Asset: {tr.get('pair') or tr.get('token_symbol')}",
+            f"Direction: {tr.get('direction')}",
+            f"Entry: {tr.get('entry_price')}",
+            f"Now: {tr.get('current_price')}",
+            f"PnL: {float(tr.get('current_pnl_usd') or 0):+.2f} USD ({float(tr.get('current_pnl_pct') or 0):+.2f}%)",
+            "[PAPER TRADE]",
+        ]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Close 50%", callback_data=f"demo:{section}:closehalf:{trade_id}"), InlineKeyboardButton("Close 100%", callback_data=f"demo:{section}:close:{trade_id}")],
+            [InlineKeyboardButton("Refresh", callback_data=f"demo:{section}:manage:{trade_id}"), InlineKeyboardButton("Open Trades", callback_data=f"demo:{section}:open")],
+        ])
+        return await q.message.reply_text("\n".join(lines), reply_markup=kb)
+    if action == "closehalf":
+        trade_id = int(parts[3]) if len(parts) > 3 else 0
+        tr = db.get_demo_trade_by_id(trade_id)
+        if not tr or tr.get("section") != section or tr.get("result"):
+            return await q.message.reply_text("Trade not found or already closed.")
+        price = await _resolve_trade_price(tr, section)
+        if not price:
+            return await q.message.reply_text("Could not fetch current price for this trade.")
+        db.update_demo_trade_pnl(trade_id, price)
+        res = db.partial_close_demo_trade(trade_id, 0.5)
+        if not res:
+            return await q.message.reply_text("Partial close failed.")
+        return await q.message.reply_text(
+            f"Partial close done for #{trade_id} [PAPER]\n"
+            f"Price: {price}\n"
+            f"Remaining size: ${float(res.get('remaining_size_usd') or 0):,.2f}"
+        )
+    if action == "close":
+        trade_id = int(parts[3]) if len(parts) > 3 else 0
+        tr = db.get_demo_trade_by_id(trade_id)
+        if not tr or tr.get("section") != section or tr.get("result"):
+            return await q.message.reply_text("Trade not found or already closed.")
+        price = await _resolve_trade_price(tr, section)
+        if not price:
+            return await q.message.reply_text("Could not fetch current price for this trade.")
+        db.update_demo_trade_pnl(trade_id, price)
+        closed = db.close_demo_trade(trade_id, price, "MANUAL")
+        return await q.message.reply_text(
+            f"Demo trade #{trade_id} closed [PAPER]\n"
+            f"Exit: {price}\n"
+            f"PnL: ${float(closed.get('final_pnl_usd') or 0):+.2f}\n"
+            f"Balance: ${float(closed.get('balance') or 0):,.2f}"
+        )
+
+    if action == "closeall_confirm":
+        trades = db.get_open_demo_trades(section)
+        if not trades:
+            return await q.message.reply_text("No open demo trades to close.")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Yes, close all", callback_data=f"demo:{section}:closeall")],
+            [InlineKeyboardButton("Cancel", callback_data=f"demo:{section}:home")],
+        ])
+        return await q.message.reply_text(
+            f"Safety check: close all {len(trades)} open {_section_title(section)} demo trades now?",
+            reply_markup=kb,
+        )
+    if action == "closeall":
+        trades = db.get_open_demo_trades(section)
+        if not trades:
+            return await q.message.reply_text("No open demo trades to close.")
+        closed = 0
+        total_pnl = 0.0
+        for tr in trades:
+            price = await _resolve_trade_price(tr, section)
+            if not price:
+                continue
+            db.update_demo_trade_pnl(tr["id"], price)
+            out = db.close_demo_trade(tr["id"], price, "MANUAL_ALL")
+            closed += 1
+            total_pnl += float(out.get("final_pnl_usd") or 0.0)
+        return await q.message.reply_text(
+            f"Closed {closed}/{len(trades)} open {_section_title(section)} demo trades [PAPER].\n"
+            f"Total realized PnL: ${total_pnl:+.2f}"
+        )
     if action in {"stats", "best"}:
         return await _render_dashboard(q.message.reply_text, section)
+
+
+async def _resolve_trade_price(trade: dict, section: str) -> float:
+    if not trade:
+        return 0.0
+    if section == "perps":
+        pair = trade.get("pair")
+        if pair:
+            return float(prices.get_price(pair) or trade.get("current_price") or 0)
+        return float(trade.get("current_price") or 0)
+
+    source = str(trade.get("source") or "")
+    note_obj = {}
+    notes_raw = trade.get("notes")
+    if isinstance(notes_raw, dict):
+        note_obj = notes_raw
+    elif isinstance(notes_raw, str) and notes_raw.strip().startswith("{"):
+        try:
+            note_obj = json.loads(notes_raw)
+        except Exception:
+            note_obj = {}
+
+    if source == "ca_report":
+        address = note_obj.get("address") or trade.get("pair")
+        px = await _fetch_dex_price(str(address or ""))
+        if px:
+            return px
+
+    pair = str(trade.get("pair") or "")
+    if pair.startswith("0x") or len(pair) >= 32:
+        px = await _fetch_dex_price(pair)
+        if px:
+            return px
+
+    return float(trade.get("current_price") or trade.get("entry_price") or 0)
 
 
 async def _fetch_dex_price(address: str) -> float:
