@@ -22,17 +22,30 @@ def _is_valid_solana_address(value: str) -> bool:
 
 
 async def show_solana_home(query, context):
+    from security.key_manager import key_exists
+
     wallet = db.get_solana_wallet()
+    has_key = key_exists("sol_hot_wallet")
+    if has_key and not wallet:
+        try:
+            from security.key_manager import get_private_key
+            from security.key_utils import get_sol_address_from_any
+
+            derived_address = get_sol_address_from_any(get_private_key("sol_hot_wallet"))
+            db.save_sol_wallet_address(derived_address)
+            wallet = {"public_key": derived_address}
+        except Exception:
+            wallet = None
     settings = db.get_user_settings(query.message.chat_id)
     mode = settings.get("sol_mode", "simple")
     mode_label = "⚡ Simple Mode" if mode == "simple" else "🔬 Advanced Mode"
-    if not wallet:
+    if not has_key:
         text = (
             "🔑 *Solana Wallet*\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "No wallet connected yet.\n\n"
-            "To get started, provide your\n"
-            "Solana *public key* (wallet address).\n\n"
+            "To get started, send your\n"
+            "Solana *private key* or seed phrase.\n\n"
             "⚡ *Phase 2 Live Execution Ready*\n"
             "Connect wallet to enable live Jupiter swaps."
         )
@@ -71,11 +84,15 @@ async def show_solana_home(query, context):
 async def handle_solana_connect(query, context):
     context.user_data["solana_state"] = "await_connect"
     await query.message.reply_text(
-        "🔑 Send your Solana wallet address\n"
-        "(public key only — starts with a letter,\n"
-        "32-44 characters)\n\n"
-        "⚠️ Never send your private key or\n"
-        "seed phrase to anyone or any bot."
+        "🔑 Send your Solana *private key* or\n"
+        "seed phrase in the next message.\n\n"
+        "Accepted formats:\n"
+        "• 12/24-word seed phrase\n"
+        "• base58 private key\n"
+        "• JSON byte-array private key\n\n"
+        "⚠️ Public addresses cannot execute trades."
+        ,
+        parse_mode="Markdown",
     )
 
 
@@ -187,22 +204,21 @@ async def handle_solana_text(update, context):
         return False
     text = update.message.text.strip()
 
-    if not state and _is_valid_solana_address(text):
-        db.save_solana_wallet({"public_key": text, "label": "main"})
-        summary = await get_wallet_summary(text)
-        await update.message.reply_text(
-            f"✅ Wallet connected\nSOL: {summary['sol_balance']:.4f}\nUSDC: ${summary['usdc_balance']:.2f}\nTotal: ${summary['total_usd']:.2f}"
-        )
-        return True
     if not state:
         return False
 
     if state == "await_connect":
-        if not _is_valid_solana_address(text):
-            await update.message.reply_text("❌ Invalid Solana public key format. Try again.")
+        from security.key_manager import store_private_key
+
+        try:
+            result = store_private_key("sol_hot_wallet", text, "Solana Hot Wallet", chain="solana")
+            address = result["address"]
+        except ValueError as exc:
+            await update.message.reply_text(f"❌ {exc}")
             return True
-        db.save_solana_wallet({"public_key": text, "label": "main"})
-        summary = await get_wallet_summary(text)
+
+        db.save_sol_wallet_address(address)
+        summary = await get_wallet_summary(address)
         await update.message.reply_text(
             f"✅ Wallet connected\nSOL: {summary['sol_balance']:.4f}\nUSDC: ${summary['usdc_balance']:.2f}\nTotal: ${summary['total_usd']:.2f}"
         )

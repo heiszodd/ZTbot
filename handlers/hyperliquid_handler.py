@@ -20,6 +20,24 @@ from utils.formatting import format_usd
 log = logging.getLogger(__name__)
 
 
+
+
+def _resolve_hl_address() -> str:
+    address = db.get_hl_address() or HL_ADDRESS
+    if address:
+        return address
+    try:
+        from security.key_manager import get_private_key, key_exists
+        from security.key_utils import get_eth_address_from_any
+
+        if key_exists("hl_api_wallet"):
+            address = get_eth_address_from_any(get_private_key("hl_api_wallet"))
+            if address:
+                db.save_hl_address(address)
+                return address
+    except Exception:
+        pass
+    return ""
 def _hl_home_kb(mode: str = "simple") -> InlineKeyboardMarkup:
     base = [[InlineKeyboardButton("⚡ Simple Mode" if mode=="simple" else "🔬 Advanced Mode", callback_data="hl:toggle_mode")]]
     rows = [
@@ -37,16 +55,15 @@ def _hl_home_kb(mode: str = "simple") -> InlineKeyboardMarkup:
 async def show_hl_home(query, context):
     settings = db.get_user_settings(query.message.chat_id)
     mode = settings.get("perps_mode", "simple")
-    address = db.get_hl_address() or HL_ADDRESS
+    address = _resolve_hl_address()
     if not address:
         await query.message.reply_text(
             "🔷 *Hyperliquid Dashboard*\n"
-            "Connect your Hyperliquid address (public key only — 0x... format)\n\n"
-            "⚠️ Phase 1: read-only monitoring.\n"
-            "No private keys needed yet.\n"
-            "Auto-trading comes in Phase 2.",
+            "Connect your Hyperliquid API wallet private key\n"
+            "or seed phrase to enable live trading.\n\n"
+            "Private key format: 0x + 64 hex chars.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔑 Connect Address", callback_data="hl:connect")]]),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔑 Connect Wallet", callback_data="hl:setup:start")]]),
         )
         return
 
@@ -80,7 +97,7 @@ async def show_hl_home(query, context):
 async def show_hl_positions(query, context):
     settings = db.get_user_settings(query.message.chat_id)
     mode = settings.get("perps_mode", "simple")
-    address = db.get_hl_address() or HL_ADDRESS
+    address = _resolve_hl_address()
     positions = await fetch_positions_with_prices(address) if address else []
     plans = db.get_hl_trade_plans(status="pending")
     sl_map = {p.get("coin"): p.get("stop_loss") for p in plans}
@@ -111,7 +128,7 @@ async def show_hl_positions(query, context):
 async def show_hl_performance(query, context):
     settings = db.get_user_settings(query.message.chat_id)
     mode = settings.get("perps_mode", "simple")
-    address = db.get_hl_address() or HL_ADDRESS
+    address = _resolve_hl_address()
     perf = await calculate_hl_performance(address) if address else {"total_trades": 0}
     await query.message.reply_text(format_performance(perf), parse_mode="Markdown", reply_markup=_hl_home_kb(db.get_user_settings(query.message.chat_id).get("perps_mode","simple")))
 
@@ -133,7 +150,7 @@ async def show_hl_markets(query, context):
 async def show_hl_funding(query, context):
     settings = db.get_user_settings(query.message.chat_id)
     mode = settings.get("perps_mode", "simple")
-    address = db.get_hl_address() or HL_ADDRESS
+    address = _resolve_hl_address()
     funding = await fetch_funding_summary(address) if address else {"total": 0, "by_coin": {}}
     lines = ["🌊 *Hyperliquid Funding*", "━━━━━━━━━━━━━━━━━━━━━━━━", f"Total: ${funding.get('total', 0):+,.4f}"]
     for coin, value in funding.get("by_coin", {}).items():
@@ -325,7 +342,7 @@ async def handle_hl_cb(update, context):
             return await q.message.reply_text("Setup not found.")
         saved_id = db.save_hl_trade_plan(
             {
-                "address": db.get_hl_address() or HL_ADDRESS,
+                "address": _resolve_hl_address(),
                 "coin": setup.get("pair", "").replace("USDT", ""),
                 "side": "Long" if "bull" in str(setup.get("direction", "")).lower() else "Short",
                 "entry_price": setup.get("entry_price"),
@@ -366,8 +383,10 @@ async def handle_hl_cb(update, context):
     if q.data.startswith("hl:trail:"):
         _, _, coin, trail = q.data.split(":", 3)
         return await handle_hl_set_trail(q, context, coin, float(trail))
-    if q.data in {"hl:connect", "hl:orders", "hl:plans", "hl:history", "hl:risk_sizes"}:
-        return await q.message.reply_text("Phase 1 — execution not yet implemented")
+    if q.data == "hl:connect":
+        return await hl_setup_start(update, context)
+    if q.data in {"hl:orders", "hl:plans", "hl:history", "hl:risk_sizes"}:
+        return await q.message.reply_text("Feature coming soon.")
 
 # New-nav compatibility exports
 show_perps_live_home = show_hl_home
@@ -383,7 +402,7 @@ async def show_hl_trail_setup(query, context, coin: str):
 
 
 async def handle_hl_wallet_setup(query, context):
-    await query.message.reply_text("Send Hyperliquid public address.")
+    await query.message.reply_text("Send Hyperliquid API wallet private key or seed phrase.")
 
 
 AWAITING_HL_KEY = 9101

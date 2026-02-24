@@ -24,12 +24,14 @@ async def _edit_or_send(query, text: str, keyboard: InlineKeyboardMarkup) -> Non
 
 
 async def show_perps_home(query, context):
-    hl = db.get_hl_address()
+    from security.key_manager import key_exists
+
+    hl_connected = key_exists("hl_api_wallet")
     pnl = (getattr(db, "get_hl_pnl_today", lambda: 0.0)() or 0.0)
     txt = (
         "📈 *Perps*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"HL Wallet: {'🟢 Connected' if hl else '🔴 Not connected'}\n"
+        f"HL Wallet: {'🟢 Connected' if hl_connected else '🔴 Not connected'}\n"
         f"Today PnL: ${pnl:+.2f}"
     )
     kb = InlineKeyboardMarkup([
@@ -75,8 +77,10 @@ async def show_perps_others(query, context):
 
 
 async def show_degen_home(query, context):
-    wallet = db.get_solana_wallet()
-    txt = "🔥 *Degen*\n━━━━━━━━━━━━━━━━━━━━━━━━\n" + ("🟢 Wallet connected" if wallet else "🔴 Wallet not connected")
+    from security.key_manager import key_exists
+
+    wallet_connected = key_exists("sol_hot_wallet")
+    txt = "🔥 *Degen*\n━━━━━━━━━━━━━━━━━━━━━━━━\n" + ("🟢 Wallet connected" if wallet_connected else "🔴 Wallet not connected")
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔍 Scanner", callback_data="degen:scanner"), InlineKeyboardButton("🔬 Scan Contract", callback_data="degen:scan_contract")],
         [InlineKeyboardButton("🧩 Models", callback_data="degen:models"), InlineKeyboardButton("💼 Live Wallet", callback_data="degen:live")],
