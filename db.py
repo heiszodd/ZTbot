@@ -15,6 +15,58 @@ _CACHE_TTL = {
     "demo_accounts": 10,
 }
 
+_PENDING_SETUP_UPDATABLE_FIELDS = {
+    "model_name",
+    "timeframe",
+    "direction",
+    "entry_price",
+    "sl",
+    "tp1",
+    "tp2",
+    "tp3",
+    "current_score",
+    "max_possible_score",
+    "score_pct",
+    "min_score_threshold",
+    "passed_rules",
+    "failed_rules",
+    "mandatory_passed",
+    "mandatory_failed",
+    "rule_snapshots",
+    "telegram_message_id",
+    "telegram_chat_id",
+    "status",
+    "last_updated_at",
+    "promoted_at",
+    "expired_at",
+    "check_count",
+    "peak_score_pct",
+}
+
+_SETUP_PHASE_UPDATABLE_FIELDS = {
+    "model_id",
+    "model_name",
+    "pair",
+    "direction",
+    "overall_status",
+    "phase1_status",
+    "phase2_status",
+    "phase3_status",
+    "phase4_status",
+    "phase1_completed_at",
+    "phase2_completed_at",
+    "phase3_completed_at",
+    "phase4_completed_at",
+    "check_count",
+    "entry_price",
+    "sl",
+    "tp1",
+    "tp2",
+    "tp3",
+    "notes",
+    "rule_context",
+}
+
 
 class _PooledConn:
     def __init__(self, conn):
@@ -2937,7 +2989,13 @@ def get_all_pending_setups(status: str = 'pending') -> list:
 def update_pending_setup(id: int, fields: dict) -> None:
     if not fields:
         return
-    data = dict(fields)
+    data = {
+        k: v
+        for k, v in dict(fields).items()
+        if k in _PENDING_SETUP_UPDATABLE_FIELDS
+    }
+    if not data:
+        return
     for key in ("passed_rules", "failed_rules", "mandatory_passed", "mandatory_failed", "rule_snapshots"):
         if key in data:
             data[key] = json.dumps(data[key])
@@ -3180,8 +3238,15 @@ def save_setup_phase(phase: dict) -> int:
     with get_conn() as conn:
         with conn.cursor() as cur:
             if phase.get("id"):
-                sets = ", ".join(f"{k}=%s" for k in phase if k != "id")
-                vals = [phase[k] for k in phase if k != "id"]
+                safe_updates = {
+                    k: v
+                    for k, v in phase.items()
+                    if k != "id" and k in _SETUP_PHASE_UPDATABLE_FIELDS
+                }
+                if not safe_updates:
+                    return int(phase["id"])
+                sets = ", ".join(f"{k}=%s" for k in safe_updates)
+                vals = [safe_updates[k] for k in safe_updates]
                 cur.execute(f"UPDATE setup_phases SET {sets}, last_updated_at=NOW() WHERE id=%s RETURNING id", (*vals, phase["id"]))
             else:
                 cur.execute(
@@ -3199,6 +3264,9 @@ def save_setup_phase(phase: dict) -> int:
 
 
 def update_phase_status(id, phase_num, status, data):
+    if phase_num not in (1, 2, 3, 4):
+        raise ValueError("phase_num must be between 1 and 4")
+
     now = datetime.utcnow()
     expires = now + timedelta(seconds={1: 14400, 2: 3600, 3: 0, 4: 2700}.get(phase_num, 0)) if phase_num in (1, 2, 4) else None
     next_status = {1: "phase2", 2: "phase3", 3: "phase4", 4: "phase1"}.get(phase_num, "phase1")
