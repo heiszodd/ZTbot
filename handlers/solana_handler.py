@@ -74,9 +74,19 @@ async def handle_get_quote(query, context):
 
 async def handle_solana_text(update, context):
     state = context.user_data.get("solana_state")
-    if not state or not update.message or not update.message.text:
+    if not update.message or not update.message.text:
         return False
     text = update.message.text.strip()
+
+    if not state and _is_valid_solana_address(text):
+        db.save_solana_wallet({"public_key": text, "label": "main"})
+        summary = await get_wallet_summary(text)
+        await update.message.reply_text(
+            f"✅ Wallet connected\nSOL: {summary['sol_balance']:.4f}\nUSDC: ${summary['usdc_balance']:.2f}\nTotal: ${summary['total_usd']:.2f}"
+        )
+        return True
+    if not state:
+        return False
 
     if state == "await_connect":
         if not _is_valid_solana_address(text):

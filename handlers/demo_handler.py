@@ -105,6 +105,37 @@ async def open_demo_from_signal(context: ContextTypes.DEFAULT_TYPE, section: str
 
 
 async def handle_demo_risk_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    manual_close = context.user_data.get("demo_manual_close")
+    if manual_close:
+        raw = (update.message.text or "").strip().replace("%", "").replace("$", "").replace(",", "")
+        try:
+            pct = float(raw)
+        except Exception:
+            await update.message.reply_text("Enter a valid close percentage (e.g. 25).")
+            return
+        if pct <= 0 or pct > 100:
+            await update.message.reply_text("Close percentage must be between 0 and 100.")
+            return
+        trade_id = int(manual_close.get("trade_id") or 0)
+        section = manual_close.get("section") or "perps"
+        tr = db.get_demo_trade_by_id(trade_id)
+        if not tr or tr.get("section") != section or tr.get("result"):
+            context.user_data.pop("demo_manual_close", None)
+            return await update.message.reply_text("Trade not found or already closed.")
+        price = await _resolve_trade_price(tr, section)
+        if not price:
+            return await update.message.reply_text("Could not fetch current price for this trade.")
+        db.update_demo_trade_pnl(trade_id, price)
+        res = db.partial_close_demo_trade(trade_id, pct / 100.0)
+        context.user_data.pop("demo_manual_close", None)
+        if not res:
+            return await update.message.reply_text("Manual close failed.")
+        return await update.message.reply_text(
+            f"Manual close done for #{trade_id} [PAPER]\n"
+            f"Closed: {pct:.2f}% at {price}\n"
+            f"Remaining size: ${float(res.get('remaining_size_usd') or 0):,.2f}"
+        )
+
     payload = context.user_data.get("demo_alert_trade")
     if not payload:
         return
@@ -138,7 +169,7 @@ async def handle_demo_risk_input(update: Update, context: ContextTypes.DEFAULT_T
     tp2 = entry + (tp1 - entry) * 1.5
     tp3 = entry + (tp1 - entry) * 2.0
 
-    ok, msg = await open_demo_from_signal(context, "perps", {
+    draft_trade = {
         "pair": payload.get("pair"),
         "direction": payload.get("direction"),
         "entry_price": entry,
@@ -155,10 +186,27 @@ async def handle_demo_risk_input(update: Update, context: ContextTypes.DEFAULT_T
         "score": payload.get("score"),
         "source": "alert_demo_entry",
         "notes": "Demo entry from alert with user-defined risk",
-    })
+    }
+    open_trade = next((t for t in db.get_open_demo_trades("perps") if t.get("pair") == draft_trade.get("pair")), None)
+    context.user_data["demo_alert_preview"] = {
+        "section": "perps",
+        "trade": draft_trade,
+        "open_trade_id": open_trade.get("id") if open_trade else None,
+    }
     context.user_data.pop("demo_alert_trade", None)
-    context.user_data.pop("in_conversation", None)
-    await update.message.reply_text(msg)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Confirm Entry", callback_data="demo:perps:alertconfirm:open"), InlineKeyboardButton("➕ Add to Position", callback_data="demo:perps:alertconfirm:add")],
+        [InlineKeyboardButton("🛑 Close Position", callback_data="demo:perps:alertconfirm:closemenu"), InlineKeyboardButton("❌ Cancel", callback_data="demo:perps:alertconfirm:cancel")],
+    ])
+    await update.message.reply_text(
+        "🎮 Demo Entry Confirmation\n"
+        f"Pair: {draft_trade.get('pair')}\n"
+        f"Direction: {draft_trade.get('direction')}\n"
+        f"Risk: ${risk_amount:,.2f} | Position: ${position:,.2f}\n"
+        f"Entry: {entry} | SL: {sl} | TP1: {tp1}\n\n"
+        "Choose how to proceed:",
+        reply_markup=kb,
+    )
 
 
 async def handle_demo_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,6 +270,61 @@ async def handle_demo_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Refresh", callback_data=f"demo:{section}:manage:{trade_id}"), InlineKeyboardButton("Open Trades", callback_data=f"demo:{section}:open")],
         ])
         return await q.message.reply_text("\n".join(lines), reply_markup=kb)
+    if action == "alertconfirm":
+        choice = parts[3] if len(parts) > 3 else ""
+        preview = context.user_data.get("demo_alert_preview") or {}
+        draft_trade = preview.get("trade") or {}
+        if not draft_trade:
+            return await q.message.reply_text("This demo preview has expired. Tap Demo Entry again from the alert.")
+        open_trade_id = int(preview.get("open_trade_id") or 0)
+        if choice == "open":
+            ok, msg = await open_demo_from_signal(context, "perps", draft_trade)
+            context.user_data.pop("demo_alert_preview", None)
+            context.user_data.pop("in_conversation", None)
+            return await q.message.reply_text(msg if ok else f"Failed to open demo trade: {msg}")
+        if choice == "add":
+            if not open_trade_id:
+                return await q.message.reply_text("No existing open position for this pair. Use Confirm Entry to open a new one.")
+            add_trade = {**draft_trade, "source": "alert_demo_add", "notes": "Added to existing demo position from alert"}
+            ok, msg = await open_demo_from_signal(context, "perps", add_trade)
+            context.user_data.pop("demo_alert_preview", None)
+            context.user_data.pop("in_conversation", None)
+            return await q.message.reply_text(f"➕ Add to position selected.\n{msg}" if ok else f"Add failed: {msg}")
+        if choice == "closemenu":
+            if not open_trade_id:
+                return await q.message.reply_text("No open position to close for this pair.")
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Close 50%", callback_data="demo:perps:alertconfirm:close50"), InlineKeyboardButton("Close 100%", callback_data="demo:perps:alertconfirm:close100")],
+                [InlineKeyboardButton("Manual %", callback_data="demo:perps:alertconfirm:closemanual")],
+            ])
+            return await q.message.reply_text(f"Manage open trade #{open_trade_id} — choose close amount.", reply_markup=kb)
+        if choice in {"close50", "close100"}:
+            if not open_trade_id:
+                return await q.message.reply_text("No open position to close for this pair.")
+            tr = db.get_demo_trade_by_id(open_trade_id)
+            price = await _resolve_trade_price(tr, "perps") if tr else 0
+            if not tr or tr.get("result"):
+                return await q.message.reply_text("Trade not found or already closed.")
+            if not price:
+                return await q.message.reply_text("Could not fetch current price for this trade.")
+            db.update_demo_trade_pnl(open_trade_id, price)
+            if choice == "close50":
+                res = db.partial_close_demo_trade(open_trade_id, 0.5)
+                if not res:
+                    return await q.message.reply_text("Partial close failed.")
+                return await q.message.reply_text(f"Closed 50% of #{open_trade_id} [PAPER]. Remaining: ${float(res.get('remaining_size_usd') or 0):,.2f}")
+            closed = db.close_demo_trade(open_trade_id, price, "MANUAL")
+            context.user_data.pop("demo_alert_preview", None)
+            return await q.message.reply_text(f"Closed 100% of #{open_trade_id} [PAPER]. PnL: ${float(closed.get('final_pnl_usd') or 0):+.2f}")
+        if choice == "closemanual":
+            if not open_trade_id:
+                return await q.message.reply_text("No open position to close for this pair.")
+            context.user_data["demo_manual_close"] = {"trade_id": open_trade_id, "section": "perps"}
+            return await q.message.reply_text("Reply with the percentage to close (e.g. 25 for 25%).")
+        if choice == "cancel":
+            context.user_data.pop("demo_alert_preview", None)
+            context.user_data.pop("in_conversation", None)
+            return await q.message.reply_text("Demo entry cancelled.")
     if action == "closehalf":
         trade_id = int(parts[3]) if len(parts) > 3 else 0
         tr = db.get_demo_trade_by_id(trade_id)
