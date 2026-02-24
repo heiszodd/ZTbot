@@ -1356,3 +1356,65 @@ CREATE TABLE IF NOT EXISTS price_alerts (
     recurring BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS sol_positions (
+    id              SERIAL PRIMARY KEY,
+    token_address   VARCHAR(100) NOT NULL,
+    token_symbol    VARCHAR(20),
+    wallet_index    INT DEFAULT 1,
+    tokens_held     FLOAT DEFAULT 0,
+    cost_basis      FLOAT DEFAULT 0,
+    entry_price     FLOAT DEFAULT 0,
+    current_price   FLOAT DEFAULT 0,
+    realised_pnl    FLOAT DEFAULT 0,
+    unrealised_pnl  FLOAT DEFAULT 0,
+    status          VARCHAR(20) DEFAULT 'open',
+    opened_at       TIMESTAMP DEFAULT NOW(),
+    closed_at       TIMESTAMP,
+    UNIQUE(token_address, wallet_index)
+);
+
+CREATE TABLE IF NOT EXISTS hl_orders (
+    id              SERIAL PRIMARY KEY,
+    coin            VARCHAR(20),
+    side            VARCHAR(10),
+    order_type      VARCHAR(20),
+    price           FLOAT,
+    size            FLOAT,
+    size_usd        FLOAT,
+    order_id        VARCHAR(50),
+    status          VARCHAR(20) DEFAULT 'open',
+    leverage        FLOAT DEFAULT 1,
+    stop_loss       FLOAT,
+    tp1             FLOAT,
+    tp2             FLOAT,
+    tp3             FLOAT,
+    trailing_stop   FLOAT,
+    fill_price      FLOAT,
+    fill_time       TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS poly_live_trades (
+    id              SERIAL PRIMARY KEY,
+    market_id       VARCHAR(100) NOT NULL,
+    question        TEXT,
+    position        VARCHAR(5),
+    token_id        VARCHAR(100),
+    entry_price     FLOAT,
+    current_price   FLOAT,
+    size_usd        FLOAT,
+    shares          FLOAT,
+    pnl_usd         FLOAT DEFAULT 0,
+    order_id        VARCHAR(100),
+    status          VARCHAR(20) DEFAULT 'open',
+    opened_at       TIMESTAMP DEFAULT NOW(),
+    closed_at       TIMESTAMP,
+    outcome         VARCHAR(10),
+    resolution_pnl  FLOAT
+);
+
+ALTER TABLE hl_positions
+    ADD COLUMN IF NOT EXISTS trailing_stop_pct FLOAT DEFAULT NULL;
+ALTER TABLE hl_positions
+    ADD COLUMN IF NOT EXISTS trailing_stop_order_id VARCHAR(50) DEFAULT NULL;
