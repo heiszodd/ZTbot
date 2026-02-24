@@ -1545,6 +1545,8 @@ async def handle_setup(update, context):
             "3. Copy private key (base58 or byte-array)\n"
             "4. Send: /addkey sol_hot_wallet\n\n"
             "⚠️ Keep this wallet small. Only fund what you can risk."
+            "1. Generate new keypair\n2. Fund with max $500 USDC + 0.1 SOL\n"
+            "3. Copy private key\n4. Send: /addkey sol_hot_wallet"
         )
     if section == "poly":
         return await update.message.reply_text(
@@ -1557,6 +1559,7 @@ async def handle_setup(update, context):
             "/addkey poly_api_key\n"
             "/addkey poly_api_secret\n"
             "/addkey poly_api_passphrase"
+            "Run:\n/addkey poly_hot_wallet\n/addkey poly_api_key\n/addkey poly_api_secret\n/addkey poly_api_passphrase"
         )
     await update.message.reply_text("Unknown section. Use /setup hl, /setup sol, or /setup poly")
 
