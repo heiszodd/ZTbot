@@ -1239,3 +1239,47 @@ CREATE TABLE IF NOT EXISTS executed_signals (
     coin       VARCHAR(20),
     executed_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Supabase hardening: enable RLS and explicitly scope access to service_role.
+DO $$
+DECLARE
+    tbl TEXT;
+    protected_tables TEXT[] := ARRAY[
+        'models',
+        'model_versions',
+        'trade_log',
+        'discipline_log',
+        'alert_log',
+        'pending_setups',
+        'user_preferences',
+        'user_settings',
+        'daily_summary',
+        'weekly_goals',
+        'weekly_reviews',
+        'monthly_goals',
+        'journal_entries',
+        'checklist_log',
+        'news_events',
+        'news_trades',
+        'audit_log',
+        'encrypted_keys'
+    ];
+BEGIN
+    FOREACH tbl IN ARRAY protected_tables
+    LOOP
+        EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', tbl);
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_policies
+            WHERE schemaname = 'public'
+              AND tablename = tbl
+              AND policyname = 'service_role_full_access'
+        ) THEN
+            EXECUTE format(
+                'CREATE POLICY service_role_full_access ON public.%I FOR ALL USING (auth.role() = ''service_role'') WITH CHECK (auth.role() = ''service_role'')',
+                tbl
+            );
+        END IF;
+    END LOOP;
+END $$;
