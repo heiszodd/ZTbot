@@ -6,6 +6,7 @@ import db
 from engine.solana.wallet_reader import get_wallet_summary, get_token_price_usd
 from engine.solana.jupiter_quotes import get_swap_quote, format_quote, USDC_MINT
 from engine.solana.trade_planner import generate_trade_plan, format_trade_plan
+from utils.formatting import format_price, format_usd
 
 
 def _is_valid_solana_address(value: str) -> bool:
@@ -16,6 +17,9 @@ def _is_valid_solana_address(value: str) -> bool:
 
 async def show_solana_home(query, context):
     wallet = db.get_solana_wallet()
+    settings = db.get_user_settings(query.message.chat_id)
+    mode = settings.get("sol_mode", "simple")
+    mode_label = "⚡ Simple Mode" if mode == "simple" else "🔬 Advanced Mode"
     if not wallet:
         text = (
             "🔑 *Solana Wallet*\n"
@@ -27,7 +31,7 @@ async def show_solana_home(query, context):
             "_No private keys needed yet._\n"
             "_Auto-trading comes in Phase 2._"
         )
-        buttons = [[InlineKeyboardButton("🔑 Connect Wallet", callback_data="solana:connect")], [InlineKeyboardButton("🏠 Home", callback_data="nav:home")]]
+        buttons = [[InlineKeyboardButton(mode_label, callback_data="solana:toggle_mode")],[InlineKeyboardButton("🔑 Connect Wallet", callback_data="solana:connect")], [InlineKeyboardButton("🏠 Home", callback_data="nav:home")]]
     else:
         summary = await get_wallet_summary(wallet["public_key"])
         short_key = wallet["public_key"][:6] + "..." + wallet["public_key"][-4:]
@@ -36,16 +40,16 @@ async def show_solana_home(query, context):
             f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"Address: `{short_key}`\n\n"
             f"💰 *Balances*\n"
-            f"SOL:   {summary['sol_balance']:.4f} SOL (${summary['sol_usd']:.2f})\n"
-            f"USDC:  ${summary['usdc_balance']:.2f}\n"
+            f"SOL:   {summary['sol_balance']:.4f} SOL ({format_usd(summary['sol_usd'])})\n"
+            f"USDC:  {format_usd(summary['usdc_balance'])}\n"
         )
         if summary["other_tokens"]:
             text += "\n*Other Holdings*\n"
             for t in summary["other_tokens"][:5]:
                 short_mint = t["mint"][:6] + "..." + t["mint"][-4:]
                 text += f"  {short_mint}: ${t['usd_val']:.2f}\n"
-        text += f"\n*Total: ${summary['total_usd']:.2f}*\n"
-        buttons = [
+        text += f"\n*Total: {format_usd(summary['total_usd'])}*\n"
+        buttons = [[InlineKeyboardButton(mode_label, callback_data="solana:toggle_mode")],
             [InlineKeyboardButton("🔄 Refresh Balance", callback_data="solana:refresh")],
             [InlineKeyboardButton("📋 Trade Plans", callback_data="solana:plans"), InlineKeyboardButton("👁 Watchlist", callback_data="solana:watchlist")],
             [InlineKeyboardButton("💱 Get Quote", callback_data="solana:quote")],
@@ -144,6 +148,10 @@ async def handle_solana_cb(update, context):
         return
     await q.answer()
     data = q.data
+    if data == "solana:toggle_mode":
+        st = db.get_user_settings(q.message.chat_id)
+        db.update_user_settings(q.message.chat_id, {"sol_mode": "advanced" if st.get("sol_mode") == "simple" else "simple"})
+        return await show_solana_home(q, context)
     if data in {"solana:home", "solana:refresh"}:
         return await show_solana_home(q, context)
     if data == "solana:connect":

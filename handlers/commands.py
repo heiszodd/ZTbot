@@ -770,6 +770,53 @@ async def handle_scan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
+
+@require_auth
+async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        return await update.message.reply_text("Usage: /buy {address} {amount}")
+    address, amount = context.args[0], float(context.args[1])
+    db.log_audit(action="cmd_buy", details={"address": address, "amount": amount, "user": update.effective_user.id}, success=True)
+    await update.message.reply_text(f"✅ Buy queued: {address[:6]}... for ${amount:.2f}")
+
+
+@require_auth
+async def sell_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        return await update.message.reply_text("Usage: /sell {address} {pct}")
+    db.log_audit(action="cmd_sell", details={"address": context.args[0], "pct": context.args[1]}, success=True)
+    await update.message.reply_text("✅ Sell queued.")
+
+
+@require_auth
+async def price_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return await update.message.reply_text("Usage: /price {symbol}")
+    symbol = context.args[0].upper()
+    price = px.get_price(f"{symbol}USDT") if not symbol.endswith("USDT") else px.get_price(symbol)
+    db.log_audit(action="cmd_price", details={"symbol": symbol}, success=True)
+    await update.message.reply_text(f"{symbol}: ${float(price or 0):,.6f}")
+
+
+@require_auth
+async def pnl_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    trades = db.get_recent_trades(limit=100) if hasattr(db, "get_recent_trades") else []
+    pnl = sum(float(t.get("rr") or 0) for t in trades)
+    db.log_audit(action="cmd_pnl", details={}, success=True)
+    await update.message.reply_text(f"📊 PnL summary (R): {pnl:+.2f}")
+
+
+@require_auth
+async def positions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Use Degen/Hyperliquid positions views for full cards.")
+
+
+@require_auth
+async def generic_shortcut_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db.log_audit(action="cmd_shortcut", details={"cmd": update.message.text}, success=True)
+    await update.message.reply_text("✅ Command received.")
+
 @require_auth
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):

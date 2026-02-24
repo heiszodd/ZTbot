@@ -1283,3 +1283,76 @@ BEGIN
         END IF;
     END LOOP;
 END $$;
+
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS degen_mode VARCHAR(10) DEFAULT 'simple';
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS perps_mode VARCHAR(10) DEFAULT 'simple';
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sol_mode VARCHAR(10) DEFAULT 'simple';
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS buy_preset_1 FLOAT DEFAULT 25;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS buy_preset_2 FLOAT DEFAULT 50;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS buy_preset_3 FLOAT DEFAULT 100;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS buy_preset_4 FLOAT DEFAULT 250;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS instant_buy_threshold FLOAT DEFAULT 50;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS instant_buy_enabled BOOLEAN DEFAULT TRUE;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS mev_protection BOOLEAN DEFAULT TRUE;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS trenches_alerts BOOLEAN DEFAULT FALSE;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS session_summary_time VARCHAR(10) DEFAULT '22:00';
+
+CREATE TABLE IF NOT EXISTS auto_sell_configs (
+    id SERIAL PRIMARY KEY,
+    position_id INT NOT NULL,
+    token_address VARCHAR(100),
+    entry_price FLOAT,
+    stop_loss_pct FLOAT DEFAULT -20,
+    tp1_pct FLOAT DEFAULT 50,
+    tp1_sell_pct FLOAT DEFAULT 25,
+    tp2_pct FLOAT DEFAULT 100,
+    tp2_sell_pct FLOAT DEFAULT 25,
+    tp3_pct FLOAT DEFAULT 200,
+    tp3_sell_pct FLOAT DEFAULT 50,
+    tp1_hit BOOLEAN DEFAULT FALSE,
+    tp2_hit BOOLEAN DEFAULT FALSE,
+    tp3_hit BOOLEAN DEFAULT FALSE,
+    sl_hit BOOLEAN DEFAULT FALSE,
+    trailing_stop_pct FLOAT DEFAULT NULL,
+    trailing_high FLOAT DEFAULT 0,
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS dca_orders (
+    id SERIAL PRIMARY KEY,
+    token_address VARCHAR(100),
+    token_symbol VARCHAR(20),
+    direction VARCHAR(10),
+    total_amount FLOAT,
+    per_order FLOAT,
+    num_orders INT,
+    orders_placed INT DEFAULT 0,
+    interval_secs INT,
+    min_price FLOAT,
+    max_price FLOAT,
+    next_order_at TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS blacklist (
+    id SERIAL PRIMARY KEY,
+    address VARCHAR(100) NOT NULL UNIQUE,
+    type VARCHAR(20),
+    reason VARCHAR(200),
+    added_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS price_alerts (
+    id SERIAL PRIMARY KEY,
+    section VARCHAR(20),
+    token_address VARCHAR(100),
+    coin VARCHAR(20),
+    condition VARCHAR(10),
+    target_price FLOAT,
+    current_price FLOAT,
+    triggered BOOLEAN DEFAULT FALSE,
+    recurring BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT NOW()
+);

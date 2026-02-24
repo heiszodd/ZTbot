@@ -687,6 +687,92 @@ def setup_db():
         with conn.cursor() as cur:
             cur.execute(sql)
             cur.execute(degen_sql)
+            cur.execute(
+                """
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS degen_mode VARCHAR(10) DEFAULT 'simple';
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS perps_mode VARCHAR(10) DEFAULT 'simple';
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS sol_mode VARCHAR(10) DEFAULT 'simple';
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS buy_preset_1 FLOAT DEFAULT 25;
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS buy_preset_2 FLOAT DEFAULT 50;
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS buy_preset_3 FLOAT DEFAULT 100;
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS buy_preset_4 FLOAT DEFAULT 250;
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS instant_buy_threshold FLOAT DEFAULT 50;
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS instant_buy_enabled BOOLEAN DEFAULT TRUE;
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS mev_protection BOOLEAN DEFAULT TRUE;
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS trenches_alerts BOOLEAN DEFAULT FALSE;
+                ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS session_summary_time VARCHAR(10) DEFAULT '22:00';
+
+                CREATE TABLE IF NOT EXISTS auto_sell_configs (
+                    id SERIAL PRIMARY KEY,
+                    position_id INT NOT NULL,
+                    token_address VARCHAR(100),
+                    entry_price FLOAT,
+                    stop_loss_pct FLOAT DEFAULT -20,
+                    tp1_pct FLOAT DEFAULT 50,
+                    tp1_sell_pct FLOAT DEFAULT 25,
+                    tp2_pct FLOAT DEFAULT 100,
+                    tp2_sell_pct FLOAT DEFAULT 25,
+                    tp3_pct FLOAT DEFAULT 200,
+                    tp3_sell_pct FLOAT DEFAULT 50,
+                    tp1_hit BOOLEAN DEFAULT FALSE,
+                    tp2_hit BOOLEAN DEFAULT FALSE,
+                    tp3_hit BOOLEAN DEFAULT FALSE,
+                    sl_hit BOOLEAN DEFAULT FALSE,
+                    trailing_stop_pct FLOAT DEFAULT NULL,
+                    trailing_high FLOAT DEFAULT 0,
+                    active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS dca_orders (
+                    id SERIAL PRIMARY KEY,
+                    token_address VARCHAR(100),
+                    token_symbol VARCHAR(20),
+                    direction VARCHAR(10),
+                    total_amount FLOAT,
+                    per_order FLOAT,
+                    num_orders INT,
+                    orders_placed INT DEFAULT 0,
+                    interval_secs INT,
+                    min_price FLOAT,
+                    max_price FLOAT,
+                    next_order_at TIMESTAMP,
+                    status VARCHAR(20) DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS blacklist (
+                    id SERIAL PRIMARY KEY,
+                    address VARCHAR(100) NOT NULL UNIQUE,
+                    type VARCHAR(20),
+                    reason VARCHAR(200),
+                    added_at TIMESTAMP DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS price_alerts (
+                    id SERIAL PRIMARY KEY,
+                    section VARCHAR(20),
+                    token_address VARCHAR(100),
+                    coin VARCHAR(20),
+                    condition VARCHAR(10),
+                    target_price FLOAT,
+                    current_price FLOAT,
+                    triggered BOOLEAN DEFAULT FALSE,
+                    recurring BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+
+                ALTER TABLE tracked_wallets ADD COLUMN IF NOT EXISTS copy_pct FLOAT DEFAULT 50;
+                ALTER TABLE tracked_wallets ADD COLUMN IF NOT EXISTS max_copy_usd FLOAT DEFAULT 100;
+                ALTER TABLE tracked_wallets ADD COLUMN IF NOT EXISTS auto_mirror BOOLEAN DEFAULT FALSE;
+                ALTER TABLE tracked_wallets ADD COLUMN IF NOT EXISTS win_rate FLOAT DEFAULT 0;
+                ALTER TABLE tracked_wallets ADD COLUMN IF NOT EXISTS total_copies INT DEFAULT 0;
+                ALTER TABLE tracked_wallets ADD COLUMN IF NOT EXISTS pnl_from_copies FLOAT DEFAULT 0;
+
+                ALTER TABLE solana_wallet ADD COLUMN IF NOT EXISTS wallet_index INT DEFAULT 1;
+                ALTER TABLE solana_wallet ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+                """
+            )
             cur.execute("""
             ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS initial_risk_score INT;
             ALTER TABLE degen_tokens ADD COLUMN IF NOT EXISTS initial_scored_at TIMESTAMP;
@@ -4655,6 +4741,51 @@ def save_solana_wallet(data: dict) -> None:
                     float(data.get("usdc_balance") or 0),
                 ),
             )
+        conn.commit()
+
+
+def get_user_settings(chat_id: int) -> dict:
+    defaults = {
+        "degen_mode": "simple",
+        "perps_mode": "simple",
+        "sol_mode": "simple",
+        "buy_preset_1": 25.0,
+        "buy_preset_2": 50.0,
+        "buy_preset_3": 100.0,
+        "buy_preset_4": 250.0,
+        "instant_buy_threshold": 50.0,
+        "instant_buy_enabled": True,
+        "mev_protection": True,
+        "trenches_alerts": False,
+        "session_summary_time": "22:00",
+    }
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM user_settings WHERE chat_id=%s", (int(chat_id),))
+            row = cur.fetchone()
+            if not row:
+                cur.execute("INSERT INTO user_settings (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING", (int(chat_id),))
+                conn.commit()
+                return dict(defaults)
+            return {**defaults, **dict(row)}
+
+
+def update_user_settings(chat_id: int, fields: dict) -> None:
+    if not fields:
+        return
+    allowed = {
+        "degen_mode", "perps_mode", "sol_mode", "buy_preset_1", "buy_preset_2", "buy_preset_3", "buy_preset_4",
+        "instant_buy_threshold", "instant_buy_enabled", "mev_protection", "trenches_alerts", "session_summary_time",
+    }
+    clean = {k: v for k, v in fields.items() if k in allowed}
+    if not clean:
+        return
+    cols = [f"{k}=%s" for k in clean.keys()]
+    vals = list(clean.values())
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO user_settings (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING", (int(chat_id),))
+            cur.execute(f"UPDATE user_settings SET {', '.join(cols)}, updated_at=NOW() WHERE chat_id=%s", vals + [int(chat_id)])
         conn.commit()
 
 
