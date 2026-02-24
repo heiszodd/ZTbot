@@ -169,6 +169,12 @@ async def handle_polymarket_cb(update, context):
         if not pools:
             return await q.message.reply_text("No scanner markets available right now.")
         return await handle_poly_live_trade(q, context, pools[0]["market_id"])
+    if data == "poly:demo_top":
+        results = await run_market_scanner()
+        pools = (results or {}).get("high_volume", []) or (results or {}).get("uncertain", [])
+        if not pools:
+            return await q.message.reply_text("No scanner markets available right now.")
+        return await handle_poly_demo_trade(q, context, pools[0]["market_id"])
     if data.startswith("poly:execute:"):
         _, _, market_id, side, size = data.split(":", 4)
         return await handle_poly_execute_trade(q, context, market_id, side, float(size))
@@ -216,3 +222,20 @@ async def handle_polymarket_cb(update, context):
             return await q.message.reply_text("🎮 No Polymarket demo trades yet.")
         txt = "🎮 *Polymarket Demo Trades*\n━━━━━━━━━━━━━━━━━━━━━━━━\n" + "\n".join([f"#{r['id']} {r['position']} {r.get('question','')[:45]} — {r['status']} {float(r.get('pnl_usd') or 0):+.2f}$" for r in rows[:20]])
         return await q.message.reply_text(txt, parse_mode="Markdown")
+    if data.startswith("poly:position:"):
+        market_id = data.split(":", 2)[2]
+        pos = db.get_poly_live_trade(market_id)
+        if not pos:
+            return await q.message.reply_text("No open live position for this market.")
+        return await q.message.reply_text(
+            f"📊 *Live Position*\n{pos.get('question','')[:80]}\n"
+            f"Side: {pos.get('position')}\n"
+            f"Size: ${float(pos.get('size_usd') or 0):.2f}\n"
+            f"Entry: {float(pos.get('entry_price') or 0)*100:.1f}%\n"
+            f"P&L: ${float(pos.get('pnl_usd') or 0):+.2f}",
+            parse_mode="Markdown",
+        )
+    if data.startswith("poly:close:"):
+        market_id = data.split(":", 2)[2]
+        await q.message.reply_text("Close flow will execute from live position controls shortly.")
+        return

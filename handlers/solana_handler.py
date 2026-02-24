@@ -272,6 +272,10 @@ async def handle_solana_cb(update, context):
             "Then tap quote -> execute live."
         )
         return
+    if data == "solana:cancel":
+        context.user_data.pop("solana_state", None)
+        await q.message.reply_text("❌ Cancelled.")
+        return
     if data.startswith("solana:save_watch:"):
         token = data.split(":", 2)[2]
         db.add_solana_watchlist({"token_address": token, "token_symbol": token[:6], "status": "watching"})

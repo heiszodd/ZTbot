@@ -1445,12 +1445,25 @@ async def handle_addkey(update, context):
     uid = update.effective_user.id
     text = (update.message.text or '').strip()
     state = _addkey_state.get(uid, {"step": 0})
+
+    # Fast path: /addkey <exact_key_name>
+    parts = text.split(maxsplit=1)
+    if len(parts) == 2 and parts[0] == '/addkey' and state.get('step', 0) == 0:
+        _addkey_state[uid] = {"step": 99, "key_name": parts[1].strip(), "label": ""}
+        await update.message.reply_text(f"Send private key for `{parts[1].strip()}` in next message.", parse_mode="Markdown")
+        return
+
     if text == '/addkey':
         _addkey_state[uid] = {"step": 1}
-        await update.message.reply_text('Section? (hyperliquid/solana/polymarket)')
+        await update.message.reply_text('Section or key name? (hyperliquid/solana/polymarket OR hl_api_wallet/sol_hot_wallet/poly_hot_wallet/...)')
         return
     if state.get('step') == 1:
-        _addkey_state[uid] = {"step": 2, "section": text.lower()}
+        raw = text.lower()
+        if raw in {"hl_api_wallet", "sol_hot_wallet", "poly_hot_wallet", "poly_api_key", "poly_api_secret", "poly_api_passphrase"}:
+            _addkey_state[uid] = {"step": 99, "key_name": raw}
+            await update.message.reply_text('Label for this key?')
+            return
+        _addkey_state[uid] = {"step": 2, "section": raw}
         await update.message.reply_text('Label for this key?')
         return
     if state.get('step') == 2:
@@ -1460,8 +1473,21 @@ async def handle_addkey(update, context):
         await update.message.reply_text('Send private key in next message.')
         return
     if state.get('step') == 3:
-        key_name = f"{state['section']}_main"
+        key_name = state.get('key_name') or f"{state['section']}_main"
         store_private_key(key_name, text, state.get('label',''))
+        _addkey_state.pop(uid, None)
+        db.log_audit(action='key_stored', details={'key_name': key_name, 'label': state.get('label','')}, user_id=uid, success=True)
+        await update.message.reply_text("✅ Key stored encrypted.\n⚠️ Please delete your previous message containing the key from this chat now.\nTap and hold the message → Delete.")
+        return
+    if state.get('step') == 99:
+        # We already have explicit key_name, now collect either label or key body
+        if state.get('label') is None:
+            state['label'] = text
+            _addkey_state[uid] = state
+            await update.message.reply_text('Send private key in next message.')
+            return
+        key_name = state.get('key_name')
+        store_private_key(key_name, text, state.get('label', ''))
         _addkey_state.pop(uid, None)
         db.log_audit(action='key_stored', details={'key_name': key_name, 'label': state.get('label','')}, user_id=uid, success=True)
         await update.message.reply_text("✅ Key stored encrypted.\n⚠️ Please delete your previous message containing the key from this chat now.\nTap and hold the message → Delete.")
