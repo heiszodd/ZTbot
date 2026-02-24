@@ -10,12 +10,10 @@ log = logging.getLogger(__name__)
 
 
 def _normalize_callback_data(raw: str) -> str:
-    """Normalize only known menu aliases without mutating payload-bearing callbacks."""
-    data = (raw or "").strip()
+    data = (raw or "").strip().lower()
     if not data:
         return ""
 
-    lowered = data.casefold()
     aliases = {
         "start": "home",
         "main": "home",
@@ -34,14 +32,13 @@ def _normalize_callback_data(raw: str) -> str:
         "nav:predictions": "predictions",
         "nav:settings": "settings",
     }
-    return aliases.get(lowered, data)
+    return aliases.get(data, data)
 
 
 @require_auth_callback
 async def route_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     data = _normalize_callback_data(query.data)
-    data_ci = data.casefold()
 
     from security.rate_limiter import check_command_rate
 
