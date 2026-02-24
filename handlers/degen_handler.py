@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
+from security.auth import require_auth, require_auth_callback
+from security.rate_limiter import check_command_rate
 
 import db
 from degen.rule_library import RULES_BY_ID
@@ -18,6 +20,7 @@ from handlers.degen_journal_handler import show_degen_journal_home
 
 
 
+@require_auth
 async def degen_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = __import__("handlers.commands", fromlist=["degen_keyboard"]).degen_keyboard()
     if update.callback_query:
@@ -42,8 +45,19 @@ def degen_dashboard_kb():
     ])
 
 
+@require_auth_callback
 async def start_model_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = q.from_user.id if q and q.from_user else 0
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
+    uid = q.from_user.id if q and q.from_user else 0
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚡ Quick Deploy — use a preset", callback_data="degen_model:quick_pick")],
@@ -65,6 +79,7 @@ def _detail_text(model: dict) -> str:
     return "\n".join(lines)
 
 
+@require_auth_callback
 async def handle_degen_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -161,6 +176,7 @@ async def handle_degen_model_cb(update: Update, context: ContextTypes.DEFAULT_TY
 from degen.narrative_tracker import detect_narrative, get_cold_narratives, get_hot_narratives
 
 
+@require_auth
 async def degen_stats_screen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hot = get_hot_narratives(limit=3)
     cold = get_cold_narratives()
@@ -192,6 +208,7 @@ async def degen_stats_screen(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 
+@require_auth
 async def handle_manual_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -231,6 +248,7 @@ async def handle_manual_scan(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ]
         ),
     )
+@require_auth_callback
 async def handle_degen_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -401,6 +419,7 @@ async def handle_degen_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 log = logging.getLogger(__name__)
 
 
+@require_auth_callback
 async def handle_scan_action(query, context) -> None:
     """Handles whitelist, ignore, ape-in, and full-scan callbacks."""
     data = query.data
@@ -612,6 +631,7 @@ async def show_watchlist(query, context) -> None:
         log.error("show_watchlist failed: %s", exc)
 
 
+@require_auth_callback
 async def handle_scanner_settings_action(query, context) -> None:
     settings = db.get_scanner_settings()
     data = query.data

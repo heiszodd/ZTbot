@@ -82,6 +82,7 @@ for rule in PERPS_RULE_LIBRARY:
     PERPS_RULE_CATEGORIES.setdefault(rule["category"], []).append(rule)
 
 
+@require_auth
 async def start_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["in_conversation"] = True
@@ -101,6 +102,7 @@ async def start_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return WIZARD_NAME
 
 
+@require_auth
 async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["model_name"] = (update.message.text or "").strip()
     buttons = [[InlineKeyboardButton(p, callback_data=f"wizard:pair:{p}") for p in SUPPORTED_PAIRS[i:i + 3]] for i in range(0, len(SUPPORTED_PAIRS), 3)]
@@ -256,6 +258,7 @@ async def show_phase_timeframes_step(query, context):
 
 
 
+@require_auth_callback
 async def handle_wizard_cb(update, context):
     query = update.callback_query
     await query.answer()
@@ -397,6 +400,7 @@ async def handle_wizard_cb(update, context):
         return await handle_wizard_cancel(update, context)
 
 
+@require_auth_callback
 async def handle_confirm_save(update, context):
     query = update.callback_query
     await query.answer("Saving...")
@@ -499,6 +503,7 @@ async def handle_confirm_save(update, context):
         )
 
 
+@require_auth_callback
 async def handle_wizard_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query if update.callback_query else None
     if q:

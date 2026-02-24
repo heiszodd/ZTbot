@@ -3,6 +3,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from security.auth import require_auth, require_auth_callback
+from security.rate_limiter import check_command_rate
 import db, engine, formatters, prices as px
 from degen.scanner import degen_scan_job
 from config import CHAT_ID, TIER_RISK, CORRELATED_PAIRS, SUPPORTED_PAIRS
@@ -374,8 +376,19 @@ async def run_pending_checker(context):
             processing.discard(setup["id"])
 
 
+@require_auth_callback
 async def handle_pending_cb(update, context):
     q = update.callback_query
+    uid = q.from_user.id if q and q.from_user else 0
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
+    uid = q.from_user.id if q and q.from_user else 0
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
     parts = q.data.split(":")
     action = parts[1]
@@ -427,6 +440,7 @@ async def _render_checklist(message, context):
     await message.reply_text("Before logging this trade, confirm:\n✅ An alert fired for this setup\n✅ Position size matches the tier risk %\n✅ Stop loss is placed at the correct level", parse_mode="Markdown", reply_markup=kb)
 
 
+@require_auth_callback
 async def handle_alert_response(update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()

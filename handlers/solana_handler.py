@@ -72,6 +72,7 @@ async def handle_get_quote(query, context):
     )
 
 
+@require_auth
 async def handle_solana_text(update, context):
     state = context.user_data.get("solana_state")
     if not update.message or not update.message.text:
@@ -131,8 +132,14 @@ async def handle_solana_text(update, context):
     return False
 
 
+@require_auth_callback
 async def handle_solana_cb(update, context):
     q = update.callback_query
+    uid = q.from_user.id if q and q.from_user else 0
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
     data = q.data
     if data in {"solana:home", "solana:refresh"}:

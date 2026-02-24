@@ -8,6 +8,8 @@ import engine
 import formatters
 import prices as px
 from config import CHAT_ID, SUPPORTED_PAIRS, SUPPORTED_TIMEFRAMES, SUPPORTED_SESSIONS, SUPPORTED_BIASES
+from security.auth import require_auth, require_auth_callback, ALLOWED_USER_IDS
+from security.rate_limiter import check_command_rate, get_rate_status
 
 log = logging.getLogger(__name__)
 
@@ -111,12 +113,14 @@ def _pair_select_kb(prefix: str, include_back: bool = True) -> InlineKeyboardMar
     return InlineKeyboardMarkup(rows)
 
 
+@require_auth
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
     await update.message.reply_text(formatters.fmt_landing(), reply_markup=landing_keyboard())
 
 
+@require_auth
 async def perps_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
@@ -126,14 +130,21 @@ async def perps_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(formatters.fmt_perps_home(active, recent, engine.get_session(), formatters._wat_now().strftime("%H:%M"), pending_setups=pending), reply_markup=perps_keyboard())
 
 
+@require_auth
 async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
     await update.message.reply_text(formatters.fmt_help(), parse_mode="Markdown", reply_markup=perps_keyboard())
 
 
+@require_auth_callback
 async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = q.from_user.id
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
     dest = q.data.split(":")[1]
     if dest == "home":
@@ -293,6 +304,7 @@ def _model_edit_value_kb(model_id: str, field: str, options: list[str]) -> Inlin
     rows.append([InlineKeyboardButton("« Back", callback_data=f"model:edit:{model_id}")])
     return InlineKeyboardMarkup(rows)
 
+@require_auth_callback
 async def handle_models_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
@@ -569,8 +581,14 @@ async def _render_quick_deploy(q):
     await q.message.reply_text("⚡ *Quick Deploy*\nChoose a starter pack:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
 
 
+@require_auth_callback
 async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = q.from_user.id
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     data = q.data
 
     if data == "nav:models" or data == "model:list":
@@ -717,8 +735,14 @@ async def handle_model_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("\n".join(["📊 *Rule Analysis*"] + [f"• {r['name']} | Pass {r['pass_rate']}% | Win {r['win_rate']}%" for r in rp]), parse_mode="Markdown")
 
 
+@require_auth_callback
 async def handle_scan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = q.from_user.id
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
     pair = q.data.split(":")[1]
     models = [x for x in db.get_active_models() if x.get("pair") in {pair, "ALL"}]
@@ -746,14 +770,21 @@ async def handle_scan_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@require_auth
 async def scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
     await update.message.reply_text("Use Stats/Models screens.", parse_mode="Markdown")
 
 
+@require_auth_callback
 async def handle_backtest_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = q.from_user.id
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
     parts = q.data.split(":")
     action = parts[1] if len(parts) > 1 else "start"
@@ -768,6 +799,7 @@ async def handle_backtest_cb(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _run_backtest_selection(q.message.reply_text, parts[2], parts[3], parts[4] if len(parts) > 4 else "")
 
 
+@require_auth
 async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
@@ -999,6 +1031,7 @@ def _budget_status_text() -> str:
     return f"💰 Current weekly budget:\n🎯 Target: +{target:g}R\n🛑 Loss limit: -{loss_limit:g}R\nProgress: {achieved:+.1f}R"
 
 
+@require_auth
 async def goal_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return ConversationHandler.END
@@ -1015,8 +1048,14 @@ async def goal_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return GOAL_SELECT
 
 
+@require_auth_callback
 async def goal_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = q.from_user.id
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
     if q.data == "goal:cancel":
         return await goal_cancel(update, context)
@@ -1029,6 +1068,7 @@ async def goal_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return GOAL_SELECT
 
 
+@require_auth
 async def goal_manual_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value = _to_float(update.message.text)
     if value is None or value < 1 or value > 200:
@@ -1045,6 +1085,7 @@ async def _save_goal_and_show(reply_fn, value: float):
     return ConversationHandler.END
 
 
+@require_auth_callback
 async def goal_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
@@ -1054,6 +1095,7 @@ async def goal_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+@require_auth
 async def budget_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return ConversationHandler.END
@@ -1073,8 +1115,14 @@ async def budget_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return BUDGET_TARGET_SELECT
 
 
+@require_auth_callback
 async def budget_target_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = q.from_user.id
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
     if q.data == "budget:cancel":
         return await budget_cancel(update, context)
@@ -1087,6 +1135,7 @@ async def budget_target_select(update: Update, context: ContextTypes.DEFAULT_TYP
     return BUDGET_TARGET_SELECT
 
 
+@require_auth
 async def budget_target_manual_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value = _to_float(update.message.text)
     if value is None or value < 0.5 or value > 50:
@@ -1108,8 +1157,14 @@ async def _set_budget_target_and_ask_loss(reply_fn, context: ContextTypes.DEFAUL
     return BUDGET_LOSS_SELECT
 
 
+@require_auth_callback
 async def budget_loss_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = q.from_user.id
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
     if q.data == "budget:cancel":
         return await budget_cancel(update, context)
@@ -1122,6 +1177,7 @@ async def budget_loss_select(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return BUDGET_LOSS_SELECT
 
 
+@require_auth
 async def budget_loss_manual_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value = _to_float(update.message.text)
     if value is None or value < 0.5 or value > 20:
@@ -1147,8 +1203,14 @@ async def _set_budget_loss_and_confirm(reply_fn, context: ContextTypes.DEFAULT_T
     return BUDGET_CONFIRM
 
 
+@require_auth_callback
 async def budget_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = q.from_user.id
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
     if q.data == "budget:cancel":
         return await budget_cancel(update, context)
@@ -1167,6 +1229,7 @@ async def budget_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return BUDGET_CONFIRM
 
 
+@require_auth_callback
 async def budget_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
@@ -1228,6 +1291,7 @@ def build_budget_handler() -> ConversationHandler:
     )
 
 
+@require_auth
 async def journal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _guard(update):
         return
@@ -1238,3 +1302,143 @@ async def journal_cmd_like(reply_fn):
     entries = db.get_journal_entries(10)
     lines = ["📓 *Journal*", "━━━━━━━━━━━━━━━━━━━━━━━━"] + [f"[{e.get('pair', '?')}] [{e.get('result', '?')}] {e.get('entry_text', '')}" for e in entries]
     await reply_fn("\n".join(lines), parse_mode="Markdown")
+
+
+_resume_tokens = {}
+_addkey_state = {}
+_deletekey_state = {}
+
+@require_auth
+async def handle_stop(update, context):
+    from security.emergency_stop import halt_trading
+    from security.audit import log_event
+    user_id = update.effective_user.id
+    halt_trading("User command /stop")
+    log_event(action="emergency_stop", details={"trigger": "/stop command"}, user_id=user_id, success=True)
+    await update.message.reply_text("🛑 *ALL TRADING HALTED*\n━━━━━━━━━━━━━━━━━━━━━━━━\nNo orders will be placed.\nKey cache cleared from memory.\n\nRun /resume to restart trading.\n_This persists across bot restarts._", parse_mode="Markdown")
+
+@require_auth
+async def handle_resume(update, context):
+    import time
+    from security.emergency_stop import resume_trading
+    from security.audit import log_event
+    uid = update.effective_user.id
+    txt = (update.message.text or "").strip()
+    now = time.time()
+    token = _resume_tokens.get(uid)
+    if txt != "/resume confirm":
+        _resume_tokens[uid] = now
+        reason = ""
+        try:
+            recent = db.get_recent_audit(hours=24, limit=20)
+            for ev in recent:
+                if ev.get("action") == "emergency_stop":
+                    reason = ev.get("details", {}).get("trigger", "")
+                    break
+        except Exception:
+            pass
+        await update.message.reply_text(f"⚠️ Trading is halted. Last reason: {reason or 'unknown'}.\nSend `/resume confirm` within 30s to resume.", parse_mode="Markdown")
+        return
+    if not token or now - token > 30:
+        await update.message.reply_text("Resume confirmation expired. Run /resume first, then /resume confirm within 30s.")
+        return
+    resume_trading("User command /resume confirm")
+    log_event(action="trading_resumed", details={"trigger": "/resume confirm"}, user_id=uid, success=True)
+    await update.message.reply_text("✅ Trading resumed.")
+
+@require_auth
+async def handle_security(update, context):
+    from security.emergency_stop import is_halted
+    from security.spending_limits import get_daily_summary
+    from security.key_manager import list_stored_keys
+    uid = update.effective_user.id
+    halted = is_halted()
+    spend = get_daily_summary()
+    rate = get_rate_status(uid)
+    keys = list_stored_keys()
+    recent = db.get_recent_audit(hours=24, limit=3)
+    lines=["🛡 *Security Dashboard*", "━━━━━━━━━━━━━━━━━━━━━━━━", f"Trading halted: {'✅ Yes' if halted else '❌ No'}", f"Auth whitelist: ✅ {len(ALLOWED_USER_IDS)} users", "", "*Today's Spend*"]
+    for k,v in spend.items():
+        lines.append(f"- {k}: ${v['spent']:.2f}/${v['limit']:.2f}")
+    lines += ["", f"Rate: {rate['commands_last_minute']}/{rate['commands_limit']} cmd/min", f"Stored keys: {', '.join([r['key_name'] for r in keys]) or 'none'}", "", "Last audit events:"]
+    for ev in recent:
+        lines.append(f"- {ev.get('action')} ({'ok' if ev.get('success') else 'fail'})")
+    lines.append(f"Last heartbeat time: {__import__('datetime').datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
+
+@require_auth
+async def handle_limits(update, context):
+    from security import spending_limits as sl
+    text=(f"*Hard Limits*\nHyperliquid single: ${sl.MAX_SINGLE_TRADE_USD['hyperliquid']:.0f}\nSolana single: ${sl.MAX_SINGLE_TRADE_USD['solana']:.0f}\nPolymarket single: ${sl.MAX_SINGLE_TRADE_USD['polymarket']:.0f}")
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+@require_auth
+async def handle_audit(update, context):
+    rows = db.get_recent_audit(hours=168, limit=20)
+    if not rows:
+        await update.message.reply_text('No audit events yet.')
+        return
+    lines=["*Recent Audit Log*", "━━━━━━━━━━━━━━━━━━━━━━━━"]
+    for r in rows:
+        lines.append(f"{r.get('timestamp')}: {r.get('action')} ({'ok' if r.get('success') else 'fail'})")
+    await update.message.reply_text('\n'.join(lines), parse_mode='Markdown')
+
+@require_auth
+async def handle_keys(update, context):
+    from security.key_manager import list_stored_keys
+    rows = list_stored_keys()
+    if not rows:
+        await update.message.reply_text('No encrypted keys stored.')
+        return
+    await update.message.reply_text('\n'.join([f"- {r['key_name']} ({r.get('label','')})" for r in rows]))
+
+@require_auth
+async def handle_addkey(update, context):
+    from security.key_manager import store_private_key
+    uid = update.effective_user.id
+    text = (update.message.text or '').strip()
+    state = _addkey_state.get(uid, {"step": 0})
+    if text == '/addkey':
+        _addkey_state[uid] = {"step": 1}
+        await update.message.reply_text('Section? (hyperliquid/solana/polymarket)')
+        return
+    if state.get('step') == 1:
+        _addkey_state[uid] = {"step": 2, "section": text.lower()}
+        await update.message.reply_text('Label for this key?')
+        return
+    if state.get('step') == 2:
+        state['label'] = text
+        state['step'] = 3
+        _addkey_state[uid] = state
+        await update.message.reply_text('Send private key in next message.')
+        return
+    if state.get('step') == 3:
+        key_name = f"{state['section']}_main"
+        store_private_key(key_name, text, state.get('label',''))
+        _addkey_state.pop(uid, None)
+        db.log_audit(action='key_stored', details={'key_name': key_name, 'label': state.get('label','')}, user_id=uid, success=True)
+        await update.message.reply_text("✅ Key stored encrypted.\n⚠️ Please delete your previous message containing the key from this chat now.\nTap and hold the message → Delete.")
+
+@require_auth
+async def handle_deletekey(update, context):
+    from security.key_manager import list_stored_keys, delete_private_key
+    from security.emergency_stop import is_halted
+    uid = update.effective_user.id
+    text = (update.message.text or '').strip()
+    if text == '/deletekey':
+        if not is_halted():
+            await update.message.reply_text('Trading must be halted first. Run /stop.')
+            return
+        rows = list_stored_keys()
+        await update.message.reply_text('Type key name to delete:\n' + '\n'.join([r['key_name'] for r in rows]))
+        _deletekey_state[uid] = {'awaiting': True}
+        return
+    if _deletekey_state.get(uid, {}).get('awaiting'):
+        delete_private_key(text)
+        _deletekey_state.pop(uid, None)
+        db.log_audit(action='key_deleted', details={'key_name': text}, user_id=uid, success=True)
+        await update.message.reply_text(f'🗑 Key deleted: {text}')
+
+@require_auth
+async def handle_rotate(update, context):
+    await update.message.reply_text('Key rotation process initiated. Use offline runbook to re-encrypt stored keys with rotate_encryption().')

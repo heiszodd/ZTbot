@@ -2,6 +2,8 @@ import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
+from security.auth import require_auth, require_auth_callback
+from security.rate_limiter import check_command_rate
 
 import db
 from engine.notification_filter import get_pattern_keys
@@ -60,8 +62,14 @@ async def show_risk_home(query, context):
     await query.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
 
 
+@require_auth_callback
 async def handle_risk_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = q.from_user.id if q and q.from_user else 0
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
     data = q.data
     if data == "nav:risk":
@@ -109,6 +117,7 @@ async def handle_risk_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_notification_filter(q)
 
 
+@require_auth
 async def handle_risk_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if context.user_data.get("risk_waiting_account"):

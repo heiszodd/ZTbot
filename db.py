@@ -5033,3 +5033,169 @@ def save_hl_fills(address: str, fills: list) -> None:
                 rows,
             )
         conn.commit()
+
+# ── Security tables/helpers ─────────────────────────
+
+def save_encrypted_key(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO encrypted_keys (key_name, encrypted, label, stored_at)
+                VALUES (%s, %s, %s, NOW())
+                ON CONFLICT (key_name) DO UPDATE SET
+                    encrypted = EXCLUDED.encrypted,
+                    label = EXCLUDED.label,
+                    stored_at = NOW()
+                """,
+                (data.get("key_name"), data.get("encrypted"), data.get("label", "")),
+            )
+        conn.commit()
+
+
+def get_encrypted_key(key_name: str) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT key_name, encrypted, label, stored_at, last_used FROM encrypted_keys WHERE key_name=%s",
+                (key_name,),
+            )
+            row = cur.fetchone()
+            if row:
+                cur.execute("UPDATE encrypted_keys SET last_used=NOW() WHERE key_name=%s", (key_name,))
+                conn.commit()
+                return dict(row)
+        conn.commit()
+    return None
+
+
+def delete_encrypted_key(key_name: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM encrypted_keys WHERE key_name=%s", (key_name,))
+        conn.commit()
+
+
+def list_encrypted_keys() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT key_name, label, stored_at, last_used FROM encrypted_keys ORDER BY stored_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def log_audit(data: dict | None = None, **kwargs) -> None:
+    payload = data or kwargs
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO audit_log (timestamp, action, details, user_id, success, error)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        payload.get("timestamp") or datetime.utcnow(),
+                        payload.get("action", "unknown"),
+                        json.dumps(payload.get("details", {})),
+                        payload.get("user_id", 0),
+                        payload.get("success", True),
+                        payload.get("error", ""),
+                    ),
+                )
+            conn.commit()
+    except Exception:
+        return
+
+
+def get_recent_audit(hours: int = 24, limit: int = 20) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, timestamp, action, details, user_id, success, error
+                FROM audit_log
+                WHERE timestamp > NOW() - (%s || ' hours')::interval
+                ORDER BY timestamp DESC
+                LIMIT %s
+                """,
+                (int(hours), int(limit)),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def is_trading_halted() -> bool:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT halted FROM trading_state WHERE id=1")
+                row = cur.fetchone()
+                if not row:
+                    return True
+                return bool(row.get("halted"))
+    except Exception:
+        return True
+
+
+def set_trading_halted(halted: bool, reason: str = "") -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if halted:
+                cur.execute(
+                    """
+                    UPDATE trading_state
+                    SET halted=%s, halted_at=NOW(), halted_reason=%s
+                    WHERE id=1
+                    """,
+                    (True, reason),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE trading_state
+                    SET halted=%s, resumed_at=NOW(), halted_reason=%s
+                    WHERE id=1
+                    """,
+                    (False, reason),
+                )
+        conn.commit()
+
+
+def signal_already_executed(signal_id: str) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT EXISTS(SELECT 1 FROM executed_signals WHERE signal_id=%s) AS exists", (signal_id,))
+            row = cur.fetchone() or {}
+            return bool(row.get("exists"))
+
+
+def mark_signal_executed(signal_id: str, section: str, coin: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO executed_signals (signal_id, section, coin)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (signal_id) DO NOTHING
+                """,
+                (signal_id, section, coin),
+            )
+        conn.commit()
+
+
+def get_recent_trade_sizes(section: str, limit: int = 10) -> list:
+    table_map = {
+        "hyperliquid": "hl_trade_plans",
+        "solana": "solana_trade_plans",
+        "polymarket": "poly_demo_trades",
+    }
+    table = table_map.get(section)
+    if not table:
+        return []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if section == "polymarket":
+                cur.execute(f"SELECT size_usd FROM {table} ORDER BY created_at DESC LIMIT %s", (int(limit),))
+            else:
+                cur.execute(f"SELECT size_usd FROM {table} ORDER BY created_at DESC LIMIT %s", (int(limit),))
+            rows = cur.fetchall()
+            return [float(r.get("size_usd") or 0) for r in rows]
