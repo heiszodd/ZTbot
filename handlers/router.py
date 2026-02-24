@@ -12,7 +12,24 @@ log = logging.getLogger(__name__)
 @require_auth_callback
 async def master_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    data = query.data or ""
+    raw_data = query.data or ""
+    data = raw_data
+
+    legacy_aliases = {
+        "nav:perps_home": "perps:home",
+        "nav:degen_home": "degen:home",
+        "nav:degen_models": "degen:models",
+        "nav:polymarket_home": "predictions:home",
+        "nav:solana_home": "degen:live",
+        "nav:scan": "perps:scanner",
+        "nav:models": "perps:models",
+        "nav:journal": "perps:journal",
+        "nav:pending": "perps:pending",
+        "nav:risk": "perps:risk",
+        "nav:notif_filter": "settings:notifications",
+        "nav:status": "settings:home",
+        "nav:guide": "help:home",
+    }
 
     legacy_aliases = {
         "nav:perps_home": "perps:home",
@@ -39,6 +56,14 @@ async def master_callback_router(update: Update, context: ContextTypes.DEFAULT_T
 
     await query.answer()
 
+    if raw_data.startswith("nav:") and raw_data != "nav:home":
+        from handlers.commands import handle_nav
+        await handle_nav(update, context)
+        return
+
+    data = legacy_aliases.get(data, data)
+
+    if data == "nav:home":
     if data.startswith("nav:") and data != "nav:home" and data not in legacy_aliases:
         from handlers.commands import handle_nav
         await handle_nav(update, context)
