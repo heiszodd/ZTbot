@@ -1,10 +1,8 @@
 import asyncio
 import base64
-import json
 import logging
 
 import httpx
-from base58 import b58decode
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 
@@ -14,18 +12,23 @@ USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 
 async def get_sol_keypair() -> Keypair:
+    """Load Solana keypair from stored key normalised to base58."""
     from security.key_manager import get_private_key
+    from security.key_utils import solana_keypair_from_privkey
 
     try:
-        raw = get_private_key("sol_hot_wallet")
+        stored = get_private_key("sol_hot_wallet")
     except ValueError as e:
-        raise RuntimeError(f"Solana hot wallet not configured: {e}\nUse /addkey to store sol_hot_wallet")
+        raise RuntimeError(
+            f"Solana wallet not configured: {e}\nGo to Degen → Live Wallet → Connect Solana Wallet"
+        )
 
     try:
-        secret = bytes(json.loads(raw)) if raw.startswith("[") else b58decode(raw)
-        return Keypair.from_bytes(secret)
+        return solana_keypair_from_privkey(stored)
     except Exception as e:
-        raise RuntimeError(f"Invalid Solana private key format: {type(e).__name__}: {e}")
+        raise RuntimeError(
+            f"Failed to load Solana keypair: {e}\nThe stored key may be corrupted. Re-connect your wallet."
+        )
 
 
 async def execute_jupiter_swap(plan: dict) -> dict:

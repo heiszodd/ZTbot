@@ -11,7 +11,8 @@ from engine.hyperliquid.account_reader import (
 from engine.hyperliquid.analytics import calculate_hl_performance, format_performance
 from engine.hyperliquid.market_data import fetch_all_markets
 from engine.hyperliquid.trade_planner import format_hl_trade_plan, generate_hl_trade_plan
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import CallbackQueryHandler, CommandHandler, ConversationHandler, ContextTypes, MessageHandler, filters
 from security.auth import require_auth, require_auth_callback
 from security.rate_limiter import check_command_rate
 from utils.formatting import format_usd
@@ -383,3 +384,55 @@ async def show_hl_trail_setup(query, context, coin: str):
 
 async def handle_hl_wallet_setup(query, context):
     await query.message.reply_text("Send Hyperliquid public address.")
+
+
+AWAITING_HL_KEY = 9101
+
+
+async def hl_setup_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_text(
+        "🔷 *Connect Hyperliquid*\nStep 2 of 4 — Enter API Wallet Key\n\n"        "Send your Hyperliquid API wallet key OR your seed phrase.\n\n"        "*Option A — Seed Phrase*\nYour 12 or 24 word phrase from the wallet that generated the API key.\n\n"        "*Option B — Private Key*\n0x followed by 64 hex characters.\n\n"        "app.hyperliquid.xyz → Your address → API → Generate API Wallet\n\n"        "⚠️ Message deleted immediately after sending.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="perps:home")]]),
+    )
+    return AWAITING_HL_KEY
+
+
+async def receive_hl_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    raw = update.message.text or ""
+    try:
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=update.message.message_id)
+    except Exception as exc:
+        log.warning("Could not delete HL key message: %s", exc)
+
+    msg = await update.message.reply_text("⏳ Processing key...")
+    try:
+        from security.key_manager import store_private_key
+
+        result = store_private_key("hl_api_wallet", raw, "Hyperliquid API Wallet", chain="hyperliquid")
+        db.save_hl_address(result["address"])
+        await msg.edit_text(
+            f"✅ *Hyperliquid Connected!*\n\nAddress: `{result['address'][:10]}...{result['address'][-6:]}`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📈 Perps Dashboard", callback_data="perps:live")]]),
+        )
+        return ConversationHandler.END
+    except ValueError as e:
+        await msg.edit_text(f"❌ *Key Error*\n\n{e}", parse_mode="Markdown")
+        return AWAITING_HL_KEY
+
+
+async def hl_setup_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+    return ConversationHandler.END
+
+
+hl_setup_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(hl_setup_start, pattern="^hl:setup:start$")],
+    states={AWAITING_HL_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_hl_key)]},
+    fallbacks=[CallbackQueryHandler(hl_setup_cancel, pattern="^perps:home$"), CommandHandler("cancel", hl_setup_cancel)],
+    per_chat=True,
+)

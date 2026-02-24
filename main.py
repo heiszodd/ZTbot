@@ -16,7 +16,7 @@ from engine.solana.auto_sell_monitor import run_auto_sell_monitor
 from engine.solana.dca_executor import run_dca_executor
 from engine.solana.trenches_feed import run_trenches_scanner
 from engine.solana.wallet_tracker import run_wallet_tracker
-from handlers import alerts, ca_paste_handler, chart_handler, commands, degen_wizard, news_handler, polymarket_handler, solana_handler, wizard
+from handlers import alerts, ca_paste_handler, chart_handler, commands, degen_wizard, news_handler, polymarket_handler, solana_handler, wizard, hyperliquid_handler
 from handlers.router import master_callback_router
 from security.emergency_stop import is_halted
 from security.heartbeat import send_heartbeat
@@ -48,6 +48,10 @@ def main():
     app = Application.builder().token(os.getenv("BOT_TOKEN")).post_init(post_init).build()
 
     # Conversations first
+    app.add_handler(polymarket_handler.poly_setup_conv, group=0)
+    app.add_handler(solana_handler.sol_setup_conv, group=0)
+    app.add_handler(hyperliquid_handler.hl_setup_conv, group=0)
+
     chart_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.PHOTO | filters.Document.IMAGE, chart_handler.chart_received_first)],
         states={chart_handler.CHART_WAITING_LTF: [MessageHandler(filters.PHOTO | filters.Document.IMAGE, chart_handler.chart_received_ltf)]},
@@ -77,7 +81,7 @@ def main():
     app.add_handler(CommandHandler("settings", commands.handle_settings_command))
 
     # CA paste detection
-    app.add_handler(MessageHandler(filters.Regex(r"^(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$"), ca_paste_handler.handle_ca_paste), group=0)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.Regex(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$"), ca_paste_handler.handle_ca_paste), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, solana_handler.handle_solana_text), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, polymarket_handler.handle_poly_text), group=1)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, commands.handle_setup), group=2)
