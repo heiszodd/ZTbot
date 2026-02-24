@@ -74,6 +74,11 @@ async def handle_poly_live_trade(query, context, market_id: str):
             [InlineKeyboardButton("YES $10", callback_data=f"poly:execute:{market_id}:YES:10"), InlineKeyboardButton("NO $10", callback_data=f"poly:execute:{market_id}:NO:10")],
             [InlineKeyboardButton("YES $25", callback_data=f"poly:execute:{market_id}:YES:25"), InlineKeyboardButton("NO $25", callback_data=f"poly:execute:{market_id}:NO:25")],
             [InlineKeyboardButton("YES $50", callback_data=f"poly:execute:{market_id}:YES:50"), InlineKeyboardButton("NO $50", callback_data=f"poly:execute:{market_id}:NO:50")],
+    await query.message.reply_text(
+        "Choose side and size:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("YES $10", callback_data=f"poly:execute:{market_id}:YES:10"), InlineKeyboardButton("NO $10", callback_data=f"poly:execute:{market_id}:NO:10")],
+            [InlineKeyboardButton("YES $25", callback_data=f"poly:execute:{market_id}:YES:25"), InlineKeyboardButton("NO $25", callback_data=f"poly:execute:{market_id}:NO:25")],
         ]),
     )
 
