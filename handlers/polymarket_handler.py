@@ -65,16 +65,54 @@ async def handle_poly_demo_trade(query, context, market_id: str):
 
 async def handle_poly_live_trade(query, context, market_id: str):
     market = await fetch_market_by_id(market_id)
-    question = market.get("question", market_id)
+    question = (market or {}).get("question", "Market")
+    short_q = question[:80] + "..." if len(question) > 80 else question
     await query.message.reply_text(
-        "📲 Live Trading — Coming in Phase 2\n\n"
-        "To trade this market manually now:\n"
-        "1. Go to polymarket.com\n"
-        f"2. Search: {question[:80]}\n"
-        "3. Buy YES/NO with USDC on Polygon\n\n"
-        "Phase 2 will execute this automatically.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Demo Trade Instead", callback_data=f"poly:demo:{market_id}")]]),
+        f"📲 *Live Trade Setup*\n{short_q}\n\nChoose side and size:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("YES $10", callback_data=f"poly:execute:{market_id}:YES:10"), InlineKeyboardButton("NO $10", callback_data=f"poly:execute:{market_id}:NO:10")],
+            [InlineKeyboardButton("YES $25", callback_data=f"poly:execute:{market_id}:YES:25"), InlineKeyboardButton("NO $25", callback_data=f"poly:execute:{market_id}:NO:25")],
+            [InlineKeyboardButton("YES $50", callback_data=f"poly:execute:{market_id}:YES:50"), InlineKeyboardButton("NO $50", callback_data=f"poly:execute:{market_id}:NO:50")],
+        ]),
     )
+
+
+async def handle_poly_execute_trade(query, context, market_id, position, size_usd):
+    from engine.polymarket.executor import execute_poly_trade
+    from engine.execution_pipeline import run_execution_pipeline
+
+    market = await fetch_market_by_id(market_id)
+    if not market:
+        await query.answer("Market not found", show_alert=True)
+        return
+
+    yes_price, no_price, yes_token, no_token = 0.0, 0.0, "", ""
+    for t in market.get("tokens", []):
+        outcome = t.get("outcome", "").upper()
+        price = float(t.get("price", 0) or 0)
+        tok_id = t.get("token_id", "")
+        if outcome == "YES":
+            yes_price, yes_token = price, tok_id
+        elif outcome == "NO":
+            no_price, no_token = price, tok_id
+
+    price = yes_price if position == "YES" else no_price
+    token_id = yes_token if position == "YES" else no_token
+    question = market.get("question", "")
+    short_q = question[:60] + "..." if len(question) > 60 else question
+    plan = {"coin": "USDC", "symbol": position, "side": f"{position} — {short_q}", "market_id": market_id, "token_id": token_id, "position": position, "size_usd": size_usd, "entry_price": price, "stop_loss": 0, "price": price, "question": question, "yes_pct": round(yes_price * 100, 1)}
+
+    result = await run_execution_pipeline("polymarket", plan, execute_poly_trade, query.from_user.id, context)
+    if result.get("pending"):
+        await query.message.reply_text(result["message"], parse_mode="Markdown", reply_markup=result["keyboard"])
+        return
+    if not result.get("success"):
+        await query.message.reply_text(f"❌ Trade failed\n{result.get('error','?')}")
+        return
+    exe = result.get("result", {})
+    db.save_poly_live_trade({"market_id": market_id, "question": question, "position": position, "token_id": token_id, "entry_price": price, "size_usd": size_usd, "shares": exe.get("shares", 0), "order_id": result["tx_id"], "status": "open"})
+    await query.message.reply_text(f"✅ *Polymarket Trade Executed*\n{short_q}\nOrder ID: `{result['tx_id']}`", parse_mode="Markdown")
 
 
 @require_auth
@@ -120,6 +158,21 @@ async def handle_polymarket_cb(update, context):
         return await show_poly_sentiment(q, context)
     if data.startswith("poly:live:"):
         return await handle_poly_live_trade(q, context, data.split(":", 2)[2])
+    if data == "poly:live_top":
+        results = await run_market_scanner()
+        pools = (results or {}).get("high_volume", []) or (results or {}).get("uncertain", [])
+        if not pools:
+            return await q.message.reply_text("No scanner markets available right now.")
+        return await handle_poly_live_trade(q, context, pools[0]["market_id"])
+    if data == "poly:demo_top":
+        results = await run_market_scanner()
+        pools = (results or {}).get("high_volume", []) or (results or {}).get("uncertain", [])
+        if not pools:
+            return await q.message.reply_text("No scanner markets available right now.")
+        return await handle_poly_demo_trade(q, context, pools[0]["market_id"])
+    if data.startswith("poly:execute:"):
+        _, _, market_id, side, size = data.split(":", 4)
+        return await handle_poly_execute_trade(q, context, market_id, side, float(size))
     if data.startswith("poly:demo:"):
         return await handle_poly_demo_trade(q, context, data.split(":", 2)[2])
     if data.startswith("poly:pick:"):
@@ -164,3 +217,20 @@ async def handle_polymarket_cb(update, context):
             return await q.message.reply_text("🎮 No Polymarket demo trades yet.")
         txt = "🎮 *Polymarket Demo Trades*\n━━━━━━━━━━━━━━━━━━━━━━━━\n" + "\n".join([f"#{r['id']} {r['position']} {r.get('question','')[:45]} — {r['status']} {float(r.get('pnl_usd') or 0):+.2f}$" for r in rows[:20]])
         return await q.message.reply_text(txt, parse_mode="Markdown")
+    if data.startswith("poly:position:"):
+        market_id = data.split(":", 2)[2]
+        pos = db.get_poly_live_trade(market_id)
+        if not pos:
+            return await q.message.reply_text("No open live position for this market.")
+        return await q.message.reply_text(
+            f"📊 *Live Position*\n{pos.get('question','')[:80]}\n"
+            f"Side: {pos.get('position')}\n"
+            f"Size: ${float(pos.get('size_usd') or 0):.2f}\n"
+            f"Entry: {float(pos.get('entry_price') or 0)*100:.1f}%\n"
+            f"P&L: ${float(pos.get('pnl_usd') or 0):+.2f}",
+            parse_mode="Markdown",
+        )
+    if data.startswith("poly:close:"):
+        market_id = data.split(":", 2)[2]
+        await q.message.reply_text("Close flow will execute from live position controls shortly.")
+        return

@@ -140,14 +140,8 @@ async def handle_degen_model_cb(update: Update, context: ContextTypes.DEFAULT_TY
     if data.startswith("degen:buy:"):
         _,_,address,amount = data.split(":",3)
         usd = float(amount)
-        ok, failures = run_all_checks("solana", usd, f"sol:{address}")
-        if not ok:
-            return await q.message.reply_text("❌ " + "\n".join(failures))
-        st = db.get_user_settings(q.message.chat_id)
-        instant = st.get("instant_buy_enabled", True) and usd <= float(st.get("instant_buy_threshold") or 50)
-        if instant:
-            return await q.message.reply_text(f"✅ Bought `{address[:6]}...` for {format_usd(usd)} (queued)", parse_mode="Markdown")
-        return await q.message.reply_text(f"Confirm buy {format_usd(usd)} for `{address[:6]}...`", parse_mode="Markdown")
+        from handlers.solana_handler import handle_sol_execute_buy
+        return await handle_sol_execute_buy(q, context, address, address[:6], usd, auto_sell=True)
     if data == "degen_model:new":
         return await start_model_create(update, context)
     if data == "degen_model:quick_pick":

@@ -1445,12 +1445,25 @@ async def handle_addkey(update, context):
     uid = update.effective_user.id
     text = (update.message.text or '').strip()
     state = _addkey_state.get(uid, {"step": 0})
+
+    # Fast path: /addkey <exact_key_name>
+    parts = text.split(maxsplit=1)
+    if len(parts) == 2 and parts[0] == '/addkey' and state.get('step', 0) == 0:
+        _addkey_state[uid] = {"step": 99, "key_name": parts[1].strip(), "label": ""}
+        await update.message.reply_text(f"Send private key for `{parts[1].strip()}` in next message.", parse_mode="Markdown")
+        return
+
     if text == '/addkey':
         _addkey_state[uid] = {"step": 1}
-        await update.message.reply_text('Section? (hyperliquid/solana/polymarket)')
+        await update.message.reply_text('Section or key name? (hyperliquid/solana/polymarket OR hl_api_wallet/sol_hot_wallet/poly_hot_wallet/...)')
         return
     if state.get('step') == 1:
-        _addkey_state[uid] = {"step": 2, "section": text.lower()}
+        raw = text.lower()
+        if raw in {"hl_api_wallet", "sol_hot_wallet", "poly_hot_wallet", "poly_api_key", "poly_api_secret", "poly_api_passphrase"}:
+            _addkey_state[uid] = {"step": 99, "key_name": raw}
+            await update.message.reply_text('Label for this key?')
+            return
+        _addkey_state[uid] = {"step": 2, "section": raw}
         await update.message.reply_text('Label for this key?')
         return
     if state.get('step') == 2:
@@ -1460,8 +1473,21 @@ async def handle_addkey(update, context):
         await update.message.reply_text('Send private key in next message.')
         return
     if state.get('step') == 3:
-        key_name = f"{state['section']}_main"
+        key_name = state.get('key_name') or f"{state['section']}_main"
         store_private_key(key_name, text, state.get('label',''))
+        _addkey_state.pop(uid, None)
+        db.log_audit(action='key_stored', details={'key_name': key_name, 'label': state.get('label','')}, user_id=uid, success=True)
+        await update.message.reply_text("✅ Key stored encrypted.\n⚠️ Please delete your previous message containing the key from this chat now.\nTap and hold the message → Delete.")
+        return
+    if state.get('step') == 99:
+        # We already have explicit key_name, now collect either label or key body
+        if state.get('label') is None:
+            state['label'] = text
+            _addkey_state[uid] = state
+            await update.message.reply_text('Send private key in next message.')
+            return
+        key_name = state.get('key_name')
+        store_private_key(key_name, text, state.get('label', ''))
         _addkey_state.pop(uid, None)
         db.log_audit(action='key_stored', details={'key_name': key_name, 'label': state.get('label','')}, user_id=uid, success=True)
         await update.message.reply_text("✅ Key stored encrypted.\n⚠️ Please delete your previous message containing the key from this chat now.\nTap and hold the message → Delete.")
@@ -1489,3 +1515,73 @@ async def handle_deletekey(update, context):
 @require_auth
 async def handle_rotate(update, context):
     await update.message.reply_text('Key rotation process initiated. Use offline runbook to re-encrypt stored keys with rotate_encryption().')
+
+
+@require_auth
+async def handle_setup(update, context):
+    text = (update.message.text or "").strip().lower()
+    parts = text.split()
+    if len(parts) < 2:
+        await update.message.reply_text("Usage: /setup <hl|sol|poly>")
+        return
+    section = parts[1]
+    if section == "hl":
+        return await update.message.reply_text(
+            "Hyperliquid Phase 2 Setup\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "1. Go to app.hyperliquid.xyz\n"
+            "2. Settings → API → Generate API Wallet\n"
+            "3. Copy the private key shown\n"
+            "4. Send me: /addkey hl_api_wallet\n"
+            "5. I'll walk you through storing it encrypted.\n\n"
+            "⚠️ API wallet can TRADE only. Cannot withdraw."
+        )
+    if section == "sol":
+        return await update.message.reply_text(
+            "Solana Phase 2 Setup\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "1. Generate new keypair (dedicated bot wallet)\n"
+            "2. Fund with max $500 USDC + 0.1 SOL\n"
+            "3. Copy private key (base58 or byte-array)\n"
+            "4. Send: /addkey sol_hot_wallet\n\n"
+            "⚠️ Keep this wallet small. Only fund what you can risk."
+        )
+    if section == "poly":
+        return await update.message.reply_text(
+            "Polymarket Phase 2 Setup\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "1. Create Polygon hot wallet + fund with USDC\n"
+            "2. polymarket.com → Profile → API Keys → Generate\n"
+            "3. Store all credentials:\n"
+            "/addkey poly_hot_wallet\n"
+            "/addkey poly_api_key\n"
+            "/addkey poly_api_secret\n"
+            "/addkey poly_api_passphrase"
+        )
+    await update.message.reply_text("Unknown section. Use /setup hl, /setup sol, or /setup poly")
+
+
+@require_auth_callback
+async def handle_confirmation_callback(update, context):
+    query = update.callback_query
+    parts = (query.data or "").split(":")
+    if len(parts) < 4:
+        await query.answer("Invalid")
+        return
+    action, section, confirm_id = parts[1], parts[2], parts[3]
+    if action == "cancel":
+        from security.confirmation import cancel_confirmation
+        cancel_confirmation(confirm_id)
+        await query.message.edit_text("❌ Trade cancelled.", reply_markup=None)
+        await query.answer("Cancelled")
+        return
+    if action == "execute":
+        from security.confirmation import execute_confirmation
+        await query.answer("⏳ Executing...", show_alert=False)
+        await query.message.edit_text("⏳ *Executing trade...*\nPlease wait.", parse_mode="Markdown", reply_markup=None)
+        success, result_or_error = await execute_confirmation(confirm_id)
+        if success:
+            tx_id = result_or_error.get("tx_id", "") if isinstance(result_or_error, dict) else ""
+            await query.message.edit_text(f"✅ *Trade Executed*\nRef: `{tx_id}`\nCheck positions for details.", parse_mode="Markdown")
+        else:
+            await query.message.edit_text(f"❌ *Execution Failed*\n{result_or_error}", parse_mode="Markdown")
