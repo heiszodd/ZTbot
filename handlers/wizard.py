@@ -7,6 +7,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Con
 import db
 from config import CHAT_ID, SUPPORTED_PAIRS, SUPPORTED_SESSIONS, SUPPORTED_TIMEFRAMES
 from formatters import fmt_bias
+from security.auth import require_auth, require_auth_callback
 
 log = logging.getLogger(__name__)
 

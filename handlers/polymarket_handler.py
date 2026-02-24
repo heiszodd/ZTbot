@@ -1,4 +1,6 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from security.auth import require_auth, require_auth_callback
+from security.rate_limiter import check_command_rate
 import db
 from engine.polymarket.market_reader import fetch_markets, fetch_market_by_id
 from engine.polymarket.scanner import run_market_scanner, format_scanner_results

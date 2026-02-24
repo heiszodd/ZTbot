@@ -1,5 +1,7 @@
 import re
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from security.auth import require_auth, require_auth_callback
+from security.rate_limiter import check_command_rate
 import db
 from engine.solana.wallet_reader import get_wallet_summary, get_token_price_usd
 from engine.solana.jupiter_quotes import get_swap_quote, format_quote, USDC_MINT
