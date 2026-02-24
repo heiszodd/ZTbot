@@ -199,8 +199,14 @@ async def handle_hl_demo(query, context):
     )
 
 
+@require_auth_callback
 async def handle_hl_cb(update, context):
     q = update.callback_query
+    uid = q.from_user.id if q and q.from_user else 0
+    allowed, reason = check_command_rate(uid)
+    if not allowed:
+        await q.answer(reason, show_alert=True)
+        return
     await q.answer()
 
     if q.data == "hl:home":

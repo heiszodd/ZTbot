@@ -1199,3 +1199,43 @@ CREATE TABLE IF NOT EXISTS hl_funding_history (
     timestamp        TIMESTAMP,
     created_at       TIMESTAMP DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS encrypted_keys (
+    id         SERIAL PRIMARY KEY,
+    key_name   VARCHAR(100) NOT NULL UNIQUE,
+    encrypted  TEXT NOT NULL,
+    label      VARCHAR(100),
+    stored_at  TIMESTAMP DEFAULT NOW(),
+    last_used  TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         SERIAL PRIMARY KEY,
+    timestamp  TIMESTAMP DEFAULT NOW(),
+    action     VARCHAR(100) NOT NULL,
+    details    JSONB DEFAULT '{}',
+    user_id    BIGINT DEFAULT 0,
+    success    BOOLEAN DEFAULT TRUE,
+    error      TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+
+CREATE TABLE IF NOT EXISTS trading_state (
+    id         SERIAL PRIMARY KEY,
+    halted     BOOLEAN DEFAULT FALSE,
+    halted_at  TIMESTAMP,
+    halted_reason TEXT,
+    resumed_at TIMESTAMP
+);
+INSERT INTO trading_state (id, halted)
+VALUES (1, FALSE)
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS executed_signals (
+    id         SERIAL PRIMARY KEY,
+    signal_id  VARCHAR(100) NOT NULL UNIQUE,
+    section    VARCHAR(30),
+    coin       VARCHAR(20),
+    executed_at TIMESTAMP DEFAULT NOW()
+);

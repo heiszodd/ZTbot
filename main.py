@@ -23,6 +23,8 @@ from engine.degen import dev_tracker, exit_planner, narrative_detector
 from engine.degen.auto_scanner import run_auto_scanner, run_watchlist_scanner
 from engine.polymarket.alert_monitor import run_polymarket_monitor
 from engine.polymarket.demo_trading import update_poly_demo_trades
+from security.heartbeat import send_heartbeat
+from security.emergency_stop import is_halted
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -428,6 +430,7 @@ async def keepalive_job(context):
 
 async def post_init(application):
     import config
+    import os
 
     log.info("━━━━━━━━━━━━━━━━━━━━━━━━")
     log.info("Bot starting up...")
@@ -450,6 +453,40 @@ async def post_init(application):
         log.info("✅ Database: connected")
     except Exception as e:
         log.error(f"❌ Database: {e}")
+
+
+    from security.encryption import _get_fernet
+    try:
+        _get_fernet()
+        log.info("✅ Encryption key: valid")
+    except RuntimeError as e:
+        log.critical(f"❌ Encryption: {e}")
+
+    from security.auth import ALLOWED_USER_IDS
+    if ALLOWED_USER_IDS:
+        log.info(f"✅ Auth whitelist: {len(ALLOWED_USER_IDS)} user(s)")
+    else:
+        log.critical("❌ ALLOWED_USER_IDS is empty — bot will reject all users")
+
+    halted = is_halted()
+    log.info(f"{'⏸' if halted else '✅'} Trading: {'HALTED' if halted else 'Active'}")
+
+    REQUIRED_FOR_PHASE2 = ["ENCRYPTION_KEY", "ALLOWED_USER_IDS", "HL_ADDRESS"]
+    OPTIONAL = ["HL_API_KEY", "HL_API_SECRET", "HELIUS_API_KEY", "BINANCE_API_KEY", "CRYPTOPANIC_TOKEN", "GEMINI_API_KEY"]
+    missing_required = []
+    for var in REQUIRED_FOR_PHASE2:
+        if not os.getenv(var):
+            missing_required.append(var)
+            log.critical(f"❌ MISSING REQUIRED: {var}")
+        else:
+            log.info(f"✅ {var}: set")
+    for var in OPTIONAL:
+        status = "✅" if os.getenv(var,"") else "⚠️ not set"
+        log.info(f"{status} {var}")
+    if missing_required:
+        log.critical(f"Bot starting with {len(missing_required)} missing required variables. Phase 2 trading will not work.")
+
+    db.log_audit({"action": "bot_started", "details": {"auth_users": len(ALLOWED_USER_IDS), "trading_halted": halted}, "success": True})
 
     log.info("━━━━━━━━━━━━━━━━━━━━━━━━")
     log.info("Bot ready.")
@@ -502,6 +539,15 @@ def main():
     app.add_handler(CommandHandler("news",        news_handler.news_cmd))
     app.add_handler(CommandHandler("charttest",   chart_handler.chart_api_test_cmd))
     app.add_handler(CommandHandler("simulator",   simulator_handler.simulator_cmd))
+    app.add_handler(CommandHandler("stop", commands.handle_stop))
+    app.add_handler(CommandHandler("resume", commands.handle_resume))
+    app.add_handler(CommandHandler("security", commands.handle_security))
+    app.add_handler(CommandHandler("audit", commands.handle_audit))
+    app.add_handler(CommandHandler("keys", commands.handle_keys))
+    app.add_handler(CommandHandler("limits", commands.handle_limits))
+    app.add_handler(CommandHandler("addkey", commands.handle_addkey))
+    app.add_handler(CommandHandler("deletekey", commands.handle_deletekey))
+    app.add_handler(CommandHandler("rotate", commands.handle_rotate))
 
     # ── Conversations (must be before generic callback routers) ──
     chart_conv = ConversationHandler(
@@ -591,6 +637,7 @@ def main():
     app.job_queue.run_repeating(dev_tracker.run_dev_wallet_monitor, interval=600, first=210, name="dev_wallet_monitor")
     app.job_queue.run_repeating(narrative_detector.update_narrative_momentum, interval=1800, first=300, name="narrative_momentum")
     app.job_queue.run_repeating(exit_planner.monitor_exit_triggers, interval=300, first=120, name="degen_exit_monitor")
+    app.job_queue.run_daily(send_heartbeat, time=datetime.time(8, 0, 0), name="heartbeat")
 
     log.info("🤖 Bot started — polling")
     app.run_polling(drop_pending_updates=True)
