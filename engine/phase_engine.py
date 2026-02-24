@@ -257,6 +257,7 @@ async def _fire_alert(context, existing, result, model, pair):
         else:
             alert_text += f"\n\n🔗 _{corr['reason']}_"
 
+    signal = {}
     try:
         from engine.hyperliquid.signal_bridge import enrich_signal_with_hl_plan
         signal = {
@@ -287,13 +288,29 @@ async def _fire_alert(context, existing, result, model, pair):
     except Exception as exc:
         log.error("HL signal enrichment failed for %s: %s", pair, exc)
 
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📲 HL Live Plan", callback_data=f"hl:live_plan:{existing['id']}"), InlineKeyboardButton("🎮 HL Demo Trade", callback_data=f"hl:demo:{existing['id']}")],
-        [InlineKeyboardButton("📲 Live Trade", callback_data=f"hl:live_plan:{existing['id']}"), InlineKeyboardButton("🎮 Demo Trade", callback_data=f"alert:demo_phase:{existing['id']}")],
-    ])
-    msg = await context.bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="Markdown", reply_markup=kb)
-    record_alert_fired({"session": get_session(), "pair": pair, "model_id": model["id"], "direction": direction, "quality_grade": quality["grade"]})
-    db.save_setup_phase({"id": existing["id"], "overall_status": "phase4", "alert_message_id": msg.message_id, "entry_price": price, "stop_loss": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3})
+    signal_payload = {
+        "section": "perps",
+        "pair": pair,
+        "direction": direction,
+        "phase": 3,
+        "timeframe": "15m",
+        "quality_grade": quality.get("grade"),
+        "quality_score": quality.get("score"),
+        "signal_data": {
+            "model_id": model.get("id"),
+            "model_name": model.get("name"),
+            "entry_price": price,
+            "stop_loss": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "passed_rules": result.get("passed_rules", []),
+        },
+        "hl_plan": signal.get("hl_plan", {}),
+    }
+    db.save_pending_signal(signal_payload)
+    log.info("Signal phase %s — stored in Pending, no alert sent", signal_payload["phase"])
+    db.save_setup_phase({"id": existing["id"], "overall_status": "phase4", "entry_price": price, "stop_loss": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3})
     lc_id = db.save_alert_lifecycle({"setup_phase_id": existing["id"], "model_id": model["id"], "pair": pair, "direction": direction, "entry_price": price, "risk_level": risk.get("risk_level"), "risk_amount": risk.get("position", {}).get("risk_amount"), "position_size": risk.get("position", {}).get("position_size"), "leverage": risk.get("position", {}).get("leverage_needed"), "rr_ratio": risk.get("position", {}).get("rr_ratio"), "quality_grade": quality["grade"], "quality_score": quality["score"]})
     context.job_queue.run_once(phase4_check_job, when=900, data={"setup_phase_id": existing["id"], "lifecycle_id": lc_id})
 

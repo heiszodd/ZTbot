@@ -1,0 +1,16 @@
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+import db
+
+
+async def show_degen_live_risk(query, context):
+    s = db.get_user_settings(query.message.chat_id)
+    txt = (
+        "💰 Live Wallet Risk Settings\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🛑 Stop Loss: {s.get('live_sl_pct',20)}%\n"
+        f"🎯 TP1: +{s.get('live_tp1_pct',50)}% → sell {s.get('live_tp1_sell_pct',25)}%\n"
+        f"🎯 TP2: +{s.get('live_tp2_pct',100)}% → sell {s.get('live_tp2_sell_pct',25)}%\n"
+        f"🎯 TP3: +{s.get('live_tp3_pct',200)}% → sell {s.get('live_tp3_sell_pct',50)}%\n"
+        f"⚡ Trail: {s.get('live_trail_pct',20)}%\n"
+    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Live Wallet", callback_data="degen:live")]])
+    await query.message.edit_text(txt, reply_markup=kb)
