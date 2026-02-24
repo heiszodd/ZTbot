@@ -13,10 +13,14 @@ from telegram.ext import (
 
 import prices as px
 from config import SCANNER_INTERVAL, WAT
-from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler, simulator_handler, risk_handler, solana_handler, polymarket_handler
+from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler, simulator_handler, risk_handler, solana_handler, polymarket_handler, ca_paste_handler
 from engine import phase_engine, session_journal, regime_detector, notification_filter, session_checklist
 from handlers import hyperliquid_handler
 from engine.hyperliquid.monitor import run_hl_monitor
+from engine.solana.auto_sell_monitor import run_auto_sell_monitor
+from engine.solana.dca_executor import run_dca_executor
+from engine.solana.wallet_tracker import run_wallet_tracker
+from engine.solana.trenches_feed import run_trenches_scanner
 from degen import wallet_tracker
 from engine import run_backtest
 from engine.degen import dev_tracker, exit_planner, narrative_detector
@@ -528,6 +532,17 @@ def main():
     app.add_handler(CommandHandler("demo_perps",  demo_handler.demo_perps_cmd))
     app.add_handler(CommandHandler("demo_degen",  demo_handler.demo_degen_cmd))
     app.add_handler(CommandHandler("scan",        commands.scan))
+    app.add_handler(CommandHandler("buy",         commands.buy_cmd))
+    app.add_handler(CommandHandler("sell",        commands.sell_cmd))
+    app.add_handler(CommandHandler("price",       commands.price_cmd))
+    app.add_handler(CommandHandler("pnl",         commands.pnl_cmd))
+    app.add_handler(CommandHandler("positions",   commands.positions_cmd))
+    app.add_handler(CommandHandler("stop_loss",   commands.generic_shortcut_cmd))
+    app.add_handler(CommandHandler("trail",       commands.generic_shortcut_cmd))
+    app.add_handler(CommandHandler("dca",         commands.generic_shortcut_cmd))
+    app.add_handler(CommandHandler("alert",       commands.generic_shortcut_cmd))
+    app.add_handler(CommandHandler("trenches",    commands.generic_shortcut_cmd))
+    app.add_handler(CommandHandler("settings",    commands.generic_shortcut_cmd))
     app.add_handler(CommandHandler("guide",       commands.guide))
     app.add_handler(CommandHandler("stats",       stats.stats_cmd))
     app.add_handler(CommandHandler("discipline",  stats.discipline_cmd))
@@ -599,6 +614,7 @@ def main():
     app.add_handler(CallbackQueryHandler(degen_handler.handle_degen_cb, pattern="^degen:"))
     app.add_handler(CallbackQueryHandler(risk_handler.handle_risk_cb, pattern="^(risk:|nav:risk|nav:checklist|nav:notif_filter|filter:toggle:|filter:override:|nav:regime)"), group=0)
     app.add_handler(wallet_handler.build_add_wallet_handler())
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ca_paste_handler.handle_ca_paste), group=0)
     app.add_handler(MessageHandler(filters.Regex(r"^(?i:scan\s+).+"), degen_handler.handle_manual_scan), group=0)
     app.add_handler(MessageHandler(filters.Regex(r"^(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$"), degen_handler.handle_manual_scan), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, solana_handler.handle_solana_text), group=0)
@@ -627,6 +643,10 @@ def main():
     app.job_queue.run_repeating(demo_handler.demo_monitor_job, interval=30, first=360, name="demo_monitor")
     app.job_queue.run_repeating(ca_handler.ca_monitor_job, interval=120, first=180, name="ca_monitor")
     app.job_queue.run_repeating(run_hl_monitor, interval=300, first=540, name="hl_monitor")
+    app.job_queue.run_repeating(run_auto_sell_monitor, interval=60, first=570, name="auto_sell_monitor")
+    app.job_queue.run_repeating(run_dca_executor, interval=60, first=600, name="dca_executor")
+    app.job_queue.run_repeating(run_wallet_tracker, interval=60, first=630, name="wallet_tracker")
+    app.job_queue.run_repeating(run_trenches_scanner, interval=30, first=660, name="trenches_scanner")
 
     app.job_queue.run_repeating(run_auto_scanner, interval=1800, first=120, name="auto_degen_scanner")
     app.job_queue.run_repeating(run_watchlist_scanner, interval=900, first=270, name="watchlist_scanner")

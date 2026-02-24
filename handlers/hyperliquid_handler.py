@@ -14,21 +14,28 @@ from engine.hyperliquid.trade_planner import format_hl_trade_plan, generate_hl_t
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from security.auth import require_auth, require_auth_callback
 from security.rate_limiter import check_command_rate
+from utils.formatting import format_usd
 
 log = logging.getLogger(__name__)
 
 
-def _hl_home_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def _hl_home_kb(mode: str = "simple") -> InlineKeyboardMarkup:
+    base = [[InlineKeyboardButton("⚡ Simple Mode" if mode=="simple" else "🔬 Advanced Mode", callback_data="hl:toggle_mode")]]
+    rows = [
         [InlineKeyboardButton("🔄 Refresh", callback_data="hl:home"), InlineKeyboardButton("📊 Positions", callback_data="hl:positions")],
         [InlineKeyboardButton("📋 Open Orders", callback_data="hl:orders"), InlineKeyboardButton("📈 Performance", callback_data="hl:performance")],
         [InlineKeyboardButton("💱 Trade Plans", callback_data="hl:plans"), InlineKeyboardButton("📜 History", callback_data="hl:history")],
         [InlineKeyboardButton("🌊 Funding", callback_data="hl:funding"), InlineKeyboardButton("🏪 Markets", callback_data="hl:markets")],
         [InlineKeyboardButton("🏠 Perps Home", callback_data="nav:perps_home")],
-    ])
+    ]
+    if mode == "advanced":
+        rows.insert(3, [InlineKeyboardButton("📏 Quick Risk", callback_data="hl:risk_sizes")])
+    return InlineKeyboardMarkup(base + rows)
 
 
 async def show_hl_home(query, context):
+    settings = db.get_user_settings(query.message.chat_id)
+    mode = settings.get("perps_mode", "simple")
     address = db.get_hl_address() or HL_ADDRESS
     if not address:
         await query.message.reply_text(
@@ -65,17 +72,19 @@ async def show_hl_home(query, context):
             f"PnL: ${pos.get('live_upnl', 0):+,.2f} ({pos.get('live_upnl_pct', 0):+,.1f}%)"
         )
 
-    await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=_hl_home_kb())
+    await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=_hl_home_kb(mode))
 
 
 async def show_hl_positions(query, context):
+    settings = db.get_user_settings(query.message.chat_id)
+    mode = settings.get("perps_mode", "simple")
     address = db.get_hl_address() or HL_ADDRESS
     positions = await fetch_positions_with_prices(address) if address else []
     plans = db.get_hl_trade_plans(status="pending")
     sl_map = {p.get("coin"): p.get("stop_loss") for p in plans}
 
     if not positions:
-        await query.message.reply_text("📊 No open Hyperliquid positions.", reply_markup=_hl_home_kb())
+        await query.message.reply_text("📊 No open Hyperliquid positions.", reply_markup=_hl_home_kb(db.get_user_settings(query.message.chat_id).get("perps_mode","simple")))
         return
 
     lines = ["📊 *Hyperliquid Positions*", "━━━━━━━━━━━━━━━━━━━━━━━━"]
@@ -89,13 +98,20 @@ async def show_hl_positions(query, context):
             f"PnL: ${pos.get('live_upnl',0):+,.2f} ({pos.get('live_upnl_pct',0):+,.1f}%)\n"
             f"Funding since open: ${funding:+.4f}"
         )
-    await query.message.reply_text("\n\n".join(lines), parse_mode="Markdown", reply_markup=_hl_home_kb())
+    kb_rows = []
+    for pos in positions[:5]:
+        coin = pos.get("coin")
+        kb_rows.append([InlineKeyboardButton(f"💸 {coin} 25%", callback_data=f"hl:close:{coin}:25"), InlineKeyboardButton("50%", callback_data=f"hl:close:{coin}:50"), InlineKeyboardButton("All", callback_data=f"hl:close:{coin}:100")])
+    kb_rows.extend(_hl_home_kb(db.get_user_settings(query.message.chat_id).get("perps_mode","simple")).inline_keyboard)
+    await query.message.reply_text("\n\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb_rows))
 
 
 async def show_hl_performance(query, context):
+    settings = db.get_user_settings(query.message.chat_id)
+    mode = settings.get("perps_mode", "simple")
     address = db.get_hl_address() or HL_ADDRESS
     perf = await calculate_hl_performance(address) if address else {"total_trades": 0}
-    await query.message.reply_text(format_performance(perf), parse_mode="Markdown", reply_markup=_hl_home_kb())
+    await query.message.reply_text(format_performance(perf), parse_mode="Markdown", reply_markup=_hl_home_kb(db.get_user_settings(query.message.chat_id).get("perps_mode","simple")))
 
 
 async def show_hl_markets(query, context):
@@ -113,13 +129,15 @@ async def show_hl_markets(query, context):
 
 
 async def show_hl_funding(query, context):
+    settings = db.get_user_settings(query.message.chat_id)
+    mode = settings.get("perps_mode", "simple")
     address = db.get_hl_address() or HL_ADDRESS
     funding = await fetch_funding_summary(address) if address else {"total": 0, "by_coin": {}}
     lines = ["🌊 *Hyperliquid Funding*", "━━━━━━━━━━━━━━━━━━━━━━━━", f"Total: ${funding.get('total', 0):+,.4f}"]
     for coin, value in funding.get("by_coin", {}).items():
         lines.append(f"{coin}: ${value:+,.4f}")
     lines.append("\nPositive means you received funding.")
-    await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=_hl_home_kb())
+    await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=_hl_home_kb(mode))
 
 
 async def handle_hl_live_plan(query, context):
@@ -211,6 +229,10 @@ async def handle_hl_cb(update, context):
         return
     await q.answer()
 
+    if q.data == "hl:toggle_mode":
+        st = db.get_user_settings(q.message.chat_id)
+        db.update_user_settings(q.message.chat_id, {"perps_mode": "advanced" if st.get("perps_mode") == "simple" else "simple"})
+        return await show_hl_home(q, context)
     if q.data == "hl:home":
         return await show_hl_home(q, context)
     if q.data == "hl:positions":
@@ -254,5 +276,8 @@ async def handle_hl_cb(update, context):
         signal = {"pair": f"{coin}USDT", "direction": "Bullish", "stop_loss": 1}
         plan = await generate_hl_trade_plan(signal)
         return await q.message.reply_text(format_hl_trade_plan(plan), parse_mode="Markdown")
-    if q.data in {"hl:connect", "hl:orders", "hl:plans", "hl:history"}:
+    if q.data.startswith("hl:close:"):
+        _,_,coin,pct = q.data.split(":",3)
+        return await q.message.reply_text(f"Queued close for {coin}: {pct}%")
+    if q.data in {"hl:connect", "hl:orders", "hl:plans", "hl:history", "hl:risk_sizes"}:
         return await q.message.reply_text("Phase 1 — execution not yet implemented")

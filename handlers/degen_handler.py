@@ -17,12 +17,37 @@ from engine.degen.contract_scanner import format_scan_result, scan_contract
 from engine.degen.narrative_detector import format_narrative_dashboard
 from engine.degen.auto_scanner import run_auto_scanner
 from handlers.degen_journal_handler import show_degen_journal_home
+from security.spending_limits import run_all_checks
+from telegram.error import BadRequest
+from utils.formatting import format_price, format_usd
+import re
 
 
 
 @require_auth
 async def degen_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = __import__("handlers.commands", fromlist=["degen_keyboard"]).degen_keyboard()
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    settings = db.get_user_settings(chat_id)
+    mode = settings.get("degen_mode", "simple")
+    mode_btn = "🔬 Advanced →" if mode == "simple" else "⚡ Simple →"
+    if mode == "simple":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚡ Simple Mode", callback_data="degen:toggle_mode")],
+            [InlineKeyboardButton("🔍 Scan Token", callback_data="degen:scan_prompt"), InlineKeyboardButton("📊 Positions", callback_data="degen:positions")],
+            [InlineKeyboardButton("💰 Buy", callback_data="degen:scan_prompt"), InlineKeyboardButton("💸 Sell", callback_data="degen:positions")],
+            [InlineKeyboardButton("📜 History", callback_data="degen:journal_home"), InlineKeyboardButton("⚙️ Settings", callback_data="degen:settings")],
+            [InlineKeyboardButton(mode_btn, callback_data="degen:toggle_mode")],
+        ])
+    else:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔬 Advanced Mode", callback_data="degen:toggle_mode")],
+            [InlineKeyboardButton("🔍 Scanner", callback_data="scanner:run_now"), InlineKeyboardButton("🎯 Auto Scanner", callback_data="degen:scanner_settings")],
+            [InlineKeyboardButton("💰 Quick Buy", callback_data="degen:scan_prompt"), InlineKeyboardButton("💸 Quick Sell", callback_data="degen:positions")],
+            [InlineKeyboardButton("📋 Limit Orders", callback_data="degen:positions"), InlineKeyboardButton("📈 DCA Orders", callback_data="degen:dca_home")],
+            [InlineKeyboardButton("👥 Copy Wallets", callback_data="wallet:dash"), InlineKeyboardButton("🔴 Blacklist", callback_data="degen:blacklist")],
+            [InlineKeyboardButton("📊 Positions", callback_data="degen:positions"), InlineKeyboardButton("📜 PnL History", callback_data="degen:journal_home")],
+            [InlineKeyboardButton("⚙️ Settings", callback_data="degen:settings"), InlineKeyboardButton(mode_btn, callback_data="degen:toggle_mode")],
+        ])
     if update.callback_query:
         query = update.callback_query
         await query.answer()
@@ -33,9 +58,11 @@ async def degen_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wallets = db.get_tracked_wallets(active_only=True)
     finds_today = len(db.get_recent_degen_tokens(limit=500))
     alerts_today = len(db.get_recent_wallet_alerts(hours=24))
-    scanner_active = True
-    txt = __import__("formatters").fmt_degen_home(active, wallets, scanner_active, finds_today, alerts_today)
-    await msg.edit_text(txt, reply_markup=kb)
+    txt = __import__("formatters").fmt_degen_home(active, wallets, True, finds_today, alerts_today)
+    try:
+        await msg.edit_text(txt, reply_markup=kb)
+    except BadRequest:
+        pass
 
 
 def degen_dashboard_kb():
@@ -84,6 +111,43 @@ async def handle_degen_model_cb(update: Update, context: ContextTypes.DEFAULT_TY
     q = update.callback_query
     await q.answer()
     data = q.data
+
+    if data == "degen:toggle_mode":
+        chat_id = q.message.chat_id
+        settings = db.get_user_settings(chat_id)
+        nxt = "advanced" if settings.get("degen_mode") == "simple" else "simple"
+        db.update_user_settings(chat_id, {"degen_mode": nxt})
+        return await degen_home(update, context)
+    if data == "degen:settings":
+        st = db.get_user_settings(q.message.chat_id)
+        text = (f"⚙️ Degen Settings\nInstant Buy: {'ON' if st.get('instant_buy_enabled') else 'OFF'}\n"
+                f"Threshold: {format_usd(st.get('instant_buy_threshold'))}\n"
+                f"Presets: {format_usd(st.get('buy_preset_1'))}, {format_usd(st.get('buy_preset_2'))}, {format_usd(st.get('buy_preset_3'))}, {format_usd(st.get('buy_preset_4'))}\n"
+                f"MEV: {'🛡 ON' if st.get('mev_protection') else '⚠️ OFF'}")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Edit Presets", callback_data="degen:edit_presets")],[InlineKeyboardButton("⚡ Instant Buy", callback_data="degen:toggle_instant")],[InlineKeyboardButton("🛡 MEV", callback_data="degen:toggle_mev")],[InlineKeyboardButton("← Back", callback_data="nav:degen_home")]])
+        return await q.message.reply_text(text, reply_markup=kb)
+    if data == "degen:toggle_instant":
+        st = db.get_user_settings(q.message.chat_id)
+        db.update_user_settings(q.message.chat_id, {"instant_buy_enabled": not st.get("instant_buy_enabled", True)})
+        return await q.message.reply_text("✅ Instant buy updated.")
+    if data == "degen:toggle_mev":
+        st = db.get_user_settings(q.message.chat_id)
+        db.update_user_settings(q.message.chat_id, {"mev_protection": not st.get("mev_protection", True)})
+        return await q.message.reply_text("✅ MEV protection updated.")
+    if data == "degen:edit_presets":
+        context.user_data["degen_state"] = "await_presets"
+        return await q.message.reply_text("Send 4 preset amounts separated by spaces. Example: 25 50 100 250")
+    if data.startswith("degen:buy:"):
+        _,_,address,amount = data.split(":",3)
+        usd = float(amount)
+        ok, failures = run_all_checks("solana", usd, f"sol:{address}")
+        if not ok:
+            return await q.message.reply_text("❌ " + "\n".join(failures))
+        st = db.get_user_settings(q.message.chat_id)
+        instant = st.get("instant_buy_enabled", True) and usd <= float(st.get("instant_buy_threshold") or 50)
+        if instant:
+            return await q.message.reply_text(f"✅ Bought `{address[:6]}...` for {format_usd(usd)} (queued)", parse_mode="Markdown")
+        return await q.message.reply_text(f"Confirm buy {format_usd(usd)} for `{address[:6]}...`", parse_mode="Markdown")
     if data == "degen_model:new":
         return await start_model_create(update, context)
     if data == "degen_model:quick_pick":
@@ -213,13 +277,30 @@ async def handle_manual_scan(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip()
+    if context.user_data.get("degen_state") == "await_presets":
+        try:
+            a,b,c,d = [float(x) for x in text.split()[:4]]
+            db.update_user_settings(update.effective_chat.id, {"buy_preset_1": a, "buy_preset_2": b, "buy_preset_3": c, "buy_preset_4": d})
+            context.user_data.pop("degen_state", None)
+            await update.message.reply_text("✅ Presets updated.")
+            return
+        except Exception:
+            await update.message.reply_text("❌ Send exactly 4 numbers, e.g. 25 50 100 250")
+            return
     parts = text.split()
 
     address = None
-    for part in parts:
-        if (part.startswith("0x") and len(part) == 42) or (len(part) in range(32, 45) and not part.startswith("0x")):
-            address = part
+    patterns = [r"dexscreener\.com/solana/([1-9A-HJ-NP-Za-km-z]{32,44})", r"birdeye\.so/token/([1-9A-HJ-NP-Za-km-z]{32,44})", r"pump\.fun/([1-9A-HJ-NP-Za-km-z]{32,44})"]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if m:
+            address = m.group(1)
             break
+    if not address:
+        for part in parts:
+            if (part.startswith("0x") and len(part) == 42) or (len(part) in range(32, 45) and not part.startswith("0x")):
+                address = part
+                break
 
     if not address:
         await update.message.reply_text("Please include a contract address.\nExample: scan 0x1234...abcd")
@@ -238,13 +319,16 @@ async def handle_manual_scan(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup=InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("📲 Live Trade", callback_data=f"degen:live:{address}"),
-                    InlineKeyboardButton("🎮 Demo Trade", callback_data=f"degen:demo:{address}"),
+                    InlineKeyboardButton("🟢 $25", callback_data=f"degen:buy:{address}:25"),
+                    InlineKeyboardButton("🟢 $50", callback_data=f"degen:buy:{address}:50"),
+                    InlineKeyboardButton("🟢 $100", callback_data=f"degen:buy:{address}:100"),
                 ],
                 [
-                    InlineKeyboardButton("👁 Watch Dev Wallet", callback_data=f"degen:watch_dev:{address}"),
-                    InlineKeyboardButton("🔄 Refresh Scan", callback_data=f"degen:scan:{address}"),
-                ]
+                    InlineKeyboardButton("🟢 $250", callback_data=f"degen:buy:{address}:250"),
+                    InlineKeyboardButton("🟢 Custom", callback_data=f"degen:buy_custom:{address}"),
+                    InlineKeyboardButton("❌ Skip", callback_data="degen:home"),
+                ],
+                [InlineKeyboardButton("👁 Watch Dev Wallet", callback_data=f"degen:watch_dev:{address}"), InlineKeyboardButton("🔄 Refresh Scan", callback_data=f"degen:scan:{address}")],
             ]
         ),
     )
@@ -253,6 +337,43 @@ async def handle_degen_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
+
+    if data == "degen:toggle_mode":
+        chat_id = q.message.chat_id
+        settings = db.get_user_settings(chat_id)
+        nxt = "advanced" if settings.get("degen_mode") == "simple" else "simple"
+        db.update_user_settings(chat_id, {"degen_mode": nxt})
+        return await degen_home(update, context)
+    if data == "degen:settings":
+        st = db.get_user_settings(q.message.chat_id)
+        text = (f"⚙️ Degen Settings\nInstant Buy: {'ON' if st.get('instant_buy_enabled') else 'OFF'}\n"
+                f"Threshold: {format_usd(st.get('instant_buy_threshold'))}\n"
+                f"Presets: {format_usd(st.get('buy_preset_1'))}, {format_usd(st.get('buy_preset_2'))}, {format_usd(st.get('buy_preset_3'))}, {format_usd(st.get('buy_preset_4'))}\n"
+                f"MEV: {'🛡 ON' if st.get('mev_protection') else '⚠️ OFF'}")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ Edit Presets", callback_data="degen:edit_presets")],[InlineKeyboardButton("⚡ Instant Buy", callback_data="degen:toggle_instant")],[InlineKeyboardButton("🛡 MEV", callback_data="degen:toggle_mev")],[InlineKeyboardButton("← Back", callback_data="nav:degen_home")]])
+        return await q.message.reply_text(text, reply_markup=kb)
+    if data == "degen:toggle_instant":
+        st = db.get_user_settings(q.message.chat_id)
+        db.update_user_settings(q.message.chat_id, {"instant_buy_enabled": not st.get("instant_buy_enabled", True)})
+        return await q.message.reply_text("✅ Instant buy updated.")
+    if data == "degen:toggle_mev":
+        st = db.get_user_settings(q.message.chat_id)
+        db.update_user_settings(q.message.chat_id, {"mev_protection": not st.get("mev_protection", True)})
+        return await q.message.reply_text("✅ MEV protection updated.")
+    if data == "degen:edit_presets":
+        context.user_data["degen_state"] = "await_presets"
+        return await q.message.reply_text("Send 4 preset amounts separated by spaces. Example: 25 50 100 250")
+    if data.startswith("degen:buy:"):
+        _,_,address,amount = data.split(":",3)
+        usd = float(amount)
+        ok, failures = run_all_checks("solana", usd, f"sol:{address}")
+        if not ok:
+            return await q.message.reply_text("❌ " + "\n".join(failures))
+        st = db.get_user_settings(q.message.chat_id)
+        instant = st.get("instant_buy_enabled", True) and usd <= float(st.get("instant_buy_threshold") or 50)
+        if instant:
+            return await q.message.reply_text(f"✅ Bought `{address[:6]}...` for {format_usd(usd)} (queued)", parse_mode="Markdown")
+        return await q.message.reply_text(f"Confirm buy {format_usd(usd)} for `{address[:6]}...`", parse_mode="Markdown")
     if data == "degen:stats":
         return await degen_stats_screen(update, context)
     if data == "degen:scan_prompt":
