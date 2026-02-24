@@ -14,7 +14,7 @@ from handlers.commands import cmd_help, cmd_resume, cmd_security, cmd_start, cmd
 from handlers.router import route_callback, route_text_message
 from handlers.wallet_setup import hl_setup_conv, poly_setup_conv, sol_setup_conv
 
-from engine.phase_engine import run_phase_engine
+from engine.phase_engine import run_phase_scanner
 from engine.hyperliquid.monitor import run_hl_monitor
 from engine.solana.auto_sell_monitor import run_auto_sell_monitor
 from engine.polymarket.alert_monitor import run_polymarket_monitor
@@ -68,7 +68,7 @@ def main():
     app.add_handler(CallbackQueryHandler(route_callback))
 
     jq = app.job_queue
-    jq.run_repeating(run_phase_engine, interval=300, first=60, name="phase_scanner")
+    jq.run_repeating(run_phase_scanner, interval=300, first=60, name="phase_scanner")
     jq.run_repeating(run_hl_monitor, interval=300, first=90, name="hl_monitor")
     jq.run_repeating(run_auto_sell_monitor, interval=60, first=120, name="auto_sell")
     jq.run_repeating(run_polymarket_monitor, interval=900, first=150, name="poly_monitor")

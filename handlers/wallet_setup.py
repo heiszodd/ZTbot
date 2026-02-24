@@ -89,14 +89,12 @@ hl_setup_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(hl_start_setup, pattern=r"^hl:connect$")],
     states={HL_AWAIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, hl_receive)]},
     fallbacks=[CommandHandler("cancel", setup_cancel)],
-    per_message=True,
 )
 
 sol_setup_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(sol_start_setup, pattern=r"^sol:connect$")],
     states={SOL_AWAIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, sol_receive)]},
     fallbacks=[CommandHandler("cancel", setup_cancel)],
-    per_message=True,
 )
 
 poly_setup_conv = ConversationHandler(
@@ -108,5 +106,4 @@ poly_setup_conv = ConversationHandler(
         POLY_AWAIT_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, poly_receive_pass)],
     },
     fallbacks=[CommandHandler("cancel", setup_cancel)],
-    per_message=True,
 )
