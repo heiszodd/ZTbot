@@ -11,16 +11,23 @@ POLY_CHAIN_ID = 137
 
 async def get_poly_client() -> ClobClient:
     from security.key_manager import get_private_key
+    from security.key_utils import eth_account_from_privkey
 
     try:
-        private_key = get_private_key("poly_hot_wallet")
+        wallet = get_private_key("poly_hot_wallet")
         api_key = get_private_key("poly_api_key")
         api_secret = get_private_key("poly_api_secret")
         api_passphrase = get_private_key("poly_api_passphrase")
     except ValueError as e:
         raise RuntimeError(f"Polymarket keys not configured: {e}")
 
-    return ClobClient(host=POLY_HOST, chain_id=POLY_CHAIN_ID, key=private_key, creds={"apiKey": api_key, "apiSecret": api_secret, "apiPassphrase": api_passphrase})
+    account = eth_account_from_privkey(wallet)
+    return ClobClient(
+        host=POLY_HOST,
+        chain_id=POLY_CHAIN_ID,
+        key=(account.key.hex() if str(account.key.hex()).startswith("0x") else f"0x{account.key.hex()}"),
+        creds={"apiKey": api_key, "apiSecret": api_secret, "apiPassphrase": api_passphrase},
+    )
 
 
 async def execute_poly_trade(plan: dict) -> dict:

@@ -2,7 +2,6 @@ import asyncio
 import logging
 import time
 
-from eth_account import Account
 from hyperliquid.exchange import Exchange
 from hyperliquid.utils import constants
 
@@ -10,14 +9,22 @@ log = logging.getLogger(__name__)
 
 
 async def get_hl_exchange() -> Exchange:
+    """Create authenticated Hyperliquid exchange from canonical stored key."""
     from security.key_manager import get_private_key
+    from security.key_utils import eth_account_from_privkey
 
     try:
-        private_key = get_private_key("hl_api_wallet")
+        stored = get_private_key("hl_api_wallet")
     except ValueError as e:
-        raise RuntimeError(f"Hyperliquid API wallet not configured: {e}\nUse /addkey to store hl_api_wallet")
+        raise RuntimeError(
+            f"Hyperliquid wallet not configured: {e}\nGo to Perps → Live Account → Connect Hyperliquid"
+        )
 
-    account = Account.from_key(private_key)
+    try:
+        account = eth_account_from_privkey(stored)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load HL keypair: {e}\nRe-connect your Hyperliquid wallet.")
+
     return Exchange(account, constants.MAINNET_API_URL, account_address=account.address)
 
 

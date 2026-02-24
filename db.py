@@ -5680,3 +5680,66 @@ def update_poly_live_trade(id: int, fields: dict) -> None:
 
 def save_trade_to_history(section: str, plan: dict, result: dict) -> None:
     log_audit(action="trade_history", details={"section": section, "plan": plan, "result": result}, user_id=0, success=result.get("success", True))
+
+
+def save_sol_wallet_address(address: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO solana_wallet (label, public_key, last_synced)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (public_key) DO NOTHING
+                """,
+                ("main", address),
+            )
+        conn.commit()
+
+
+def save_poly_wallet_address(address: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO encrypted_keys (key_name, encrypted, label, stored_at)
+                VALUES ('poly_wallet_address', %s, 'Polymarket Wallet Address', NOW())
+                ON CONFLICT (key_name) DO UPDATE SET encrypted=EXCLUDED.encrypted, stored_at=NOW()
+                """,
+                (address,),
+            )
+        conn.commit()
+
+
+def count_open_poly_positions() -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS c FROM poly_live_trades WHERE status='open'")
+            return int((cur.fetchone() or {}).get("c") or 0)
+
+
+def count_open_poly_demo_trades() -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS c FROM poly_demo_trades WHERE status='open'")
+            return int((cur.fetchone() or {}).get("c") or 0)
+
+
+def count_active_prediction_models() -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS c FROM prediction_models WHERE active=TRUE")
+            return int((cur.fetchone() or {}).get("c") or 0)
+
+
+def get_hl_pnl_today() -> float:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(SUM(closed_pnl),0) AS p FROM hl_trade_history WHERE DATE(timestamp)=CURRENT_DATE")
+            return float((cur.fetchone() or {}).get("p") or 0)
+
+
+def get_sol_pnl_today() -> float:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(SUM(realised_pnl),0) AS p FROM sol_positions WHERE DATE(closed_at)=CURRENT_DATE")
+            return float((cur.fetchone() or {}).get("p") or 0)

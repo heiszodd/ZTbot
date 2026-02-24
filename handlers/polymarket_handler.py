@@ -1,145 +1,260 @@
+import logging
+
+import db
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CallbackQueryHandler, CommandHandler, ConversationHandler, ContextTypes, MessageHandler, Update, filters
+
+from engine.polymarket.demo_trading import open_poly_demo_trade
+from engine.polymarket.market_reader import fetch_market_by_id, fetch_markets
+from engine.polymarket.scanner import format_scanner_results, run_market_scanner
+from engine.polymarket.sentiment import format_sentiment_dashboard, get_crypto_sentiment
 from security.auth import require_auth, require_auth_callback
 from security.rate_limiter import check_command_rate
-import db
-from engine.polymarket.market_reader import fetch_markets, fetch_market_by_id
-from engine.polymarket.scanner import run_market_scanner, format_scanner_results
-from engine.polymarket.sentiment import get_crypto_sentiment, format_sentiment_dashboard
-from engine.polymarket.demo_trading import open_poly_demo_trade
+
+log = logging.getLogger(__name__)
+
+POLY_INTRO = 0
+POLY_AWAIT_KEY = 1
+POLY_AWAIT_APIKEY = 2
+POLY_AWAIT_SECRET = 3
+POLY_AWAIT_PASS = 4
 
 
 async def show_polymarket_home(query, context):
-    markets = await fetch_markets(limit=30)
-    total = len(markets)
-    top_crypto = next((m for m in markets if "btc" in m.get("question", "").lower() or "sol" in m.get("question", "").lower()), None)
-    sentiment = await get_crypto_sentiment()
-    overall = sentiment.get("btc", {}).get("bias", "neutral") if sentiment else "neutral"
-    text = (
-        "🎯 *Polymarket*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Active markets: {total}\n"
-        f"Top crypto: {(top_crypto or {}).get('question', 'N/A')[:55]}\n"
-        f"Crowd bias: {overall.title()}\n"
-    )
-    kb = InlineKeyboardMarkup(
+    await show_predictions_live_home(query, context)
+
+
+async def show_predictions_live_home(query, context) -> None:
+    from security.key_manager import key_exists
+
+    poly_connected = key_exists("poly_hot_wallet")
+    if not poly_connected:
+        text = (
+            "💼 *Live Predictions*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Connect your Polymarket wallet to\n"
+            "trade real prediction markets.\n\n"
+            "*What you need:*\n"
+            "• USDC on Polygon network\n"
+            "• Polymarket account\n"
+            "• Your wallet seed phrase or\n  private key\n\n"
+            "*Setup takes about 5 minutes.*\nTap below to begin."
+        )
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🔑 Connect Polymarket Wallet", callback_data="poly:setup:start")],
+                [InlineKeyboardButton("🎮 Use Demo Instead", callback_data="predictions:demo")],
+                [InlineKeyboardButton("← Predictions", callback_data="predictions:home")],
+            ]
+        )
+        try:
+            await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception:
+            await query.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        return
+
+    try:
+        from engine.polymarket.executor import get_poly_client
+
+        client = await get_poly_client()
+        balance = float(client.get_balance() or 0)
+    except Exception as e:
+        log.warning("Poly balance fetch: %s", e)
+        balance = 0.0
+
+    positions = db.get_open_poly_live_trades()
+    text = f"💼 *Live Predictions*\n━━━━━━━━━━━━━━━━━━━━━━━━\nBalance: ${balance:.2f} USDC\nOpen:    {len(positions)} positions\n\n"
+    if positions:
+        text += "*Open Positions:*\n"
+        for pos in positions[:5]:
+            q = pos.get("question", "")
+            short_q = q[:45] + "..." if len(q) > 45 else q
+            position = pos.get("position", "YES")
+            entry = float(pos.get("entry_price", 0))
+            current = float(pos.get("current_price", entry))
+            pnl = float(pos.get("pnl_usd", 0))
+            text += f"\n{'🟢' if pnl >= 0 else '🔴'} *{position}* — {short_q}\n   Entry: {entry*100:.0f}%  Now: {current*100:.0f}%  PnL: ${pnl:+.2f}\n"
+    else:
+        text += "_No open positions.\nUse the Scanner to find markets._"
+
+    keyboard = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("🔍 Scanner", callback_data="poly:scanner"), InlineKeyboardButton("📊 Watchlist", callback_data="poly:watchlist")],
-            [InlineKeyboardButton("🌊 Sentiment", callback_data="poly:sentiment"), InlineKeyboardButton("🎮 Demo Trades", callback_data="poly:demo_trades")],
-            [InlineKeyboardButton("🔔 Add Alert", callback_data="poly:add_alert"), InlineKeyboardButton("📅 Resolving Soon", callback_data="poly:resolving")],
-            [InlineKeyboardButton("🏠 Home", callback_data="nav:home")],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="predictions:live"), InlineKeyboardButton("📊 All Positions", callback_data="predictions:live:positions")],
+            [InlineKeyboardButton("🔍 Find Market", callback_data="predictions:scanner"), InlineKeyboardButton("📜 History", callback_data="predictions:live:history")],
+            [InlineKeyboardButton("🔑 Wallet Settings", callback_data="predictions:live:wallet_settings")],
+            [InlineKeyboardButton("← Predictions", callback_data="predictions:home")],
         ]
     )
-    await query.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+    try:
+        await query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+    except Exception:
+        await query.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 
 async def show_poly_scanner(query, context):
     results = await run_market_scanner()
-    text = format_scanner_results(results or {})
-    await query.message.reply_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("➕ Watch High Volume", callback_data="poly:watchcat:high_volume"), InlineKeyboardButton("➕ Watch Uncertain", callback_data="poly:watchcat:uncertain")],
-                [InlineKeyboardButton("📲 Live Trade", callback_data="poly:live_top"), InlineKeyboardButton("🎮 Demo Trade", callback_data="poly:demo_top")],
-            ]
-        ),
-    )
+    await query.message.reply_text(format_scanner_results(results or {}), parse_mode="Markdown")
 
 
 async def show_poly_sentiment(query, context):
     sentiment = await get_crypto_sentiment()
-    text = format_sentiment_dashboard(sentiment)
-    text += "\n\n_Use this to confirm/deny perps bias._"
-    await query.message.reply_text(text, parse_mode="Markdown")
+    await query.message.reply_text(format_sentiment_dashboard(sentiment), parse_mode="Markdown")
 
 
-async def handle_poly_demo_trade(query, context, market_id: str):
-    context.user_data["poly_state"] = "choose_side"
-    context.user_data["poly_market_id"] = market_id
-    await query.message.reply_text(
-        "Which side? Choose YES or NO",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("YES", callback_data="poly:pick:YES"), InlineKeyboardButton("NO", callback_data="poly:pick:NO")]]),
+async def show_poly_demo_home(query, context):
+    rows = db.get_poly_demo_trades()
+    if not rows:
+        return await query.message.reply_text("🎮 No Polymarket demo trades yet.")
+    txt = "🎮 *Polymarket Demo Trades*\n━━━━━━━━━━━━━━━━━━━━━━━━\n" + "\n".join(
+        [f"#{r['id']} {r['position']} {r.get('question','')[:45]} — {r['status']} {float(r.get('pnl_usd') or 0):+.2f}$" for r in rows[:20]]
     )
+    await query.message.reply_text(txt, parse_mode="Markdown")
 
 
-async def handle_poly_live_trade(query, context, market_id: str):
-    market = await fetch_market_by_id(market_id)
-    question = (market or {}).get("question", "Market")
-    short_q = question[:80] + "..." if len(question) > 80 else question
-    await query.message.reply_text(
-        f"📲 *Live Trade Setup*\n{short_q}\n\nChoose side and size:",
+show_poly_watchlist = show_poly_sentiment
+
+
+async def poly_setup_start(update, context) -> int:
+    query = update.callback_query
+    await query.answer()
+    text = (
+        "🎯 *Connect Polymarket*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "*What you need before starting:*\n\n"
+        "1️⃣ A wallet with USDC on Polygon\n\n"
+        "2️⃣ Wallet connected to polymarket.com\n\n"
+        "3️⃣ Polymarket API credentials\n\n"
+        "*Ready? Tap Continue.*"
+    )
+    await query.message.edit_text(
+        text,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("YES $10", callback_data=f"poly:execute:{market_id}:YES:10"), InlineKeyboardButton("NO $10", callback_data=f"poly:execute:{market_id}:NO:10")],
-                [InlineKeyboardButton("YES $25", callback_data=f"poly:execute:{market_id}:YES:25"), InlineKeyboardButton("NO $25", callback_data=f"poly:execute:{market_id}:NO:25")],
-                [InlineKeyboardButton("YES $50", callback_data=f"poly:execute:{market_id}:YES:50"), InlineKeyboardButton("NO $50", callback_data=f"poly:execute:{market_id}:NO:50")],
+                [InlineKeyboardButton("✅ Continue — I'm ready", callback_data="poly:setup:key")],
+                [InlineKeyboardButton("🎮 Use Demo Instead", callback_data="predictions:demo"), InlineKeyboardButton("❌ Cancel", callback_data="predictions:home")],
             ]
         ),
     )
+    return POLY_INTRO
 
 
-async def handle_poly_execute_trade(query, context, market_id, position, size_usd):
-    from engine.polymarket.executor import execute_poly_trade
-    from engine.execution_pipeline import run_execution_pipeline
+async def poly_setup_ask_key(update, context) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_text(
+        "🎯 *Connect Polymarket*\nStep 5 of 5 — Enter Wallet Key\n\n"
+        "Send your Polygon wallet seed phrase OR private key.\n\n"
+        "*Option A — Seed Phrase*\nYour 12 or 24 word recovery phrase.\n\n"
+        "*Option B — Private Key*\nHex private key (64 chars, 0x prefix).\n\n"
+        "*How to get it in MetaMask:*\nAccount Details → Export Private Key\n\n"
+        "⚠️ Message deleted immediately after sending.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="predictions:home")]]),
+    )
+    return POLY_AWAIT_KEY
 
-    market = await fetch_market_by_id(market_id)
-    if not market:
-        await query.answer("Market not found", show_alert=True)
-        return
 
-    yes_price, no_price, yes_token, no_token = 0.0, 0.0, "", ""
-    for t in market.get("tokens", []):
-        outcome = t.get("outcome", "").upper()
-        price = float(t.get("price", 0) or 0)
-        tok_id = t.get("token_id", "")
-        if outcome == "YES":
-            yes_price, yes_token = price, tok_id
-        elif outcome == "NO":
-            no_price, no_token = price, tok_id
+async def poly_receive_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    raw = update.message.text or ""
+    try:
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=update.message.message_id)
+    except Exception as exc:
+        log.warning("Could not delete poly key message: %s", exc)
+    msg = await update.message.reply_text("⏳ Processing key...")
+    try:
+        from security.key_manager import store_private_key
 
-    price = yes_price if position == "YES" else no_price
-    token_id = yes_token if position == "YES" else no_token
-    question = market.get("question", "")
-    short_q = question[:60] + "..." if len(question) > 60 else question
-    plan = {"coin": "USDC", "symbol": position, "side": f"{position} — {short_q}", "market_id": market_id, "token_id": token_id, "position": position, "size_usd": size_usd, "entry_price": price, "stop_loss": 0, "price": price, "question": question, "yes_pct": round(yes_price * 100, 1)}
+        result = store_private_key("poly_hot_wallet", raw, "Polymarket Wallet", chain="polymarket")
+        context.user_data["poly_address"] = result["address"]
+        db.save_poly_wallet_address(result["address"])
+        await msg.edit_text("✅ *Wallet Key Stored*\n\nNow send your Polymarket *API Key*.", parse_mode="Markdown")
+        return POLY_AWAIT_APIKEY
+    except ValueError as e:
+        await msg.edit_text(f"❌ *Error*\n\n{e}", parse_mode="Markdown")
+        return POLY_AWAIT_KEY
 
-    result = await run_execution_pipeline("polymarket", plan, execute_poly_trade, query.from_user.id, context)
-    if result.get("pending"):
-        await query.message.reply_text(result["message"], parse_mode="Markdown", reply_markup=result["keyboard"])
-        return
-    if not result.get("success"):
-        await query.message.reply_text(f"❌ Trade failed\n{result.get('error','?')}")
-        return
-    exe = result.get("result", {})
-    db.save_poly_live_trade({"market_id": market_id, "question": question, "position": position, "token_id": token_id, "entry_price": price, "size_usd": size_usd, "shares": exe.get("shares", 0), "order_id": result["tx_id"], "status": "open"})
-    await query.message.reply_text(f"✅ *Polymarket Trade Executed*\n{short_q}\nOrder ID: `{result['tx_id']}`", parse_mode="Markdown")
+
+async def poly_receive_apikey(update, context) -> int:
+    raw = (update.message.text or "").strip()
+    try:
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=update.message.message_id)
+    except Exception as exc:
+        log.warning("Could not delete poly apikey message: %s", exc)
+    from security.key_manager import store_private_key
+
+    store_private_key("poly_api_key", raw, "Polymarket API Key", chain="polymarket")
+    await update.message.reply_text("✅ API Key Stored. Now send API Secret.")
+    return POLY_AWAIT_SECRET
+
+
+async def poly_receive_secret(update, context) -> int:
+    raw = (update.message.text or "").strip()
+    try:
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=update.message.message_id)
+    except Exception as exc:
+        log.warning("Could not delete poly secret message: %s", exc)
+    from security.key_manager import store_private_key
+
+    store_private_key("poly_api_secret", raw, "Polymarket API Secret", chain="polymarket")
+    await update.message.reply_text("✅ API Secret Stored. Now send API Passphrase.")
+    return POLY_AWAIT_PASS
+
+
+async def poly_receive_passphrase(update, context) -> int:
+    raw = (update.message.text or "").strip()
+    try:
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=update.message.message_id)
+    except Exception as exc:
+        log.warning("Could not delete poly passphrase message: %s", exc)
+
+    from security.key_manager import store_private_key
+
+    store_private_key("poly_api_passphrase", raw, "Polymarket API Passphrase", chain="polymarket")
+    msg = await update.message.reply_text("⏳ Completing setup...")
+    try:
+        from engine.polymarket.executor import get_poly_client
+
+        client = await get_poly_client()
+        balance_line = f"Balance: ${float(client.get_balance() or 0):.2f} USDC"
+    except Exception as e:
+        log.warning("Poly connection test: %s", e)
+        balance_line = "Balance: (check polymarket.com)"
+    address = context.user_data.get("poly_address", "Connected")
+    await msg.edit_text(
+        f"✅ *Polymarket Connected!*\n━━━━━━━━━━━━━━━━━━━━━━━━\nAddress: `{address[:8]}...{address[-6:]}`\n{balance_line}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💼 Live Predictions", callback_data="predictions:live")], [InlineKeyboardButton("🏠 Home", callback_data="nav:home")]]),
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def poly_setup_cancel(update, context) -> int:
+    context.user_data.clear()
+    if update.callback_query:
+        await update.callback_query.answer()
+    return ConversationHandler.END
+
+
+poly_setup_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(poly_setup_start, pattern="^poly:setup:start$")],
+    states={
+        POLY_INTRO: [CallbackQueryHandler(poly_setup_ask_key, pattern="^poly:setup:key$")],
+        POLY_AWAIT_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, poly_receive_key)],
+        POLY_AWAIT_APIKEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, poly_receive_apikey)],
+        POLY_AWAIT_SECRET: [MessageHandler(filters.TEXT & ~filters.COMMAND, poly_receive_secret)],
+        POLY_AWAIT_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, poly_receive_passphrase)],
+    },
+    fallbacks=[CallbackQueryHandler(poly_setup_cancel, pattern="^predictions:home$"), CommandHandler("cancel", poly_setup_cancel)],
+    per_message=False,
+    per_chat=True,
+)
 
 
 @require_auth
 async def handle_poly_text(update, context):
-    state = context.user_data.get("poly_state")
-    if not state or not update.message or not update.message.text:
-        return False
-    if state == "await_custom_size":
-        try:
-            size = float(update.message.text.strip().replace("$", ""))
-        except Exception:
-            await update.message.reply_text("Invalid size.")
-            return True
-        market_id = context.user_data.get("poly_market_id")
-        side = context.user_data.get("poly_side", "YES")
-        market = await fetch_market_by_id(market_id)
-        yes = 0.0
-        for t in market.get("tokens", []):
-            if str(t.get("outcome", "")).lower() == "yes":
-                yes = float(t.get("price", 0) or 0) * 100
-        tid = await open_poly_demo_trade(market_id, market.get("question", ""), side, yes, size)
-        await update.message.reply_text(f"✅ Demo position opened:\n{side} on {market.get('question','')[:60]}\nEntry: {yes:.0f}% probability\nSize: ${size:.0f}\nP&L updates every 15 minutes.\nID: {tid}")
-        context.user_data.pop("poly_state", None)
-        return True
-    return False
+    return
 
 
 @require_auth_callback
@@ -158,106 +273,5 @@ async def handle_polymarket_cb(update, context):
         return await show_poly_scanner(q, context)
     if data == "poly:sentiment":
         return await show_poly_sentiment(q, context)
-    if data.startswith("poly:live:"):
-        return await handle_poly_live_trade(q, context, data.split(":", 2)[2])
-    if data == "poly:live_top":
-        results = await run_market_scanner()
-        pools = (results or {}).get("high_volume", []) or (results or {}).get("uncertain", [])
-        if not pools:
-            return await q.message.reply_text("No scanner markets available right now.")
-        return await handle_poly_live_trade(q, context, pools[0]["market_id"])
-    if data == "poly:demo_top":
-        results = await run_market_scanner()
-        pools = (results or {}).get("high_volume", []) or (results or {}).get("uncertain", [])
-        if not pools:
-            return await q.message.reply_text("No scanner markets available right now.")
-        return await handle_poly_demo_trade(q, context, pools[0]["market_id"])
-    if data.startswith("poly:execute:"):
-        _, _, market_id, side, size = data.split(":", 4)
-        return await handle_poly_execute_trade(q, context, market_id, side, float(size))
-    if data.startswith("poly:demo:"):
-        return await handle_poly_demo_trade(q, context, data.split(":", 2)[2])
-    if data.startswith("poly:pick:"):
-        side = data.split(":", 2)[2]
-        context.user_data["poly_side"] = side
-        context.user_data["poly_state"] = "await_custom_size"
-        return await q.message.reply_text(
-            "Size? (default $10)",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("$5", callback_data="poly:size:5"), InlineKeyboardButton("$10", callback_data="poly:size:10"), InlineKeyboardButton("$25", callback_data="poly:size:25"), InlineKeyboardButton("$50", callback_data="poly:size:50")]]),
-        )
-    if data.startswith("poly:size:"):
-        size = float(data.split(":", 2)[2])
-        market_id = context.user_data.get("poly_market_id")
-        side = context.user_data.get("poly_side", "YES")
-        market = await fetch_market_by_id(market_id)
-        yes = 0.0
-        for t in market.get("tokens", []):
-            if str(t.get("outcome", "")).lower() == "yes":
-                yes = float(t.get("price", 0) or 0) * 100
-        tid = await open_poly_demo_trade(market_id, market.get("question", ""), side, yes, size)
-        context.user_data.pop("poly_state", None)
-        return await q.message.reply_text(f"✅ Demo position opened:\n{side} on {market.get('question','')[:60]}\nEntry: {yes:.0f}% probability\nSize: ${size:.0f}\nP&L updates every 15 minutes.\nID: {tid}")
-    if data.startswith("poly:watchcat:"):
-        cat = data.split(":", 2)[2]
-        results = await run_market_scanner()
-        items = (results or {}).get(cat, [])[:3]
-        for m in items:
-            db.add_poly_watchlist({"market_id": m["market_id"], "question": m["question"], "alert_yes_above": 60, "alert_yes_below": 40})
-        return await q.message.reply_text(f"✅ Added {len(items)} market(s) to watchlist from {cat}.")
-    if data.startswith("poly:remove:"):
-        db.remove_poly_watchlist(data.split(":", 2)[2])
-        return await q.message.reply_text("🗑 Removed market alert.")
-    if data == "poly:watchlist":
-        rows = db.get_poly_watchlist()
-        if not rows:
-            return await q.message.reply_text("📊 Polymarket watchlist is empty.")
-        txt = "📊 *Polymarket Watchlist*\n━━━━━━━━━━━━━━━━━━━━━━━━\n" + "\n".join([f"• {r.get('question','?')[:65]}" for r in rows[:20]])
-        return await q.message.reply_text(txt, parse_mode="Markdown")
     if data == "poly:demo_trades":
-        rows = db.get_poly_demo_trades()
-        if not rows:
-            return await q.message.reply_text("🎮 No Polymarket demo trades yet.")
-        txt = "🎮 *Polymarket Demo Trades*\n━━━━━━━━━━━━━━━━━━━━━━━━\n" + "\n".join([f"#{r['id']} {r['position']} {r.get('question','')[:45]} — {r['status']} {float(r.get('pnl_usd') or 0):+.2f}$" for r in rows[:20]])
-        return await q.message.reply_text(txt, parse_mode="Markdown")
-    if data.startswith("poly:position:"):
-        market_id = data.split(":", 2)[2]
-        pos = db.get_poly_live_trade(market_id)
-        if not pos:
-            return await q.message.reply_text("No open live position for this market.")
-        return await q.message.reply_text(
-            f"📊 *Live Position*\n{pos.get('question','')[:80]}\n"
-            f"Side: {pos.get('position')}\n"
-            f"Size: ${float(pos.get('size_usd') or 0):.2f}\n"
-            f"Entry: {float(pos.get('entry_price') or 0)*100:.1f}%\n"
-            f"P&L: ${float(pos.get('pnl_usd') or 0):+.2f}",
-            parse_mode="Markdown",
-        )
-    if data.startswith("poly:close:"):
-        market_id = data.split(":", 2)[2]
-        await q.message.reply_text("Close flow will execute from live position controls shortly.")
-        return
-
-# New-nav compatibility exports
-show_predictions_live_home = show_polymarket_home
-show_poly_watchlist = show_poly_sentiment
-show_poly_demo_home = show_polymarket_home
-
-
-async def handle_poly_wallet_setup(query, context):
-    await query.message.reply_text("Send Polymarket wallet/public identifier.")
-
-
-async def show_poly_live_trade_setup(query, context, market_id: str):
-    await handle_poly_live_trade(query, context)
-
-
-async def handle_poly_close_position(query, context, market_id: str):
-    await query.message.reply_text(f"Close flow for {market_id} not available.")
-
-
-async def show_poly_market_detail(query, context, market_id: str):
-    await query.message.reply_text(f"Market detail: {market_id}")
-
-
-async def handle_poly_remove_alert(query, context, market_id: str):
-    await query.message.reply_text("Removed alert.")
+        return await show_poly_demo_home(q, context)

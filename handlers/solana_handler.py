@@ -1,5 +1,7 @@
 import re
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import CallbackQueryHandler, CommandHandler, ConversationHandler, ContextTypes, MessageHandler, filters
+import logging
 from security.auth import require_auth, require_auth_callback
 from security.rate_limiter import check_command_rate
 import db
@@ -9,6 +11,8 @@ from engine.solana.trade_planner import generate_trade_plan, format_trade_plan
 from engine.solana.executor import execute_jupiter_swap, execute_sol_sell
 from engine.execution_pipeline import run_execution_pipeline
 from utils.formatting import format_price, format_usd
+
+log = logging.getLogger(__name__)
 
 
 def _is_valid_solana_address(value: str) -> bool:
@@ -326,3 +330,62 @@ async def show_sol_position_detail(query, context, address: str):
 
 async def handle_sol_wallet_setup(query, context):
     await handle_solana_connect(query, context)
+
+
+AWAITING_SOL_KEY = 9001
+
+
+async def sol_setup_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_text(
+        "🔥 *Connect Solana Wallet*\nStep 3 of 3 — Enter Key\n\n"        "Send your seed phrase OR private key\nin your next message.\n\n"        "*Option A — Seed Phrase (Recommended)*\nYour 12 or 24 word recovery phrase.\nWords separated by spaces.\n\n"        "*Option B — Private Key*\nYour base58 encoded private key.\n87-88 characters long.\n\n"        "*How to find it in Phantom:*\nSeed phrase: Settings → Security & Privacy → Show Secret Recovery Phrase\n"        "Private key: Settings → Security & Privacy → Export Private Key\n\n"        "⚠️ *Security:*\n- Only send in this private chat\n- Message is deleted immediately\n- Key stored with AES-256 encryption",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="degen:home")]]),
+    )
+    return AWAITING_SOL_KEY
+
+
+async def receive_sol_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    raw = update.message.text or ""
+    try:
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=update.message.message_id)
+    except Exception as exc:
+        log.warning("Could not delete Sol key message: %s", exc)
+
+    processing_msg = await update.message.reply_text("⏳ Processing key...")
+    try:
+        from security.key_manager import store_private_key
+
+        result = store_private_key("sol_hot_wallet", raw, "Solana Hot Wallet", chain="solana")
+        address = result["address"]
+        fmt = result["format_used"]
+        summary = await get_wallet_summary(address)
+        db.save_sol_wallet_address(address)
+        await processing_msg.edit_text(
+            f"✅ *Solana Wallet Connected!*\n━━━━━━━━━━━━━━━━━━━━━━━━\n"            f"Format:  {'seed phrase' if 'seed' in fmt else 'private key'}\n"            f"Address: `{address[:8]}...{address[-6:]}`\n"            f"SOL:     {summary.get('sol_balance',0):.4f}\n"            f"USDC:    ${summary.get('usdc_balance',0):.2f}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔥 Degen Dashboard", callback_data="degen:live"), InlineKeyboardButton("🏠 Home", callback_data="nav:home")]]),
+        )
+        return ConversationHandler.END
+    except ValueError as e:
+        await processing_msg.edit_text(
+            f"❌ *Key Error*\n\n{str(e)}\n\nPlease try again:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Try Again", callback_data="sol:setup:start"), InlineKeyboardButton("❌ Cancel", callback_data="degen:home")]]),
+        )
+        return AWAITING_SOL_KEY
+
+
+async def sol_setup_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.callback_query:
+        await update.callback_query.answer()
+    return ConversationHandler.END
+
+
+sol_setup_conv = ConversationHandler(
+    entry_points=[CallbackQueryHandler(sol_setup_start, pattern="^sol:setup:start$")],
+    states={AWAITING_SOL_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sol_key)]},
+    fallbacks=[CallbackQueryHandler(sol_setup_cancel, pattern="^degen:home$"), CommandHandler("cancel", sol_setup_cancel)],
+    per_chat=True,
+)
