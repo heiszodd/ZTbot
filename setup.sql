@@ -1001,3 +1001,100 @@ CREATE TABLE IF NOT EXISTS scanner_settings (
 
 INSERT INTO scanner_settings (id) VALUES (1)
 ON CONFLICT (id) DO NOTHING;
+
+-- Solana section
+CREATE TABLE IF NOT EXISTS solana_wallet (
+    id              SERIAL PRIMARY KEY,
+    label           VARCHAR(50) DEFAULT 'main',
+    public_key      VARCHAR(100) NOT NULL,
+    sol_balance     FLOAT DEFAULT 0,
+    usdc_balance    FLOAT DEFAULT 0,
+    last_synced     TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS solana_watchlist (
+    id               SERIAL PRIMARY KEY,
+    token_address    VARCHAR(100) NOT NULL UNIQUE,
+    token_symbol     VARCHAR(20),
+    token_name       VARCHAR(100),
+    entry_price      FLOAT,
+    target_price     FLOAT,
+    stop_price       FLOAT,
+    position_size_usd FLOAT DEFAULT 0,
+    status           VARCHAR(20) DEFAULT 'watching',
+    notes            TEXT,
+    added_at         TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS solana_trade_plans (
+    id               SERIAL PRIMARY KEY,
+    token_address    VARCHAR(100) NOT NULL,
+    token_symbol     VARCHAR(20),
+    action           VARCHAR(10),
+    amount_usd       FLOAT,
+    entry_price      FLOAT,
+    slippage_pct     FLOAT DEFAULT 1.0,
+    priority_fee     INT DEFAULT 1000,
+    jupiter_quote    JSONB DEFAULT '{}',
+    dex_route        VARCHAR(100),
+    status           VARCHAR(20) DEFAULT 'pending',
+    executed         BOOLEAN DEFAULT FALSE,
+    tx_hash          VARCHAR(100),
+    created_at       TIMESTAMP DEFAULT NOW(),
+    executed_at      TIMESTAMP
+);
+
+-- Polymarket section
+CREATE TABLE IF NOT EXISTS poly_markets (
+    id               SERIAL PRIMARY KEY,
+    market_id        VARCHAR(100) NOT NULL UNIQUE,
+    question         TEXT NOT NULL,
+    category         VARCHAR(50),
+    yes_price        FLOAT DEFAULT 0,
+    no_price         FLOAT DEFAULT 0,
+    volume_24h       FLOAT DEFAULT 0,
+    total_volume     FLOAT DEFAULT 0,
+    liquidity        FLOAT DEFAULT 0,
+    end_date         TIMESTAMP,
+    resolved         BOOLEAN DEFAULT FALSE,
+    outcome          VARCHAR(20),
+    last_updated     TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS poly_watchlist (
+    id               SERIAL PRIMARY KEY,
+    market_id        VARCHAR(100) NOT NULL UNIQUE,
+    question         TEXT,
+    alert_yes_above  FLOAT,
+    alert_yes_below  FLOAT,
+    alert_vol_spike  BOOLEAN DEFAULT FALSE,
+    user_sentiment   VARCHAR(10),
+    notes            TEXT,
+    added_at         TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS poly_alerts_sent (
+    id               SERIAL PRIMARY KEY,
+    market_id        VARCHAR(100) NOT NULL,
+    alert_type       VARCHAR(50),
+    yes_price        FLOAT,
+    sent_at          TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS poly_demo_trades (
+    id               SERIAL PRIMARY KEY,
+    market_id        VARCHAR(100) NOT NULL,
+    question         TEXT,
+    position         VARCHAR(5),
+    entry_price      FLOAT,
+    entry_yes_prob   FLOAT,
+    size_usd         FLOAT DEFAULT 10,
+    current_price    FLOAT,
+    pnl_usd          FLOAT DEFAULT 0,
+    status           VARCHAR(20) DEFAULT 'open',
+    opened_at        TIMESTAMP DEFAULT NOW(),
+    closed_at        TIMESTAMP,
+    outcome          VARCHAR(20),
+    resolution_price FLOAT
+);

@@ -57,9 +57,9 @@ def _guard(update: Update) -> bool:
 
 def landing_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📈 Perps Trading", callback_data="nav:perps_home")],
-        [InlineKeyboardButton("🎰 Degen Zone", callback_data="nav:degen_home")],
-        [InlineKeyboardButton("⚡ System Status", callback_data="nav:status")],
+        [InlineKeyboardButton("📈 Perps", callback_data="nav:perps_home"), InlineKeyboardButton("🔥 Degen", callback_data="nav:degen_home")],
+        [InlineKeyboardButton("🎯 Polymarket", callback_data="nav:polymarket_home"), InlineKeyboardButton("🔑 Solana", callback_data="nav:solana_home")],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="nav:status"), InlineKeyboardButton("❓ Help", callback_data="nav:guide")],
     ])
 
 
@@ -146,6 +146,12 @@ async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif dest == "degen_home":
         from handlers import degen_handler
         await degen_handler.degen_home(update, context)
+    elif dest == "polymarket_home":
+        from handlers import polymarket_handler
+        await polymarket_handler.show_polymarket_home(q, context)
+    elif dest == "solana_home":
+        from handlers import solana_handler
+        await solana_handler.show_solana_home(q, context)
     elif dest == "models":
         await handle_models_list(update, context)
     elif dest == "simulator":

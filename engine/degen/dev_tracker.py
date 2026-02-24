@@ -187,6 +187,10 @@ async def send_dev_wallet_alert(context, event: dict, scan: dict) -> None:
         reply_markup=InlineKeyboardMarkup(
             [
                 [
+                    InlineKeyboardButton("📲 Live Trade", callback_data=f"degen:live:{contract}"),
+                    InlineKeyboardButton("🎮 Demo Trade", callback_data=f"degen:demo:{contract}"),
+                ],
+                [
                     InlineKeyboardButton("🔍 Re-Scan Contract", callback_data=f"degen:scan:{contract}"),
                     InlineKeyboardButton("🛑 Stop Watching", callback_data=f"degen:unwatch:{wallet}:{contract}"),
                 ]

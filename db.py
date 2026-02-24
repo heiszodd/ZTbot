@@ -793,6 +793,94 @@ def setup_db():
                 description TEXT,
                 created_at TIMESTAMP DEFAULT NOW()
             );
+            CREATE TABLE IF NOT EXISTS solana_wallet (
+                id SERIAL PRIMARY KEY,
+                label VARCHAR(50) DEFAULT 'main',
+                public_key VARCHAR(100) NOT NULL,
+                sol_balance FLOAT DEFAULT 0,
+                usdc_balance FLOAT DEFAULT 0,
+                last_synced TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS solana_watchlist (
+                id SERIAL PRIMARY KEY,
+                token_address VARCHAR(100) NOT NULL UNIQUE,
+                token_symbol VARCHAR(20),
+                token_name VARCHAR(100),
+                entry_price FLOAT,
+                target_price FLOAT,
+                stop_price FLOAT,
+                position_size_usd FLOAT DEFAULT 0,
+                status VARCHAR(20) DEFAULT 'watching',
+                notes TEXT,
+                added_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS solana_trade_plans (
+                id SERIAL PRIMARY KEY,
+                token_address VARCHAR(100) NOT NULL,
+                token_symbol VARCHAR(20),
+                action VARCHAR(10),
+                amount_usd FLOAT,
+                entry_price FLOAT,
+                slippage_pct FLOAT DEFAULT 1.0,
+                priority_fee INT DEFAULT 1000,
+                jupiter_quote JSONB DEFAULT '{}',
+                dex_route VARCHAR(100),
+                status VARCHAR(20) DEFAULT 'pending',
+                executed BOOLEAN DEFAULT FALSE,
+                tx_hash VARCHAR(100),
+                created_at TIMESTAMP DEFAULT NOW(),
+                executed_at TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS poly_markets (
+                id SERIAL PRIMARY KEY,
+                market_id VARCHAR(100) NOT NULL UNIQUE,
+                question TEXT NOT NULL,
+                category VARCHAR(50),
+                yes_price FLOAT DEFAULT 0,
+                no_price FLOAT DEFAULT 0,
+                volume_24h FLOAT DEFAULT 0,
+                total_volume FLOAT DEFAULT 0,
+                liquidity FLOAT DEFAULT 0,
+                end_date TIMESTAMP,
+                resolved BOOLEAN DEFAULT FALSE,
+                outcome VARCHAR(20),
+                last_updated TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS poly_watchlist (
+                id SERIAL PRIMARY KEY,
+                market_id VARCHAR(100) NOT NULL UNIQUE,
+                question TEXT,
+                alert_yes_above FLOAT,
+                alert_yes_below FLOAT,
+                alert_vol_spike BOOLEAN DEFAULT FALSE,
+                user_sentiment VARCHAR(10),
+                notes TEXT,
+                added_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS poly_alerts_sent (
+                id SERIAL PRIMARY KEY,
+                market_id VARCHAR(100) NOT NULL,
+                alert_type VARCHAR(50),
+                yes_price FLOAT,
+                sent_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS poly_demo_trades (
+                id SERIAL PRIMARY KEY,
+                market_id VARCHAR(100) NOT NULL,
+                question TEXT,
+                position VARCHAR(5),
+                entry_price FLOAT,
+                entry_yes_prob FLOAT,
+                size_usd FLOAT DEFAULT 10,
+                current_price FLOAT,
+                pnl_usd FLOAT DEFAULT 0,
+                status VARCHAR(20) DEFAULT 'open',
+                opened_at TIMESTAMP DEFAULT NOW(),
+                closed_at TIMESTAMP,
+                outcome VARCHAR(20),
+                resolution_price FLOAT
+            );
             """)
         conn.commit()
     validate_schema()
@@ -4380,3 +4468,288 @@ def validate_schema() -> None:
                         )
     except Exception as exc:
         log.warning("SCHEMA WARNING: validation failed: %s", exc)
+
+
+def get_solana_wallet() -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM solana_wallet ORDER BY id DESC LIMIT 1")
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def save_solana_wallet(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO solana_wallet (label, public_key, sol_balance, usdc_balance, last_synced)
+                VALUES (%s,%s,%s,%s,NOW())
+                """,
+                (
+                    data.get("label", "main"),
+                    data.get("public_key"),
+                    float(data.get("sol_balance") or 0),
+                    float(data.get("usdc_balance") or 0),
+                ),
+            )
+        conn.commit()
+
+
+def get_solana_watchlist() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM solana_watchlist ORDER BY added_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def add_solana_watchlist(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO solana_watchlist (
+                    token_address, token_symbol, token_name, entry_price,
+                    target_price, stop_price, position_size_usd, status, notes
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (token_address) DO UPDATE SET
+                    token_symbol=EXCLUDED.token_symbol,
+                    token_name=EXCLUDED.token_name,
+                    entry_price=COALESCE(EXCLUDED.entry_price, solana_watchlist.entry_price),
+                    target_price=COALESCE(EXCLUDED.target_price, solana_watchlist.target_price),
+                    stop_price=COALESCE(EXCLUDED.stop_price, solana_watchlist.stop_price),
+                    position_size_usd=COALESCE(EXCLUDED.position_size_usd, solana_watchlist.position_size_usd),
+                    status=COALESCE(EXCLUDED.status, solana_watchlist.status),
+                    notes=COALESCE(EXCLUDED.notes, solana_watchlist.notes)
+                """,
+                (
+                    data.get("token_address"),
+                    data.get("token_symbol"),
+                    data.get("token_name"),
+                    data.get("entry_price"),
+                    data.get("target_price"),
+                    data.get("stop_price"),
+                    data.get("position_size_usd", 0),
+                    data.get("status", "watching"),
+                    data.get("notes"),
+                ),
+            )
+        conn.commit()
+
+
+def save_solana_trade_plan(data: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO solana_trade_plans (
+                    token_address, token_symbol, action, amount_usd, entry_price,
+                    slippage_pct, priority_fee, jupiter_quote, dex_route, status,
+                    executed, tx_hash, executed_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    data.get("token_address"),
+                    data.get("token_symbol"),
+                    data.get("action"),
+                    data.get("amount_usd"),
+                    data.get("entry_price"),
+                    data.get("slippage_pct", 1.0),
+                    data.get("priority_fee", 1000),
+                    json.dumps(data.get("jupiter_quote", {})),
+                    data.get("dex_route"),
+                    data.get("status", "pending"),
+                    bool(data.get("executed", False)),
+                    data.get("tx_hash"),
+                    data.get("executed_at"),
+                ),
+            )
+            rid = int(cur.fetchone()["id"])
+        conn.commit()
+    return rid
+
+
+def get_solana_trade_plans(status: str = None) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if status:
+                cur.execute("SELECT * FROM solana_trade_plans WHERE status=%s ORDER BY created_at DESC", (status,))
+            else:
+                cur.execute("SELECT * FROM solana_trade_plans ORDER BY created_at DESC")
+            rows = [dict(r) for r in cur.fetchall()]
+            for row in rows:
+                row["jupiter_quote"] = _decode_json_field(row.get("jupiter_quote"), {})
+            return rows
+
+
+def upsert_poly_market(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO poly_markets (
+                    market_id, question, category, yes_price, no_price,
+                    volume_24h, total_volume, liquidity, end_date,
+                    resolved, outcome, last_updated
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT (market_id) DO UPDATE SET
+                    question=EXCLUDED.question,
+                    category=EXCLUDED.category,
+                    yes_price=EXCLUDED.yes_price,
+                    no_price=EXCLUDED.no_price,
+                    volume_24h=EXCLUDED.volume_24h,
+                    total_volume=EXCLUDED.total_volume,
+                    liquidity=EXCLUDED.liquidity,
+                    end_date=EXCLUDED.end_date,
+                    resolved=EXCLUDED.resolved,
+                    outcome=EXCLUDED.outcome,
+                    last_updated=NOW()
+                """,
+                (
+                    data.get("market_id"),
+                    data.get("question"),
+                    data.get("category"),
+                    float(data.get("yes_price") or 0),
+                    float(data.get("no_price") or 0),
+                    float(data.get("volume_24h") or 0),
+                    float(data.get("total_volume") or 0),
+                    float(data.get("liquidity") or 0),
+                    data.get("end_date") or None,
+                    bool(data.get("resolved", False)),
+                    data.get("outcome"),
+                ),
+            )
+        conn.commit()
+
+
+def get_poly_watchlist() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM poly_watchlist ORDER BY added_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def add_poly_watchlist(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO poly_watchlist (
+                    market_id, question, alert_yes_above, alert_yes_below,
+                    alert_vol_spike, user_sentiment, notes
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (market_id) DO UPDATE SET
+                    question=EXCLUDED.question,
+                    alert_yes_above=COALESCE(EXCLUDED.alert_yes_above, poly_watchlist.alert_yes_above),
+                    alert_yes_below=COALESCE(EXCLUDED.alert_yes_below, poly_watchlist.alert_yes_below),
+                    alert_vol_spike=COALESCE(EXCLUDED.alert_vol_spike, poly_watchlist.alert_vol_spike),
+                    user_sentiment=COALESCE(EXCLUDED.user_sentiment, poly_watchlist.user_sentiment),
+                    notes=COALESCE(EXCLUDED.notes, poly_watchlist.notes)
+                """,
+                (
+                    data.get("market_id"),
+                    data.get("question"),
+                    data.get("alert_yes_above"),
+                    data.get("alert_yes_below"),
+                    bool(data.get("alert_vol_spike", False)),
+                    data.get("user_sentiment"),
+                    data.get("notes"),
+                ),
+            )
+        conn.commit()
+
+
+def remove_poly_watchlist(market_id: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM poly_watchlist WHERE market_id=%s", (market_id,))
+        conn.commit()
+
+
+def save_poly_alert_sent(data: dict) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO poly_alerts_sent (market_id, alert_type, yes_price) VALUES (%s,%s,%s)",
+                (data.get("market_id"), data.get("alert_type"), data.get("yes_price")),
+            )
+        conn.commit()
+
+
+def poly_alert_recently_sent(market_id: str, alert_type: str, hours: int = 4) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1 FROM poly_alerts_sent
+                WHERE market_id=%s AND alert_type=%s
+                  AND sent_at > NOW() - make_interval(hours => %s)
+                LIMIT 1
+                """,
+                (market_id, alert_type, int(hours)),
+            )
+            return bool(cur.fetchone())
+
+
+def create_poly_demo_trade(data: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO poly_demo_trades (
+                    market_id, question, position, entry_price, entry_yes_prob,
+                    size_usd, current_price, pnl_usd, status
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    data.get("market_id"),
+                    data.get("question"),
+                    data.get("position"),
+                    data.get("entry_price"),
+                    data.get("entry_yes_prob"),
+                    data.get("size_usd", 10),
+                    data.get("current_price"),
+                    data.get("pnl_usd", 0),
+                    data.get("status", "open"),
+                ),
+            )
+            rid = int(cur.fetchone()["id"])
+        conn.commit()
+    return rid
+
+
+def get_open_poly_demo_trades() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM poly_demo_trades WHERE status='open' ORDER BY opened_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def update_poly_demo_trade(id: int, fields: dict) -> None:
+    if not fields:
+        return
+    allowed = {"current_price", "pnl_usd", "status", "closed_at", "outcome", "resolution_price"}
+    sets, vals = [], []
+    for k, v in fields.items():
+        if k in allowed:
+            sets.append(f"{k}=%s")
+            vals.append(v)
+    if not sets:
+        return
+    vals.append(id)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE poly_demo_trades SET {', '.join(sets)} WHERE id=%s", tuple(vals))
+        conn.commit()
+
+
+def get_poly_demo_trades(status: str = None) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if status:
+                cur.execute("SELECT * FROM poly_demo_trades WHERE status=%s ORDER BY opened_at DESC", (status,))
+            else:
+                cur.execute("SELECT * FROM poly_demo_trades ORDER BY opened_at DESC")
+            return [dict(r) for r in cur.fetchall()]

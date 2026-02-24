@@ -13,12 +13,14 @@ from telegram.ext import (
 
 import prices as px
 from config import SCANNER_INTERVAL, WAT
-from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler, simulator_handler, risk_handler
+from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler, simulator_handler, risk_handler, solana_handler, polymarket_handler
 from engine import phase_engine, session_journal, regime_detector, notification_filter, session_checklist
 from degen import wallet_tracker
 from engine import run_backtest
 from engine.degen import dev_tracker, exit_planner, narrative_detector
 from engine.degen.auto_scanner import run_auto_scanner, run_watchlist_scanner
+from engine.polymarket.alert_monitor import run_polymarket_monitor
+from engine.polymarket.demo_trading import update_poly_demo_trades
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -533,6 +535,8 @@ def main():
     app.add_handler(CallbackQueryHandler(alerts.handle_pending_cb, pattern="^pending:"), group=0)
     app.add_handler(CallbackQueryHandler(demo_handler.handle_demo_cb, pattern="^demo:"), group=0)
     app.add_handler(CallbackQueryHandler(ca_handler.handle_ca_cb, pattern="^ca:"), group=0)
+    app.add_handler(CallbackQueryHandler(solana_handler.handle_solana_cb, pattern="^solana:"), group=0)
+    app.add_handler(CallbackQueryHandler(polymarket_handler.handle_polymarket_cb, pattern="^poly:"), group=0)
     app.add_handler(CallbackQueryHandler(degen_handler.handle_scan_action, pattern=r"^scan:(whitelist|ignore|ape|full):"), group=0)
     app.add_handler(CallbackQueryHandler(commands.handle_scan_cb, pattern="^scan:"))
     app.add_handler(CallbackQueryHandler(commands.handle_backtest_cb, pattern="^backtest:"))
@@ -548,6 +552,8 @@ def main():
     app.add_handler(wallet_handler.build_add_wallet_handler())
     app.add_handler(MessageHandler(filters.Regex(r"^(?i:scan\s+).+"), degen_handler.handle_manual_scan), group=0)
     app.add_handler(MessageHandler(filters.Regex(r"^(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$"), degen_handler.handle_manual_scan), group=0)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, solana_handler.handle_solana_text), group=0)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, polymarket_handler.handle_poly_text), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, degen_wizard.handle_degen_name), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, demo_handler.handle_demo_risk_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ca_handler.handle_ca_message), group=1)
@@ -574,6 +580,9 @@ def main():
 
     app.job_queue.run_repeating(run_auto_scanner, interval=1800, first=120, name="auto_degen_scanner")
     app.job_queue.run_repeating(run_watchlist_scanner, interval=900, first=270, name="watchlist_scanner")
+
+    app.job_queue.run_repeating(run_polymarket_monitor, interval=900, first=480, name="poly_monitor")
+    app.job_queue.run_repeating(update_poly_demo_trades, interval=900, first=510, name="poly_demo_update")
 
     app.job_queue.run_repeating(dev_tracker.run_dev_wallet_monitor, interval=600, first=210, name="dev_wallet_monitor")
     app.job_queue.run_repeating(narrative_detector.update_narrative_momentum, interval=1800, first=300, name="narrative_momentum")
