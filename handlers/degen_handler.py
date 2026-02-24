@@ -785,3 +785,14 @@ async def handle_scanner_settings_action(query, context) -> None:
         return
 
     await show_scanner_settings(query, context)
+
+# New-nav compatibility exports
+show_degen_scanner = degen_home
+show_scan_contract = handle_manual_scan
+show_wallet_tracking = show_watchlist
+show_degen_watchlist = show_watchlist
+show_degen_demo_home = degen_home
+
+
+async def show_demo_buy_screen(query, context, address: str):
+    await query.message.reply_text(f"Demo buy for {address}")

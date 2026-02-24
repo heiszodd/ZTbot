@@ -14,3 +14,34 @@ async def show_degen_live_risk(query, context):
     )
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("← Live Wallet", callback_data="degen:live")]])
     await query.message.edit_text(txt, reply_markup=kb)
+
+
+async def show_degen_demo_risk(query, context):
+    await query.message.edit_text(
+        "💰 Demo Wallet Risk Settings",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Degen", callback_data="degen:home")]]),
+    )
+
+
+async def handle_set_live_sl(query, context):
+    await query.answer("Send SL % in chat", show_alert=True)
+
+
+async def handle_set_live_tp(query, context):
+    await query.answer("Send TP % in chat", show_alert=True)
+
+
+async def handle_set_live_trail(query, context):
+    await query.answer("Send trail % in chat", show_alert=True)
+
+
+async def handle_set_demo_sl(query, context):
+    await query.answer("Send demo SL %", show_alert=True)
+
+
+async def handle_set_demo_tp(query, context):
+    await query.answer("Send demo TP %", show_alert=True)
+
+
+async def handle_set_demo_trail(query, context):
+    await query.answer("Send demo trail %", show_alert=True)

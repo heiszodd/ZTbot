@@ -1588,3 +1588,112 @@ async def handle_confirmation_callback(update, context):
             await query.message.edit_text(f"✅ *Trade Executed*\nRef: `{tx_id}`\nCheck positions for details.", parse_mode="Markdown")
         else:
             await query.message.edit_text(f"❌ *Execution Failed*\n{result_or_error}", parse_mode="Markdown")
+
+@require_auth
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Entry point. Shows new homepage."""
+    await show_home(update, context)
+
+
+async def show_home(update, context) -> None:
+    """Show the homepage for commands and callbacks."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    try:
+        hl_pnl = db.get_hl_pnl_today() or 0.0
+        sol_pnl = db.get_sol_pnl_today() or 0.0
+        poly_open = db.count_open_poly_positions()
+    except Exception:
+        hl_pnl = 0.0
+        sol_pnl = 0.0
+        poly_open = 0
+
+    hl_emoji = "🟢" if hl_pnl >= 0 else "🔴"
+    sol_emoji = "🟢" if sol_pnl >= 0 else "🔴"
+
+    try:
+        from engine.regime_detector import get_current_regime
+
+        regime = await get_current_regime()
+        regime_line = f"Regime: {regime.get('label', '—')}"
+    except Exception:
+        regime_line = ""
+
+    text = (
+        "🤖 *Trading Intelligence*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{now.strftime('%b %d  %H:%M')} UTC\n\n"
+        f"📈 Perps    {hl_emoji} ${hl_pnl:+.2f} today\n"
+        f"🔥 Degen    {sol_emoji} ${sol_pnl:+.2f} today\n"
+        f"🎯 Predictions  {poly_open} open\n"
+    )
+    if regime_line:
+        text += f"\n_{regime_line}_\n"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📈 Perps", callback_data="perps:home"), InlineKeyboardButton("🔥 Degen", callback_data="degen:home")],
+        [InlineKeyboardButton("🎯 Predictions", callback_data="predictions:home"), InlineKeyboardButton("⚙️ Settings", callback_data="settings:home")],
+        [InlineKeyboardButton("❓ Help", callback_data="help:home")],
+    ])
+
+    if update.callback_query:
+        try:
+            await update.callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        except Exception:
+            await update.callback_query.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+
+
+start = handle_start
+
+
+@require_auth
+async def handle_setup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await handle_setup(update, context)
+
+
+@require_auth
+async def handle_buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await buy_cmd(update, context)
+
+
+@require_auth
+async def handle_sell_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await sell_cmd(update, context)
+
+
+@require_auth
+async def handle_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await price_cmd(update, context)
+
+
+@require_auth
+async def handle_pnl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await pnl_cmd(update, context)
+
+
+@require_auth
+async def handle_positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await positions_cmd(update, context)
+
+
+@require_auth
+async def handle_scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await scan(update, context)
+
+
+@require_auth
+async def handle_alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await generic_shortcut_cmd(update, context)
+
+
+@require_auth
+async def handle_trenches_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await generic_shortcut_cmd(update, context)
+
+
+@require_auth
+async def handle_settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await generic_shortcut_cmd(update, context)

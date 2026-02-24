@@ -174,3 +174,5 @@ async def show_notification_filter(query):
         rows.append([InlineKeyboardButton(f"{'✅' if p.get('override') else '🚫'} {p['pattern_key'][:28]}", callback_data=f"filter:toggle:{p['pattern_key']}")])
     rows.append([InlineKeyboardButton("🏠 Perps Home", callback_data="nav:perps_home")])
     await query.message.edit_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+
+show_risk_settings = show_risk_home
