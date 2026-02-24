@@ -1,219 +1,148 @@
 import logging
+import re
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from security.auth import require_auth_callback
-from security.rate_limiter import check_command_rate
 
 log = logging.getLogger(__name__)
 
 
 @require_auth_callback
-async def master_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def route_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    raw_data = query.data or ""
+    data = query.data or ""
 
-    legacy_aliases = {
-        "nav:perps_home": "perps:home",
-        "nav:degen_home": "degen:home",
-        "nav:degen_models": "degen:models",
-        "nav:polymarket_home": "predictions:home",
-        "nav:solana_home": "degen:live",
-        "nav:scan": "perps:scanner",
-        "nav:models": "perps:models",
-        "nav:journal": "perps:journal",
-        "nav:pending": "perps:pending",
-        "nav:risk": "perps:risk",
-        "nav:notif_filter": "settings:notifications",
-        "nav:status": "settings:home",
-        "nav:guide": "help:home",
-    }
-    data = legacy_aliases.get(raw_data, raw_data)
+    from security.rate_limiter import check_command_rate
 
-    uid = query.from_user.id
-    allowed, reason = check_command_rate(uid)
-    if not allowed:
+    ok, reason = check_command_rate(query.from_user.id)
+    if not ok:
         await query.answer(reason, show_alert=True)
         return
-
     await query.answer()
 
-    if raw_data.startswith("nav:") and raw_data != "nav:home" and raw_data not in legacy_aliases:
-        from handlers.commands import handle_nav
+    if data == "home":
+        from handlers.nav import show_home
+        return await show_home(update, context)
 
-        await handle_nav(update, context)
-    elif data == "nav:home":
-        from handlers.commands import show_home
+    if data.startswith("perps") or data.startswith("hl:") or data.startswith("pending:"):
+        from handlers import perps_handler as p
+        if data == "perps": return await p.show_perps_home(query, context)
+        if data == "perps:scanner": return await p.show_perps_scanner(query, context)
+        if data == "perps:models": return await p.show_perps_models(query, context)
+        if data == "perps:journal": return await p.show_perps_journal(query, context)
+        if data == "perps:live" or data == "hl:refresh": return await p.show_perps_live(query, context)
+        if data == "perps:demo": return await p.show_perps_demo(query, context)
+        if data == "perps:risk": return await p.show_perps_risk(query, context)
+        if data == "perps:pending": return await p.show_perps_pending(query, context)
+        if data == "perps:others": return await p.show_perps_others(query, context)
+        if data == "hl:positions": return await p.show_hl_positions(query, context)
+        if data == "hl:orders": return await p.show_hl_orders(query, context)
+        if data == "hl:performance": return await p.show_hl_performance(query, context)
+        if data == "hl:history": return await p.show_hl_history(query, context)
+        if data == "hl:funding": return await p.show_hl_funding(query, context)
+        if data == "hl:markets": return await p.show_hl_markets(query, context)
+        if data.startswith("hl:cancel:"): return await p.handle_hl_cancel(query, context, data.split(":")[-1])
+        if data.startswith("hl:close:"):
+            parts = data.split(":")
+            return await p.handle_hl_close(query, context, parts[2], float(parts[3]))
+        if data.startswith("hl:live:"): return await p.handle_hl_live_trade(query, context, data.split(":")[-1])
+        if data.startswith("hl:demo:"): return await p.handle_hl_demo_trade(query, context, data.split(":")[-1])
+        if data.startswith("pending:dismiss:"):
+            import db
+            db.dismiss_pending_signal(int(data.split(":")[-1]))
+            return await p.show_perps_pending(query, context)
+        if data.startswith("pending:plan:"): return await p.show_pending_plan(query, context, int(data.split(":")[-1]))
 
-        await show_home(update, context)
-    elif data == "perps:home":
-        from handlers.nav_handler import show_perps_home
+    if data.startswith("degen") or data.startswith("sol:"):
+        from handlers import degen_handler as d
+        if data == "degen": return await d.show_degen_home(query, context)
+        if data == "degen:scanner": return await d.show_degen_scanner(query, context)
+        if data == "degen:scan_contract": return await d.show_scan_contract(query, context)
+        if data == "degen:models": return await d.show_degen_models(query, context)
+        if data in {"degen:live", "degen:live:refresh"}: return await d.show_degen_live(query, context)
+        if data == "degen:demo": return await d.show_degen_demo(query, context)
+        if data == "degen:tracking": return await d.show_wallet_tracking(query, context)
+        if data == "degen:watchlist": return await d.show_degen_watchlist(query, context)
+        if data == "degen:others": return await d.show_degen_others(query, context)
+        if data == "degen:live:buy": return await d.show_buy_screen(query, context)
+        if data == "degen:live:sell": return await d.show_sell_screen(query, context)
+        if data == "degen:live:risk": return await d.show_live_risk(query, context)
+        if data == "degen:demo:risk": return await d.show_demo_risk(query, context)
+        if data.startswith("degen:live:risk:"): return await d.handle_live_risk_action(query, context, data.split(":", 3)[-1])
+        if data.startswith("degen:demo:risk:"): return await d.handle_demo_risk_action(query, context, data.split(":", 3)[-1])
+        if data.startswith("degen:buy:"):
+            parts = data.split(":")
+            return await d.handle_quick_buy(query, context, parts[2], float(parts[3]))
+        if data.startswith("degen:demo_buy:"):
+            parts = data.split(":")
+            return await d.handle_demo_buy(query, context, parts[2], float(parts[3]))
+        if data.startswith("sol:autosell:"): return await d.show_autosell_config(query, context, data.split(":", 2)[-1])
+        if data.startswith("sol:position:"): return await d.show_position_detail(query, context, data.split(":", 2)[-1])
 
-        await show_perps_home(query, context)
-    elif data == "perps:scanner":
-        from handlers.nav_handler import show_perps_scanner
+    if data.startswith("predictions") or data.startswith("poly:"):
+        from handlers import predictions_handler as ph
+        if data == "predictions": return await ph.show_predictions_home(query, context)
+        if data == "predictions:scanner": return await ph.show_predictions_scanner(query, context)
+        if data == "predictions:watchlist": return await ph.show_predictions_watchlist(query, context)
+        if data in {"predictions:live", "predictions:live:refresh"}: return await ph.show_predictions_live(query, context)
+        if data == "predictions:demo": return await ph.show_predictions_demo(query, context)
+        if data == "predictions:models": return await ph.show_predictions_models(query, context)
+        if data == "predictions:others": return await ph.show_predictions_others(query, context)
+        if data == "predictions:live:positions": return await ph.show_live_positions(query, context)
+        if data == "predictions:live:history": return await ph.show_live_history(query, context)
+        if data.startswith("poly:trade:"):
+            parts = data.split(":")
+            return await ph.handle_poly_live_trade(query, context, parts[2], parts[3], float(parts[4]))
+        if data.startswith("poly:demo:"): return await ph.handle_poly_demo_trade(query, context, data.split(":", 2)[-1])
+        if data.startswith("poly:close:"): return await ph.handle_poly_close(query, context, data.split(":", 2)[-1])
 
-        await show_perps_scanner(query, context)
-    elif data == "perps:models":
-        from handlers.nav_handler import show_perps_models
+    if data.startswith("settings"):
+        from handlers.settings_handler import show_limits, show_settings, show_wallet_status
+        if data == "settings": return await show_settings(query, context)
+        if data == "settings:wallets": return await show_wallet_status(query, context)
+        if data == "settings:limits": return await show_limits(query, context)
+        if data == "settings:security":
+            from handlers.nav import show_security_status
+            return await show_security_status(update, context)
 
-        await show_perps_models(query, context)
-    elif data == "perps:journal":
-        from handlers.journal_handler import show_journal_home
+    if data == "help" or data.startswith("help:"):
+        from handlers.nav import show_help, show_help_topic
+        if data == "help": return await show_help(update, context)
+        return await show_help_topic(query, context, data.split(":", 1)[-1])
 
-        await show_journal_home(query, context)
-    elif data == "perps:live":
-        from handlers.hyperliquid_handler import show_perps_live_home
+    if data.startswith("confirm:execute:"):
+        from security.confirmation import execute_confirmation
+        confirm_id = data.split(":")[3] if len(data.split(":")) > 3 else ""
+        await query.message.edit_text("⏳ Executing...", reply_markup=None)
+        success, result = await execute_confirmation(confirm_id)
+        return await query.message.edit_text(f"✅ *Executed*\n`{result.get('tx_id','')}`" if success and isinstance(result, dict) else f"❌ *Failed*\n{result}", parse_mode="Markdown")
 
-        await show_perps_live_home(query, context)
-    elif data == "perps:demo":
-        from handlers.nav_handler import show_perps_demo
+    if data.startswith("confirm:cancel:"):
+        from security.confirmation import cancel_confirmation
+        confirm_id = data.split(":")[3] if len(data.split(":")) > 3 else ""
+        cancel_confirmation(confirm_id)
+        return await query.message.edit_text("❌ Trade cancelled.", reply_markup=None)
 
-        await show_perps_demo(query, context)
-    elif data == "perps:risk":
-        from handlers.risk_handler import show_risk_settings
+    log.warning("Unhandled callback: %s", data)
 
-        await show_risk_settings(query, context)
-    elif data == "perps:pending":
-        from handlers.nav_handler import show_perps_pending
 
-        await show_perps_pending(query, context)
-    elif data == "perps:others":
-        from handlers.nav_handler import show_perps_others
+async def route_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from security.auth import is_authorised
+    if not is_authorised(update.effective_user.id):
+        return
 
-        await show_perps_others(query, context)
-    elif data == "degen:home":
-        from handlers.nav_handler import show_degen_home
+    text = (update.message.text or "").strip()
+    sol_pattern = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+    link_pattern = re.compile(r"(?:dexscreener\.com/solana/|birdeye\.so/token/|pump\.fun/)([1-9A-HJ-NP-Za-km-z]{32,44})")
 
-        await show_degen_home(query, context)
-    elif data == "degen:scanner":
-        from handlers.degen_handler import show_degen_scanner
+    address = text if sol_pattern.match(text) else None
+    if not address:
+        m = link_pattern.search(text)
+        if m:
+            address = m.group(1)
 
-        await show_degen_scanner(query, context)
-    elif data == "degen:scan_contract":
-        from handlers.degen_handler import show_scan_contract
-
-        await show_scan_contract(query, context)
-    elif data == "degen:models":
-        from handlers.degen_model_handler import show_degen_models_home
-
-        await show_degen_models_home(query, context)
-    elif data == "degen:live":
-        from handlers.solana_handler import show_degen_live_home
-
-        await show_degen_live_home(query, context)
-    elif data == "degen:demo":
-        from handlers.degen_handler import show_degen_demo_home
-
-        await show_degen_demo_home(query, context)
-    elif data == "degen:wallet_tracking":
-        from handlers.degen_handler import show_wallet_tracking
-
-        await show_wallet_tracking(query, context)
-    elif data == "degen:watchlist":
-        from handlers.degen_handler import show_degen_watchlist
-
-        await show_degen_watchlist(query, context)
-    elif data == "degen:others":
-        from handlers.nav_handler import show_degen_others
-
-        await show_degen_others(query, context)
-    elif data == "predictions:home":
-        from handlers.nav_handler import show_predictions_home
-
-        await show_predictions_home(query, context)
-    elif data == "predictions:scanner":
-        from handlers.polymarket_handler import show_poly_scanner
-
-        await show_poly_scanner(query, context)
-    elif data == "predictions:watchlist":
-        from handlers.polymarket_handler import show_poly_watchlist
-
-        await show_poly_watchlist(query, context)
-    elif data == "predictions:live":
-        from handlers.polymarket_handler import show_predictions_live_home
-
-        await show_predictions_live_home(query, context)
-    elif data == "predictions:demo":
-        from handlers.polymarket_handler import show_poly_demo_home
-
-        await show_poly_demo_home(query, context)
-    elif data == "predictions:models":
-        from handlers.predictions_model_handler import show_predictions_models_home
-
-        await show_predictions_models_home(query, context)
-    elif data == "predictions:others":
-        from handlers.nav_handler import show_predictions_others
-
-        await show_predictions_others(query, context)
-    elif data == "settings:home":
-        from handlers.nav_handler import show_settings_home
-
-        await show_settings_home(query, context)
-    elif data == "settings:notifications":
-        from handlers.risk_handler import show_notification_filter
-
-        await show_notification_filter(query)
-    elif data == "settings:wallets":
-        from handlers.nav_handler import show_wallet_settings
-
-        await show_wallet_settings(query, context)
-    elif data == "settings:security":
-        from handlers.commands import handle_security
-
-        await handle_security(update, context)
-    elif data == "help:home":
-        from handlers.nav_handler import show_help_home
-
-        await show_help_home(query, context)
-    elif data.startswith("help:"):
-        from handlers.nav_handler import show_help_topic
-
-        await show_help_topic(query, context, data.split(":", 1)[1])
-    elif data.startswith("confirm:"):
-        from handlers.commands import handle_confirmation_callback
-
-        await handle_confirmation_callback(update, context)
-    elif data.startswith("wizard:"):
-        from handlers.wizard import handle_wizard_cb
-
-        await handle_wizard_cb(update, context)
-    elif data.startswith("chart:"):
-        from handlers.chart_handler import handle_chart_cb
-
-        await handle_chart_cb(update, context)
-    elif data.startswith("hl:"):
-        from handlers.hyperliquid_handler import handle_hl_cb
-
-        await handle_hl_cb(update, context)
-    elif data.startswith("sol:") or data.startswith("solana:"):
-        from handlers.solana_handler import handle_solana_cb
-
-        await handle_solana_cb(update, context)
-    elif data.startswith("poly:"):
-        from handlers.polymarket_handler import handle_polymarket_cb
-
-        await handle_polymarket_cb(update, context)
-    elif data.startswith("degen:") or data.startswith("scanner:"):
-        from handlers.degen_handler import handle_degen_cb, handle_scanner_settings_action
-
-        if data.startswith("scanner:"):
-            await handle_scanner_settings_action(update, context)
-        else:
-            await handle_degen_cb(update, context)
-    elif data.startswith("risk:"):
-        from handlers.risk_handler import handle_risk_cb
-
-        await handle_risk_cb(update, context)
-    elif data.startswith("filter:"):
-        from handlers.risk_handler import handle_risk_cb
-
-        await handle_risk_cb(update, context)
-    elif data.startswith("pending:"):
-        from handlers.alerts import handle_pending_cb
-
-        await handle_pending_cb(update, context)
-    else:
-        log.warning("Unhandled callback: %s", data)
-        await query.answer("This button is not yet active.", show_alert=False)
+    if address:
+        from handlers.degen_handler import handle_ca_input
+        await handle_ca_input(update, context, address)
