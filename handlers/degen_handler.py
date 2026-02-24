@@ -221,6 +221,10 @@ async def handle_manual_scan(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup=InlineKeyboardMarkup(
             [
                 [
+                    InlineKeyboardButton("📲 Live Trade", callback_data=f"degen:live:{address}"),
+                    InlineKeyboardButton("🎮 Demo Trade", callback_data=f"degen:demo:{address}"),
+                ],
+                [
                     InlineKeyboardButton("👁 Watch Dev Wallet", callback_data=f"degen:watch_dev:{address}"),
                     InlineKeyboardButton("🔄 Refresh Scan", callback_data=f"degen:scan:{address}"),
                 ]
@@ -337,6 +341,40 @@ async def handle_degen_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("degen:hold:"):
         return await q.message.reply_text("⏭ Holding. Reminder logged.")
 
+    if data.startswith("degen:live:"):
+        address = data.split(":", 2)[2]
+        scan = db.get_latest_auto_scan(address) or db.get_contract_scan(address, "solana") or {}
+        symbol = scan.get("token_symbol") or scan.get("symbol") or "TOKEN"
+        from engine.solana.trade_planner import generate_trade_plan, format_trade_plan
+        plan = await generate_trade_plan(address, symbol, "buy", 50.0, scan)
+        text = format_trade_plan(plan) + "\n\n_Phase 1 — manual execution only._"
+        return await q.message.reply_text(text, parse_mode="Markdown")
+    if data.startswith("degen:demo:"):
+        address = data.split(":", 2)[2]
+        scan = db.get_latest_auto_scan(address) or db.get_contract_scan(address, "solana") or {}
+        symbol = scan.get("token_symbol") or scan.get("symbol") or "TOKEN"
+        price = float(scan.get("price_usd") or 0.000001)
+        tid = db.open_demo_trade({
+            "section": "degen",
+            "pair": "",
+            "token_symbol": symbol,
+            "direction": "BUY",
+            "entry_price": price,
+            "sl": price * 0.75,
+            "tp1": price * 1.5,
+            "tp2": price * 3,
+            "tp3": price * 10,
+            "position_size_usd": 10,
+            "risk_amount_usd": 10,
+            "risk_pct": 1.0,
+            "model_id": "degen_demo",
+            "model_name": "Degen Demo",
+            "tier": "C",
+            "score": float(scan.get("probability_score") or 0),
+            "source": "degen_demo_button",
+            "notes": f"{address}",
+        })
+        return await q.message.reply_text(f"🎮 Demo trade opened for {symbol} (#{tid})")
     if data.startswith("degen:compare:b:"):
         b = data.split(":")[-1]
         a = context.user_data.get("compare_a")

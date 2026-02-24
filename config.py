@@ -42,7 +42,16 @@ CRYPTOCOMPARE_API_KEY = os.getenv("CRYPTOCOMPARE_API_KEY", "").strip()
 CRYPTOCOMPARE_BASE_URL = os.getenv("CRYPTOCOMPARE_BASE_URL", "https://min-api.cryptocompare.com").strip()
 CRYPTOCOMPARE_EXTRA_PARAMS = os.getenv("CRYPTOCOMPARE_EXTRA_PARAMS", "ZTbot").strip()
 
+
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
+SOLANA_RPC_URL = (
+    f"https://mainnet.helius-rpc.com"
+    f"/?api-key={HELIUS_API_KEY}"
+    if HELIUS_API_KEY
+    else "https://api.mainnet-beta.solana.com"
+)
+POLYMARKET_CLOB = "https://clob.polymarket.com"
+POLYMARKET_GAMMA = "https://gamma-api.polymarket.com"
 ETHERSCAN_KEY = os.getenv("ETHERSCAN_KEY", "")
 GOPLUSLABS_BASE = "https://api.gopluslabs.io/api/v1"
 DEXSCREENER_BASE = "https://api.dexscreener.com/latest"

@@ -652,7 +652,7 @@ async def ca_monitor_job(context: ContextTypes.DEFAULT_TYPE):
                 if now - float(sent.get(typ) or 0) < 1800:
                     continue
                 sent[typ] = now
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("📊 View Report", callback_data=f"ca:report:{m['address']}"), InlineKeyboardButton("🔕 Stop Monitoring", callback_data=f"ca:stop:{m['address']}")]])
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("📲 Live Trade", callback_data=f"degen:live:{m['address']}"), InlineKeyboardButton("🎮 Demo Trade", callback_data=f"degen:demo:{m['address']}")], [InlineKeyboardButton("📊 View Report", callback_data=f"ca:report:{m['address']}"), InlineKeyboardButton("🔕 Stop Monitoring", callback_data=f"ca:stop:{m['address']}")]])
                 await context.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown", reply_markup=kb)
             db.update_ca_monitor_check(m["address"], current_price, current_holders)
         except Exception as e:

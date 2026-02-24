@@ -338,9 +338,12 @@ async def send_scanner_alert(context, token: dict, rank: int, run_id: str, total
     keyboard = InlineKeyboardMarkup(
         [
             [
+                InlineKeyboardButton("📲 Live Trade", callback_data=f"degen:live:{address}"),
+                InlineKeyboardButton("🎮 Demo Trade", callback_data=f"degen:demo:{address}"),
+            ],
+            [
                 InlineKeyboardButton("✅ Whitelist", callback_data=f"scan:whitelist:{address}"),
                 InlineKeyboardButton("❌ Ignore", callback_data=f"scan:ignore:{address}"),
-                InlineKeyboardButton("📲 Ape In", callback_data=f"scan:ape:{address}"),
             ],
             [
                 InlineKeyboardButton("🔍 Full Scan", callback_data=f"scan:full:{address}"),
@@ -536,10 +539,17 @@ async def _run_watchlist_scanner_inner(context) -> None:
                         reply_markup=InlineKeyboardMarkup(
                             [
                                 [
-                                    InlineKeyboardButton("📲 Ape In", callback_data=f"scan:ape:{address}"),
-                                    InlineKeyboardButton("🔍 Full Scan", callback_data=f"scan:full:{address}"),
+                                    InlineKeyboardButton("📲 Live Trade", callback_data=f"degen:live:{address}"),
+                                    InlineKeyboardButton("🎮 Demo Trade", callback_data=f"degen:demo:{address}"),
+                                ],
+                                [
+                                    InlineKeyboardButton("✅ Whitelist", callback_data=f"scan:whitelist:{address}"),
                                     InlineKeyboardButton("❌ Remove", callback_data=f"scan:ignore:{address}"),
-                                ]
+                                ],
+                                [
+                                    InlineKeyboardButton("🔍 Full Scan", callback_data=f"scan:full:{address}"),
+                                    InlineKeyboardButton("👁 Watch Dev", callback_data=f"degen:watch_dev:{address}"),
+                                ],
                             ]
                         ),
                     )
