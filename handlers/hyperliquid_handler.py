@@ -367,3 +367,19 @@ async def handle_hl_cb(update, context):
         return await handle_hl_set_trail(q, context, coin, float(trail))
     if q.data in {"hl:connect", "hl:orders", "hl:plans", "hl:history", "hl:risk_sizes"}:
         return await q.message.reply_text("Phase 1 — execution not yet implemented")
+
+# New-nav compatibility exports
+show_perps_live_home = show_hl_home
+show_hl_open_orders = show_hl_positions
+show_hl_history = show_hl_positions
+
+
+async def show_hl_trail_setup(query, context, coin: str):
+    await query.message.reply_text(
+        f"Set trailing stop for {coin}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("2%", callback_data=f"hl:trail:{coin}:2")]]),
+    )
+
+
+async def handle_hl_wallet_setup(query, context):
+    await query.message.reply_text("Send Hyperliquid public address.")

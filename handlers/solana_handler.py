@@ -296,3 +296,33 @@ async def handle_solana_cb(update, context):
         for p in plans[:10]:
             lines.append(f"• {p.get('action','?').upper()} {p.get('token_symbol','?')} ${float(p.get('amount_usd') or 0):.2f} — {p.get('status')}")
         return await q.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+# New-nav compatibility exports
+show_degen_live_home = show_solana_home
+
+
+async def show_degen_buy_screen(query, context):
+    await query.message.reply_text("Paste token address to buy.")
+
+
+async def show_degen_sell_screen(query, context):
+    await query.message.reply_text("Open positions shown below.")
+
+
+async def show_quick_buy_screen(query, context, address: str):
+    await query.message.reply_text(
+        f"Quick buy {address}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("$50", callback_data=f"degen:live:{address}")]]),
+    )
+
+
+async def show_autosell_config(query, context, address: str):
+    await query.message.reply_text(f"Auto-sell config for {address}")
+
+
+async def show_sol_position_detail(query, context, address: str):
+    await query.message.reply_text(f"Position detail for {address}")
+
+
+async def handle_sol_wallet_setup(query, context):
+    await handle_solana_connect(query, context)

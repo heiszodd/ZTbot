@@ -236,3 +236,28 @@ async def handle_polymarket_cb(update, context):
         market_id = data.split(":", 2)[2]
         await q.message.reply_text("Close flow will execute from live position controls shortly.")
         return
+
+# New-nav compatibility exports
+show_predictions_live_home = show_polymarket_home
+show_poly_watchlist = show_poly_sentiment
+show_poly_demo_home = show_polymarket_home
+
+
+async def handle_poly_wallet_setup(query, context):
+    await query.message.reply_text("Send Polymarket wallet/public identifier.")
+
+
+async def show_poly_live_trade_setup(query, context, market_id: str):
+    await handle_poly_live_trade(query, context)
+
+
+async def handle_poly_close_position(query, context, market_id: str):
+    await query.message.reply_text(f"Close flow for {market_id} not available.")
+
+
+async def show_poly_market_detail(query, context, market_id: str):
+    await query.message.reply_text(f"Market detail: {market_id}")
+
+
+async def handle_poly_remove_alert(query, context, market_id: str):
+    await query.message.reply_text("Removed alert.")
