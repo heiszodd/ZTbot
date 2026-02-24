@@ -563,6 +563,7 @@ def main():
     app.add_handler(CommandHandler("addkey", commands.handle_addkey))
     app.add_handler(CommandHandler("deletekey", commands.handle_deletekey))
     app.add_handler(CommandHandler("rotate", commands.handle_rotate))
+    app.add_handler(CommandHandler("setup", commands.handle_setup))
 
     # ── Conversations (must be before generic callback routers) ──
     chart_conv = ConversationHandler(
@@ -592,6 +593,7 @@ def main():
 
     # ── Callback routers ──────────────────────────────
     app.add_handler(CallbackQueryHandler(commands.handle_nav, pattern="^nav:"), group=0)
+    app.add_handler(CallbackQueryHandler(commands.handle_confirmation_callback, pattern="^confirm:(execute|cancel):"), group=0)
     app.add_handler(CallbackQueryHandler(simulator_handler.handle_sim_cb, pattern="^sim:"), group=0)
     app.add_handler(CallbackQueryHandler(commands.handle_model_cb, pattern="^model:"), group=0)
     app.add_handler(CallbackQueryHandler(chart_handler.handle_chart_cb, pattern="^chart:"), group=0)

@@ -9,6 +9,7 @@ from engine.hyperliquid.account_reader import (
     fetch_open_orders_parsed,
     fetch_positions_with_prices,
 )
+from engine.hyperliquid.client import get_user_fills
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 log = logging.getLogger(__name__)
@@ -83,6 +84,27 @@ async def _run_monitor_inner(context) -> None:
 
     if orders:
         log.debug("HL monitor open orders: %s", len(orders))
+
+    try:
+        fills = await get_user_fills(HL_ADDRESS)
+        for fill in fills[:20]:
+            oid = str(fill.get("oid") or "")
+            if not oid:
+                continue
+            order = db.get_hl_order(oid)
+            if order and order.get("status") == "open":
+                db.update_hl_order_status(oid, "filled")
+                await context.bot.send_message(
+                    chat_id=CHAT_ID,
+                    text=(
+                        f"✅ Order Filled — {fill.get('side','')} {fill.get('coin','')}\n"
+                        f"Filled @ ${float(fill.get('px') or 0):,.2f}\n"
+                        f"Size: ${float(fill.get('sz') or 0):,.2f}"
+                    ),
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📊 Position", callback_data="hl:positions")]]),
+                )
+    except Exception as e:
+        log.debug("HL fill monitor skipped: %s", e)
 
 
 async def run_hl_monitor(context) -> None:

@@ -1489,3 +1489,64 @@ async def handle_deletekey(update, context):
 @require_auth
 async def handle_rotate(update, context):
     await update.message.reply_text('Key rotation process initiated. Use offline runbook to re-encrypt stored keys with rotate_encryption().')
+
+
+@require_auth
+async def handle_setup(update, context):
+    text = (update.message.text or "").strip().lower()
+    parts = text.split()
+    if len(parts) < 2:
+        await update.message.reply_text("Usage: /setup <hl|sol|poly>")
+        return
+    section = parts[1]
+    if section == "hl":
+        return await update.message.reply_text(
+            "Hyperliquid Phase 2 Setup\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "1. Go to app.hyperliquid.xyz\n"
+            "2. Settings → API → Generate API Wallet\n"
+            "3. Copy the private key shown\n"
+            "4. Send me: /addkey hl_api_wallet\n"
+            "5. I'll walk you through storing it encrypted.\n\n"
+            "⚠️ API wallet can TRADE only. Cannot withdraw."
+        )
+    if section == "sol":
+        return await update.message.reply_text(
+            "Solana Phase 2 Setup\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "1. Generate new keypair\n2. Fund with max $500 USDC + 0.1 SOL\n"
+            "3. Copy private key\n4. Send: /addkey sol_hot_wallet"
+        )
+    if section == "poly":
+        return await update.message.reply_text(
+            "Polymarket Phase 2 Setup\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Run:\n/addkey poly_hot_wallet\n/addkey poly_api_key\n/addkey poly_api_secret\n/addkey poly_api_passphrase"
+        )
+    await update.message.reply_text("Unknown section. Use /setup hl, /setup sol, or /setup poly")
+
+
+@require_auth_callback
+async def handle_confirmation_callback(update, context):
+    query = update.callback_query
+    parts = (query.data or "").split(":")
+    if len(parts) < 4:
+        await query.answer("Invalid")
+        return
+    action, section, confirm_id = parts[1], parts[2], parts[3]
+    if action == "cancel":
+        from security.confirmation import cancel_confirmation
+        cancel_confirmation(confirm_id)
+        await query.message.edit_text("❌ Trade cancelled.", reply_markup=None)
+        await query.answer("Cancelled")
+        return
+    if action == "execute":
+        from security.confirmation import execute_confirmation
+        await query.answer("⏳ Executing...", show_alert=False)
+        await query.message.edit_text("⏳ *Executing trade...*\nPlease wait.", parse_mode="Markdown", reply_markup=None)
+        success, result_or_error = await execute_confirmation(confirm_id)
+        if success:
+            tx_id = result_or_error.get("tx_id", "") if isinstance(result_or_error, dict) else ""
+            await query.message.edit_text(f"✅ *Trade Executed*\nRef: `{tx_id}`\nCheck positions for details.", parse_mode="Markdown")
+        else:
+            await query.message.edit_text(f"❌ *Execution Failed*\n{result_or_error}", parse_mode="Markdown")

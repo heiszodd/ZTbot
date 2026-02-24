@@ -64,17 +64,50 @@ async def handle_poly_demo_trade(query, context, market_id: str):
 
 
 async def handle_poly_live_trade(query, context, market_id: str):
-    market = await fetch_market_by_id(market_id)
-    question = market.get("question", market_id)
     await query.message.reply_text(
-        "📲 Live Trading — Coming in Phase 2\n\n"
-        "To trade this market manually now:\n"
-        "1. Go to polymarket.com\n"
-        f"2. Search: {question[:80]}\n"
-        "3. Buy YES/NO with USDC on Polygon\n\n"
-        "Phase 2 will execute this automatically.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Demo Trade Instead", callback_data=f"poly:demo:{market_id}")]]),
+        "Choose side and size:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("YES $10", callback_data=f"poly:execute:{market_id}:YES:10"), InlineKeyboardButton("NO $10", callback_data=f"poly:execute:{market_id}:NO:10")],
+            [InlineKeyboardButton("YES $25", callback_data=f"poly:execute:{market_id}:YES:25"), InlineKeyboardButton("NO $25", callback_data=f"poly:execute:{market_id}:NO:25")],
+        ]),
     )
+
+
+async def handle_poly_execute_trade(query, context, market_id, position, size_usd):
+    from engine.polymarket.executor import execute_poly_trade
+    from engine.execution_pipeline import run_execution_pipeline
+
+    market = await fetch_market_by_id(market_id)
+    if not market:
+        await query.answer("Market not found", show_alert=True)
+        return
+
+    yes_price, no_price, yes_token, no_token = 0.0, 0.0, "", ""
+    for t in market.get("tokens", []):
+        outcome = t.get("outcome", "").upper()
+        price = float(t.get("price", 0) or 0)
+        tok_id = t.get("token_id", "")
+        if outcome == "YES":
+            yes_price, yes_token = price, tok_id
+        elif outcome == "NO":
+            no_price, no_token = price, tok_id
+
+    price = yes_price if position == "YES" else no_price
+    token_id = yes_token if position == "YES" else no_token
+    question = market.get("question", "")
+    short_q = question[:60] + "..." if len(question) > 60 else question
+    plan = {"coin": "USDC", "symbol": position, "side": f"{position} — {short_q}", "market_id": market_id, "token_id": token_id, "position": position, "size_usd": size_usd, "entry_price": price, "stop_loss": 0, "price": price, "question": question, "yes_pct": round(yes_price * 100, 1)}
+
+    result = await run_execution_pipeline("polymarket", plan, execute_poly_trade, query.from_user.id, context)
+    if result.get("pending"):
+        await query.message.reply_text(result["message"], parse_mode="Markdown", reply_markup=result["keyboard"])
+        return
+    if not result.get("success"):
+        await query.message.reply_text(f"❌ Trade failed\n{result.get('error','?')}")
+        return
+    exe = result.get("result", {})
+    db.save_poly_live_trade({"market_id": market_id, "question": question, "position": position, "token_id": token_id, "entry_price": price, "size_usd": size_usd, "shares": exe.get("shares", 0), "order_id": result["tx_id"], "status": "open"})
+    await query.message.reply_text(f"✅ *Polymarket Trade Executed*\n{short_q}\nOrder ID: `{result['tx_id']}`", parse_mode="Markdown")
 
 
 @require_auth
@@ -120,6 +153,9 @@ async def handle_polymarket_cb(update, context):
         return await show_poly_sentiment(q, context)
     if data.startswith("poly:live:"):
         return await handle_poly_live_trade(q, context, data.split(":", 2)[2])
+    if data.startswith("poly:execute:"):
+        _, _, market_id, side, size = data.split(":", 4)
+        return await handle_poly_execute_trade(q, context, market_id, side, float(size))
     if data.startswith("poly:demo:"):
         return await handle_poly_demo_trade(q, context, data.split(":", 2)[2])
     if data.startswith("poly:pick:"):

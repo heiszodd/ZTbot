@@ -161,10 +161,79 @@ async def handle_hl_live_plan(query, context):
         format_hl_trade_plan(plan),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📋 Save Plan", callback_data=f"hl:save_plan:{setup_id}"), InlineKeyboardButton("🎮 Run as Demo", callback_data=f"hl:demo:{setup_id}")],
+            [InlineKeyboardButton("📲 Execute Live", callback_data=f"hl:execute:{setup_id}"), InlineKeyboardButton("📋 Save Plan", callback_data=f"hl:save_plan:{setup_id}")],
+            [InlineKeyboardButton("🎮 Run as Demo", callback_data=f"hl:demo:{setup_id}")],
             [InlineKeyboardButton("❌ Cancel", callback_data="hl:home")],
         ]),
     )
+
+
+async def handle_hl_execute_trade(query, context, plan, signal_id=""):
+    from engine.execution_pipeline import run_execution_pipeline
+    from engine.hyperliquid.executor import place_limit_order
+
+    result = await run_execution_pipeline(
+        section="hyperliquid",
+        plan=plan,
+        executor=place_limit_order,
+        user_id=query.from_user.id,
+        context=context,
+        signal_id=signal_id,
+    )
+
+    if result.get("pending"):
+        await query.message.reply_text(result["message"], parse_mode="Markdown", reply_markup=result["keyboard"])
+        return
+    if not result.get("success"):
+        await query.answer(result.get("error", "Failed"), show_alert=True)
+        return
+    tx_id = result.get("tx_id", "")
+    await query.message.reply_text(f"✅ *Order Placed*\nOrder ID: `{tx_id}`", parse_mode="Markdown")
+
+
+async def handle_hl_close_position(query, context, coin, size, is_long, pct=100):
+    from engine.execution_pipeline import run_execution_pipeline
+    from engine.hyperliquid.executor import close_position
+    plan = {"coin": coin, "side": "Close", "size_usd": size * pct / 100, "size_coins": size, "entry_price": 0, "stop_loss": 0}
+
+    async def close_exec(_):
+        return await close_position(coin=coin, size=size, is_long=is_long, pct=pct)
+
+    result = await run_execution_pipeline("hyperliquid", plan, close_exec, query.from_user.id, context)
+    if result.get("pending"):
+        await query.message.reply_text(result["message"], parse_mode="Markdown", reply_markup=result["keyboard"])
+    elif result.get("success"):
+        await query.answer(f"✅ {pct}% of {coin} closed", show_alert=True)
+    else:
+        await query.answer(result.get("error", "Close failed"), show_alert=True)
+
+
+async def handle_hl_cancel_order(query, context, order_id):
+    from engine.hyperliquid.executor import cancel_order
+
+    order = db.get_hl_order(order_id)
+    coin = order.get("coin", "") if order else ""
+    result = await cancel_order(coin, int(order_id))
+    if result.get("success"):
+        db.update_hl_order_status(order_id, "cancelled")
+        await query.answer("✅ Order cancelled", show_alert=True)
+    else:
+        await query.answer(result.get("error", "Cancel failed"), show_alert=True)
+
+
+async def handle_hl_set_trail(query, context, coin, trail_pct):
+    from engine.hyperliquid.executor import set_trailing_stop
+
+    pos = db.get_hl_position_by_coin(coin)
+    if not pos:
+        await query.answer("Position not found", show_alert=True)
+        return
+    result = await set_trailing_stop(coin=coin, size=pos["size"], is_long=pos.get("side") == "Long", trail_pct=trail_pct)
+    if result.get("success"):
+        db.save_hl_trailing_stop(coin, trail_pct)
+        await query.answer(f"✅ Trailing stop {trail_pct}% set", show_alert=True)
+    else:
+        await query.answer(result.get("error", "Failed"), show_alert=True)
 
 
 async def handle_hl_demo(query, context):
@@ -271,6 +340,14 @@ async def handle_hl_cb(update, context):
             }
         )
         return await q.message.reply_text(f"✅ HL plan saved as #{saved_id}.")
+    if q.data.startswith("hl:execute:"):
+        setup_id = int(q.data.split(":")[-1])
+        setup = db.get_setup_phase_by_id(setup_id)
+        if not setup:
+            return await q.message.reply_text("Setup not found.")
+        signal = {"pair": setup.get("pair"), "direction": setup.get("direction", "Bullish"), "entry_price": setup.get("entry_price"), "stop_loss": setup.get("stop_loss"), "take_profit": setup.get("tp1")}
+        plan = await generate_hl_trade_plan(signal)
+        return await handle_hl_execute_trade(q, context, plan, str(setup_id))
     if q.data.startswith("hl:quote:"):
         coin = q.data.split(":")[-1]
         signal = {"pair": f"{coin}USDT", "direction": "Bullish", "stop_loss": 1}
@@ -278,6 +355,14 @@ async def handle_hl_cb(update, context):
         return await q.message.reply_text(format_hl_trade_plan(plan), parse_mode="Markdown")
     if q.data.startswith("hl:close:"):
         _,_,coin,pct = q.data.split(":",3)
-        return await q.message.reply_text(f"Queued close for {coin}: {pct}%")
+        pos = db.get_hl_position_by_coin(coin)
+        if not pos:
+            return await q.answer("Position not found", show_alert=True)
+        return await handle_hl_close_position(q, context, coin, float(pos.get("size") or 0), pos.get("side") == "Long", float(pct))
+    if q.data.startswith("hl:cancel:"):
+        return await handle_hl_cancel_order(q, context, q.data.split(":", 2)[2])
+    if q.data.startswith("hl:trail:"):
+        _, _, coin, trail = q.data.split(":", 3)
+        return await handle_hl_set_trail(q, context, coin, float(trail))
     if q.data in {"hl:connect", "hl:orders", "hl:plans", "hl:history", "hl:risk_sizes"}:
         return await q.message.reply_text("Phase 1 — execution not yet implemented")

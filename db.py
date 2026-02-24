@@ -5398,3 +5398,148 @@ def get_recent_trade_sizes(section: str, limit: int = 10) -> list:
                 cur.execute(f"SELECT size_usd FROM {table} ORDER BY created_at DESC LIMIT %s", (int(limit),))
             rows = cur.fetchall()
             return [float(r.get("size_usd") or 0) for r in rows]
+
+
+def save_sol_position(data: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO sol_positions (token_address, token_symbol, wallet_index, tokens_held, cost_basis, entry_price, status)
+                VALUES (%s, %s, %s, %s, %s, %s, 'open')
+                ON CONFLICT (token_address, wallet_index)
+                DO UPDATE SET token_symbol=EXCLUDED.token_symbol, tokens_held=EXCLUDED.tokens_held,
+                              cost_basis=EXCLUDED.cost_basis, entry_price=EXCLUDED.entry_price, status='open'
+                RETURNING id
+                """,
+                (data.get("token_address"), data.get("token_symbol"), int(data.get("wallet_index", 1)), float(data.get("tokens_held", 0) or 0), float(data.get("cost_basis", 0) or 0), float(data.get("entry_price", 0) or 0)),
+            )
+            row = cur.fetchone() or {}
+        conn.commit()
+        return int(row.get("id") or 0)
+
+
+def get_sol_position(token_address: str) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM sol_positions WHERE token_address=%s AND status='open' ORDER BY opened_at DESC LIMIT 1", (token_address,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def update_sol_position_after_sell(token_address: str, sell_pct: float, usdc_received: float, price: float) -> None:
+    pos = get_sol_position(token_address)
+    if not pos:
+        return
+    remaining = float(pos.get("tokens_held") or 0) * max(0.0, (100 - sell_pct) / 100)
+    status = "closed" if remaining <= 0.0000001 else "open"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE sol_positions SET tokens_held=%s, current_price=%s, status=%s, closed_at=CASE WHEN %s='closed' THEN NOW() ELSE closed_at END WHERE id=%s", (remaining, price, status, status, pos["id"]))
+        conn.commit()
+
+
+def get_all_open_sol_positions() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM sol_positions WHERE status='open' ORDER BY opened_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def count_open_positions(section: str) -> int:
+    table_map = {"solana": "sol_positions", "hyperliquid": "hl_positions", "polymarket": "poly_live_trades"}
+    table = table_map.get(section)
+    if not table:
+        return 0
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS c FROM {table} WHERE status='open'")
+            row = cur.fetchone() or {}
+            return int(row.get("c") or 0)
+
+
+def save_hl_order(data: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO hl_orders (coin, side, order_type, price, size, size_usd, order_id, status, leverage, stop_loss, tp1, tp2, tp3)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                (data.get("coin"), data.get("side"), data.get("order_type", "limit"), data.get("price", 0), data.get("size", 0), data.get("size_usd", 0), str(data.get("order_id", "")), data.get("status", "open"), data.get("leverage", 1), data.get("stop_loss", 0), data.get("tp1", 0), data.get("tp2", 0), data.get("tp3", 0)),
+            )
+            row = cur.fetchone() or {}
+        conn.commit()
+        return int(row.get("id") or 0)
+
+
+def get_hl_order(order_id: str) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM hl_orders WHERE order_id=%s ORDER BY created_at DESC LIMIT 1", (str(order_id),))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def update_hl_order_status(order_id: str, status: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE hl_orders SET status=%s WHERE order_id=%s", (status, str(order_id)))
+        conn.commit()
+
+
+def get_hl_position_by_coin(coin: str) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM hl_positions WHERE coin=%s AND status='open' ORDER BY opened_at DESC LIMIT 1", (coin,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def save_hl_trailing_stop(coin: str, pct: float) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE hl_positions SET trailing_stop_pct=%s WHERE coin=%s AND status='open'", (pct, coin))
+        conn.commit()
+
+
+def save_poly_live_trade(data: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO poly_live_trades (market_id, question, position, token_id, entry_price, current_price, size_usd, shares, order_id, status)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                (data.get("market_id"), data.get("question"), data.get("position"), data.get("token_id"), data.get("entry_price", 0), data.get("entry_price", 0), data.get("size_usd", 0), data.get("shares", 0), str(data.get("order_id", "")), data.get("status", "open")),
+            )
+            row = cur.fetchone() or {}
+        conn.commit()
+        return int(row.get("id") or 0)
+
+
+def get_poly_live_trade(market_id: str) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM poly_live_trades WHERE market_id=%s AND status='open' ORDER BY opened_at DESC LIMIT 1", (market_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def get_open_poly_live_trades() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM poly_live_trades WHERE status='open' ORDER BY opened_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def update_poly_live_trade(id: int, fields: dict) -> None:
+    if not fields:
+        return
+    cols = list(fields.keys())
+    values = [fields[c] for c in cols]
+    sets = ", ".join([f"{c}=%s" for c in cols])
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE poly_live_trades SET {sets} WHERE id=%s", (*values, id))
+        conn.commit()
+
+
+def save_trade_to_history(section: str, plan: dict, result: dict) -> None:
+    log_audit(action="trade_history", details={"section": section, "plan": plan, "result": result}, user_id=0, success=result.get("success", True))
