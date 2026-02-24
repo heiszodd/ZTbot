@@ -58,6 +58,10 @@ DEXSCREENER_BASE = "https://api.dexscreener.com/latest"
 HONEYPOT_BASE = "https://api.honeypot.is/v2"
 BSCSCAN_KEY = os.getenv("BSCSCAN_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+HL_INFO_URL = "https://api.hyperliquid.xyz/info"
+HL_ADDRESS = os.getenv("HL_ADDRESS", "")
+HL_API_KEY = os.getenv("HL_API_KEY", "")
+HL_API_SECRET = os.getenv("HL_API_SECRET", "")
 
 _gemini_state = {
     "client": None,

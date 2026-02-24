@@ -3708,6 +3708,100 @@ def ensure_intelligence_tables() -> None:
                     updated_at   TIMESTAMP DEFAULT NOW(),
                     UNIQUE(model_id, regime)
                 );
+                CREATE TABLE IF NOT EXISTS hl_account (
+                    id SERIAL PRIMARY KEY,
+                    address VARCHAR(100) NOT NULL UNIQUE,
+                    label VARCHAR(50) DEFAULT 'main',
+                    account_value FLOAT DEFAULT 0,
+                    total_margin FLOAT DEFAULT 0,
+                    available_margin FLOAT DEFAULT 0,
+                    total_pnl FLOAT DEFAULT 0,
+                    total_pnl_pct FLOAT DEFAULT 0,
+                    last_synced TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS hl_positions (
+                    id SERIAL PRIMARY KEY,
+                    address VARCHAR(100) NOT NULL,
+                    coin VARCHAR(20) NOT NULL,
+                    side VARCHAR(10),
+                    size FLOAT DEFAULT 0,
+                    entry_price FLOAT DEFAULT 0,
+                    mark_price FLOAT DEFAULT 0,
+                    liquidation_price FLOAT,
+                    unrealized_pnl FLOAT DEFAULT 0,
+                    unrealized_pnl_pct FLOAT DEFAULT 0,
+                    margin_used FLOAT DEFAULT 0,
+                    leverage FLOAT DEFAULT 1,
+                    position_value FLOAT DEFAULT 0,
+                    funding_since_open FLOAT DEFAULT 0,
+                    last_updated TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(address, coin)
+                );
+                ALTER TABLE hl_positions ADD COLUMN IF NOT EXISTS last_liq_alert TIMESTAMP;
+                CREATE TABLE IF NOT EXISTS hl_trade_history (
+                    id SERIAL PRIMARY KEY,
+                    address VARCHAR(100) NOT NULL,
+                    coin VARCHAR(20),
+                    side VARCHAR(10),
+                    size FLOAT,
+                    price FLOAT,
+                    pnl FLOAT DEFAULT 0,
+                    fee FLOAT DEFAULT 0,
+                    order_type VARCHAR(20),
+                    closed_pnl FLOAT DEFAULT 0,
+                    timestamp TIMESTAMP,
+                    hl_order_id VARCHAR(50) UNIQUE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS hl_trade_plans (
+                    id SERIAL PRIMARY KEY,
+                    address VARCHAR(100),
+                    coin VARCHAR(20) NOT NULL,
+                    side VARCHAR(10) NOT NULL,
+                    order_type VARCHAR(20) DEFAULT 'limit',
+                    entry_price FLOAT NOT NULL,
+                    stop_loss FLOAT NOT NULL,
+                    take_profit_1 FLOAT,
+                    take_profit_2 FLOAT,
+                    take_profit_3 FLOAT,
+                    size_usd FLOAT NOT NULL,
+                    leverage FLOAT DEFAULT 1,
+                    risk_amount FLOAT,
+                    risk_pct FLOAT,
+                    rr_ratio FLOAT,
+                    quality_grade VARCHAR(5),
+                    quality_score FLOAT,
+                    source VARCHAR(50) DEFAULT 'manual',
+                    signal_id INT,
+                    notes TEXT,
+                    status VARCHAR(20) DEFAULT 'pending',
+                    executed BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS hl_markets (
+                    id SERIAL PRIMARY KEY,
+                    coin VARCHAR(20) NOT NULL UNIQUE,
+                    sz_decimals INT DEFAULT 0,
+                    max_leverage INT DEFAULT 50,
+                    min_size FLOAT DEFAULT 0.001,
+                    tick_size FLOAT DEFAULT 0.1,
+                    funding_rate FLOAT DEFAULT 0,
+                    open_interest FLOAT DEFAULT 0,
+                    day_volume FLOAT DEFAULT 0,
+                    mark_price FLOAT DEFAULT 0,
+                    index_price FLOAT DEFAULT 0,
+                    last_updated TIMESTAMP DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS hl_funding_history (
+                    id SERIAL PRIMARY KEY,
+                    address VARCHAR(100),
+                    coin VARCHAR(20),
+                    payment FLOAT,
+                    rate FLOAT,
+                    timestamp TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
                 """
             )
         conn.commit()
@@ -4753,3 +4847,189 @@ def get_poly_demo_trades(status: str = None) -> list:
             else:
                 cur.execute("SELECT * FROM poly_demo_trades ORDER BY opened_at DESC")
             return [dict(r) for r in cur.fetchall()]
+
+
+def get_hl_address() -> str:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT address FROM hl_account ORDER BY id ASC LIMIT 1")
+            row = cur.fetchone()
+            return str((row or {}).get("address") or "")
+
+
+def save_hl_address(address: str) -> None:
+    if not address:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO hl_account (address) VALUES (%s) ON CONFLICT (address) DO NOTHING", (address,))
+        conn.commit()
+
+
+def upsert_hl_account(summary: dict) -> None:
+    if not summary or not summary.get("address"):
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO hl_account (address, account_value, total_margin, available_margin, total_pnl, total_pnl_pct, last_synced)
+                VALUES (%s,%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT (address) DO UPDATE SET
+                    account_value=EXCLUDED.account_value,
+                    total_margin=EXCLUDED.total_margin,
+                    available_margin=EXCLUDED.available_margin,
+                    total_pnl=EXCLUDED.total_pnl,
+                    total_pnl_pct=EXCLUDED.total_pnl_pct,
+                    last_synced=NOW()
+                """,
+                (
+                    summary.get("address"),
+                    summary.get("account_value", 0),
+                    summary.get("total_margin", 0),
+                    summary.get("available", 0),
+                    summary.get("total_upnl", 0),
+                    summary.get("total_pnl_pct", 0),
+                ),
+            )
+        conn.commit()
+
+
+def upsert_hl_position(address: str, pos: dict) -> None:
+    if not address or not pos:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO hl_positions
+                (address, coin, side, size, entry_price, mark_price, liquidation_price, unrealized_pnl, unrealized_pnl_pct, margin_used, leverage, position_value, funding_since_open, last_updated)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT (address, coin) DO UPDATE SET
+                    side=EXCLUDED.side,
+                    size=EXCLUDED.size,
+                    entry_price=EXCLUDED.entry_price,
+                    mark_price=EXCLUDED.mark_price,
+                    liquidation_price=EXCLUDED.liquidation_price,
+                    unrealized_pnl=EXCLUDED.unrealized_pnl,
+                    unrealized_pnl_pct=EXCLUDED.unrealized_pnl_pct,
+                    margin_used=EXCLUDED.margin_used,
+                    leverage=EXCLUDED.leverage,
+                    position_value=EXCLUDED.position_value,
+                    funding_since_open=EXCLUDED.funding_since_open,
+                    last_updated=NOW()
+                """,
+                (
+                    address,
+                    pos.get("coin"),
+                    pos.get("side"),
+                    pos.get("size", 0),
+                    pos.get("entry_price", 0),
+                    pos.get("mark_price", 0),
+                    pos.get("liq_price"),
+                    pos.get("live_upnl", pos.get("upnl", 0)),
+                    pos.get("live_upnl_pct", pos.get("upnl_pct", 0)),
+                    pos.get("margin_used", 0),
+                    pos.get("leverage", 1),
+                    pos.get("pos_value", pos.get("size_usd", 0)),
+                    pos.get("funding_since_open", 0),
+                ),
+            )
+        conn.commit()
+
+
+def update_hl_position_alert_time(address: str, coin: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE hl_positions SET last_liq_alert=NOW() WHERE address=%s AND coin=%s", (address, coin))
+        conn.commit()
+
+
+def get_hl_positions(address: str) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM hl_positions WHERE address=%s ORDER BY position_value DESC", (address,))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def save_hl_trade_plan(data: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO hl_trade_plans
+                (address, coin, side, order_type, entry_price, stop_loss, take_profit_1, take_profit_2, take_profit_3, size_usd, leverage, risk_amount, risk_pct, rr_ratio, quality_grade, quality_score, source, signal_id, notes, status, executed)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    data.get("address"),
+                    data.get("coin"),
+                    data.get("side"),
+                    data.get("order_type", "limit"),
+                    data.get("entry_price"),
+                    data.get("stop_loss"),
+                    data.get("take_profit_1"),
+                    data.get("take_profit_2"),
+                    data.get("take_profit_3"),
+                    data.get("size_usd"),
+                    data.get("leverage", 1),
+                    data.get("risk_amount"),
+                    data.get("risk_pct"),
+                    data.get("rr_ratio"),
+                    data.get("quality_grade"),
+                    data.get("quality_score"),
+                    data.get("source", "manual"),
+                    data.get("signal_id"),
+                    data.get("notes"),
+                    data.get("status", "pending"),
+                    bool(data.get("executed", False)),
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return int(row["id"]) if row else 0
+
+
+def get_hl_trade_plans(status: str = None) -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if status:
+                cur.execute("SELECT * FROM hl_trade_plans WHERE status=%s ORDER BY created_at DESC", (status,))
+            else:
+                cur.execute("SELECT * FROM hl_trade_plans ORDER BY created_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def save_hl_fills(address: str, fills: list) -> None:
+    if not fills:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            rows = []
+            for f in fills:
+                rows.append(
+                    (
+                        address,
+                        f.get("coin"),
+                        f.get("side"),
+                        f.get("size"),
+                        f.get("price"),
+                        f.get("closed_pnl", 0),
+                        f.get("fee", 0),
+                        f.get("order_type", "Limit"),
+                        f.get("closed_pnl", 0),
+                        f.get("timestamp"),
+                        f.get("order_id"),
+                    )
+                )
+            psycopg2.extras.execute_values(
+                cur,
+                """
+                INSERT INTO hl_trade_history (address, coin, side, size, price, pnl, fee, order_type, closed_pnl, timestamp, hl_order_id)
+                VALUES %s
+                ON CONFLICT (hl_order_id) DO NOTHING
+                """,
+                rows,
+            )
+        conn.commit()

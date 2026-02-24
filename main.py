@@ -15,6 +15,8 @@ import prices as px
 from config import SCANNER_INTERVAL, WAT
 from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler, simulator_handler, risk_handler, solana_handler, polymarket_handler
 from engine import phase_engine, session_journal, regime_detector, notification_filter, session_checklist
+from handlers import hyperliquid_handler
+from engine.hyperliquid.monitor import run_hl_monitor
 from degen import wallet_tracker
 from engine import run_backtest
 from engine.degen import dev_tracker, exit_planner, narrative_detector
@@ -537,6 +539,7 @@ def main():
     app.add_handler(CallbackQueryHandler(ca_handler.handle_ca_cb, pattern="^ca:"), group=0)
     app.add_handler(CallbackQueryHandler(solana_handler.handle_solana_cb, pattern="^solana:"), group=0)
     app.add_handler(CallbackQueryHandler(polymarket_handler.handle_polymarket_cb, pattern="^poly:"), group=0)
+    app.add_handler(CallbackQueryHandler(hyperliquid_handler.handle_hl_cb, pattern="^hl:"), group=0)
     app.add_handler(CallbackQueryHandler(degen_handler.handle_scan_action, pattern=r"^scan:(whitelist|ignore|ape|full):"), group=0)
     app.add_handler(CallbackQueryHandler(commands.handle_scan_cb, pattern="^scan:"))
     app.add_handler(CallbackQueryHandler(commands.handle_backtest_cb, pattern="^backtest:"))
@@ -577,6 +580,7 @@ def main():
     app.job_queue.run_repeating(wallet_tracker.wallet_monitor_job, interval=120, first=450, name="wallet_monitor")
     app.job_queue.run_repeating(demo_handler.demo_monitor_job, interval=30, first=360, name="demo_monitor")
     app.job_queue.run_repeating(ca_handler.ca_monitor_job, interval=120, first=180, name="ca_monitor")
+    app.job_queue.run_repeating(run_hl_monitor, interval=300, first=540, name="hl_monitor")
 
     app.job_queue.run_repeating(run_auto_scanner, interval=1800, first=120, name="auto_degen_scanner")
     app.job_queue.run_repeating(run_watchlist_scanner, interval=900, first=270, name="watchlist_scanner")

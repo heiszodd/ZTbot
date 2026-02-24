@@ -257,8 +257,39 @@ async def _fire_alert(context, existing, result, model, pair):
         else:
             alert_text += f"\n\n🔗 _{corr['reason']}_"
 
+    try:
+        from engine.hyperliquid.signal_bridge import enrich_signal_with_hl_plan
+        signal = {
+            "pair": pair,
+            "direction": direction,
+            "entry_price": price,
+            "stop_loss": sl,
+            "take_profit": tp1,
+            "quality_grade": quality.get("grade"),
+            "quality_score": quality.get("score"),
+            "risk_level": risk.get("risk_level"),
+            "risk_amount": risk.get("position", {}).get("risk_amount"),
+            "position_size": risk.get("position", {}).get("position_size"),
+            "leverage": risk.get("position", {}).get("leverage_needed"),
+            "rr_ratio": risk.get("position", {}).get("rr_ratio"),
+        }
+        signal = await asyncio.wait_for(enrich_signal_with_hl_plan(signal), timeout=5)
+        if signal.get("hl_available") and signal.get("hl_plan", {}).get("success"):
+            plan = signal["hl_plan"]
+            alert_text += (
+                "\n\n🔷 *Hyperliquid Plan*"
+                f"\n{plan.get('coin', '')}-USDC {plan.get('side', '')}"
+                f"\nEntry ${plan.get('entry_price', 0):,.4f} | SL ${plan.get('stop_loss', 0):,.4f}"
+                f"\nSize ${plan.get('size_usd', 0):,.2f} @ {plan.get('leverage', 0)}x"
+            )
+    except asyncio.TimeoutError:
+        log.warning("HL signal enrichment timeout for %s", pair)
+    except Exception as exc:
+        log.error("HL signal enrichment failed for %s: %s", pair, exc)
+
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎮 Demo Trade", callback_data=f"alert:demo_phase:{existing['id']}")],
+        [InlineKeyboardButton("📲 HL Live Plan", callback_data=f"hl:live_plan:{existing['id']}"), InlineKeyboardButton("🎮 HL Demo Trade", callback_data=f"hl:demo:{existing['id']}")],
+        [InlineKeyboardButton("📲 Live Trade", callback_data=f"hl:live_plan:{existing['id']}"), InlineKeyboardButton("🎮 Demo Trade", callback_data=f"alert:demo_phase:{existing['id']}")],
     ])
     msg = await context.bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="Markdown", reply_markup=kb)
     record_alert_fired({"session": get_session(), "pair": pair, "model_id": model["id"], "direction": direction, "quality_grade": quality["grade"]})
