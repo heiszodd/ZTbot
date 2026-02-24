@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 import db
 from config import CHAT_ID, SUPPORTED_PAIRS
@@ -256,7 +257,10 @@ async def _fire_alert(context, existing, result, model, pair):
         else:
             alert_text += f"\n\n🔗 _{corr['reason']}_"
 
-    msg = await context.bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="Markdown")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎮 Demo Trade", callback_data=f"alert:demo_phase:{existing['id']}")],
+    ])
+    msg = await context.bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="Markdown", reply_markup=kb)
     record_alert_fired({"session": get_session(), "pair": pair, "model_id": model["id"], "direction": direction, "quality_grade": quality["grade"]})
     db.save_setup_phase({"id": existing["id"], "overall_status": "phase4", "alert_message_id": msg.message_id, "entry_price": price, "stop_loss": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3})
     lc_id = db.save_alert_lifecycle({"setup_phase_id": existing["id"], "model_id": model["id"], "pair": pair, "direction": direction, "entry_price": price, "risk_level": risk.get("risk_level"), "risk_amount": risk.get("position", {}).get("risk_amount"), "position_size": risk.get("position", {}).get("position_size"), "leverage": risk.get("position", {}).get("leverage_needed"), "rr_ratio": risk.get("position", {}).get("rr_ratio"), "quality_grade": quality["grade"], "quality_score": quality["score"]})
