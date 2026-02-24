@@ -13,7 +13,7 @@ from telegram.ext import (
 
 import prices as px
 from config import SCANNER_INTERVAL, WAT
-from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler, simulator_handler, risk_handler, solana_handler, polymarket_handler, ca_paste_handler
+from handlers import commands, alerts, wizard, stats, scheduler, news_handler, degen_handler, degen_wizard, wallet_handler, demo_handler, ca_handler, chart_handler, simulator_handler, risk_handler, solana_handler, polymarket_handler, ca_paste_handler, nav_handler, degen_model_handler, predictions_model_handler, degen_risk_handler
 from engine import phase_engine, session_journal, regime_detector, notification_filter, session_checklist
 from handlers import hyperliquid_handler
 from engine.hyperliquid.monitor import run_hl_monitor
@@ -592,6 +592,10 @@ def main():
     app.add_handler(commands.build_budget_handler())
 
     # ── Callback routers ──────────────────────────────
+    app.add_handler(CallbackQueryHandler(nav_handler.handle_nav_cb, pattern="^(perps:|nav:home)$"), group=0)
+    app.add_handler(CallbackQueryHandler(degen_model_handler.show_degen_models_home, pattern="^degen:models$"), group=0)
+    app.add_handler(CallbackQueryHandler(predictions_model_handler.show_predictions_models_home, pattern="^predictions:models$"), group=0)
+    app.add_handler(CallbackQueryHandler(degen_risk_handler.show_degen_live_risk, pattern="^degen:live:risk$"), group=0)
     app.add_handler(CallbackQueryHandler(commands.handle_nav, pattern="^nav:"), group=0)
     app.add_handler(CallbackQueryHandler(commands.handle_confirmation_callback, pattern="^confirm:(execute|cancel):"), group=0)
     app.add_handler(CallbackQueryHandler(simulator_handler.handle_sim_cb, pattern="^sim:"), group=0)
@@ -645,6 +649,12 @@ def main():
     app.job_queue.run_repeating(demo_handler.demo_monitor_job, interval=30, first=360, name="demo_monitor")
     app.job_queue.run_repeating(ca_handler.ca_monitor_job, interval=120, first=180, name="ca_monitor")
     app.job_queue.run_repeating(run_hl_monitor, interval=300, first=540, name="hl_monitor")
+    app.job_queue.run_repeating(
+        lambda ctx: db.expire_old_pending_signals(),
+        interval=300,
+        first=120,
+        name="expire_pending",
+    )
     app.job_queue.run_repeating(run_auto_sell_monitor, interval=60, first=570, name="auto_sell_monitor")
     app.job_queue.run_repeating(run_dca_executor, interval=60, first=600, name="dca_executor")
     app.job_queue.run_repeating(run_wallet_tracker, interval=60, first=630, name="wallet_tracker")

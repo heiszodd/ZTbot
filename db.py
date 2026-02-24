@@ -4776,6 +4776,11 @@ def update_user_settings(chat_id: int, fields: dict) -> None:
     allowed = {
         "degen_mode", "perps_mode", "sol_mode", "buy_preset_1", "buy_preset_2", "buy_preset_3", "buy_preset_4",
         "instant_buy_threshold", "instant_buy_enabled", "mev_protection", "trenches_alerts", "session_summary_time",
+        "live_sl_pct", "live_sl_enabled", "live_tp1_pct", "live_tp1_sell_pct", "live_tp2_pct", "live_tp2_sell_pct",
+        "live_tp3_pct", "live_tp3_sell_pct", "live_trail_pct", "live_trail_auto", "live_max_position_usd",
+        "live_max_open", "live_daily_limit_usd", "demo_sl_pct", "demo_sl_enabled", "demo_tp1_pct",
+        "demo_tp1_sell_pct", "demo_tp2_pct", "demo_tp2_sell_pct", "demo_tp3_pct", "demo_tp3_sell_pct",
+        "demo_trail_pct", "demo_trail_auto",
     }
     clean = {k: v for k, v in fields.items() if k in allowed}
     if not clean:
@@ -4786,6 +4791,138 @@ def update_user_settings(chat_id: int, fields: dict) -> None:
         with conn.cursor() as cur:
             cur.execute("INSERT INTO user_settings (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING", (int(chat_id),))
             cur.execute(f"UPDATE user_settings SET {', '.join(cols)}, updated_at=NOW() WHERE chat_id=%s", vals + [int(chat_id)])
+        conn.commit()
+
+
+def save_pending_signal(data: dict) -> int:
+    phase = int(data.get("phase") or 1)
+    expiry_minutes = 240 if phase <= 1 else 60 if phase == 2 else 30 if phase == 3 else 360
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO pending_signals (
+                    section, pair, direction, phase, timeframe, quality_grade,
+                    quality_score, signal_data, hl_plan, status, expires_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, NOW() + (%s || ' minutes')::interval)
+                RETURNING id
+                """,
+                (
+                    data.get("section", "perps"),
+                    data.get("pair"),
+                    data.get("direction"),
+                    phase,
+                    data.get("timeframe"),
+                    data.get("quality_grade"),
+                    float(data.get("quality_score") or 0),
+                    json.dumps(data.get("signal_data") or {}),
+                    json.dumps(data.get("hl_plan") or {}),
+                    data.get("status", "pending"),
+                    expiry_minutes,
+                ),
+            )
+            row = cur.fetchone() or {}
+        conn.commit()
+        return int(row.get("id") or 0)
+
+
+def get_pending_signals(section: str = None, active_only: bool = True) -> list:
+    where = []
+    params = []
+    if section:
+        where.append("section=%s")
+        params.append(section)
+    if active_only:
+        where.append("status='pending'")
+        where.append("(expires_at IS NULL OR expires_at > NOW())")
+        where.append("dismissed_at IS NULL")
+    sql = "SELECT * FROM pending_signals"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return [dict(r) for r in cur.fetchall()]
+
+
+def dismiss_pending_signal(id: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE pending_signals SET status='dismissed', dismissed_at=NOW() WHERE id=%s", (int(id),))
+        conn.commit()
+
+
+def expire_old_pending_signals() -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM pending_signals WHERE expires_at IS NOT NULL AND expires_at < NOW()")
+        conn.commit()
+
+
+def get_active_prediction_models() -> list:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM prediction_models WHERE active=TRUE ORDER BY created_at DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+
+def get_prediction_model(id: int) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM prediction_models WHERE id=%s", (int(id),))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def save_prediction_model(data: dict) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO prediction_models (
+                    name, description, active, position_type, categories, min_volume_24h,
+                    min_liquidity, min_yes_pct, max_yes_pct, min_days_to_resolve,
+                    max_days_to_resolve, min_size_usd, max_size_usd, mandatory_checks,
+                    weighted_checks, min_passing_score, sentiment_filter,
+                    auto_trade, auto_trade_threshold
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+                """,
+                (
+                    data.get("name"), data.get("description", ""), bool(data.get("active", True)),
+                    data.get("position_type", "both"), json.dumps(data.get("categories") or []),
+                    float(data.get("min_volume_24h") or 50000), float(data.get("min_liquidity") or 10000),
+                    float(data.get("min_yes_pct") or 30), float(data.get("max_yes_pct") or 70),
+                    int(data.get("min_days_to_resolve") or 1), int(data.get("max_days_to_resolve") or 30),
+                    float(data.get("min_size_usd") or 10), float(data.get("max_size_usd") or 100),
+                    json.dumps(data.get("mandatory_checks") or []), json.dumps(data.get("weighted_checks") or []),
+                    float(data.get("min_passing_score") or 60), data.get("sentiment_filter", "any"),
+                    bool(data.get("auto_trade", False)), float(data.get("auto_trade_threshold") or 75),
+                ),
+            )
+            row = cur.fetchone() or {}
+        conn.commit()
+        return int(row.get("id") or 0)
+
+
+def update_prediction_model(id: int, fields: dict) -> None:
+    if not fields:
+        return
+    sets, vals = [], []
+    for key, value in fields.items():
+        sets.append(f"{key}=%s")
+        vals.append(json.dumps(value) if key in {"categories", "mandatory_checks", "weighted_checks"} else value)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE prediction_models SET {', '.join(sets)} WHERE id=%s", tuple(vals + [int(id)]))
+        conn.commit()
+
+
+def delete_prediction_model(id: int) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM prediction_models WHERE id=%s", (int(id),))
         conn.commit()
 
 

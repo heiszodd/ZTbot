@@ -450,12 +450,33 @@ async def _run_auto_scanner_inner(context) -> None:
         return
 
     scored.sort(key=lambda item: item["prob"]["score"], reverse=True)
-    top3 = scored[:3]
-    log.info("Auto scanner run %s: top 3 from %s qualifying tokens", scan_run_id, len(scored))
+    alert_candidates = [
+        t for t in scored
+        if float(t.get("prob", {}).get("score", 0) or 0) >= 70
+        and str(t.get("prob", {}).get("grade", "F") or "F") in {"A", "B"}
+    ]
+    top3 = alert_candidates[:3]
+    log.info("Auto scanner run %s: %s qualify for telegram alerts from %s scored tokens", scan_run_id, len(top3), len(scored))
+
+    for token in scored:
+        if token in alert_candidates:
+            continue
+        try:
+            db.add_to_watchlist({
+                "contract_address": token["address"],
+                "chain": token.get("chain", "solana"),
+                "symbol": token.get("scan", {}).get("token_symbol", ""),
+                "name": token.get("scan", {}).get("token_name", ""),
+                "status": "watching",
+                "last_score": float(token.get("prob", {}).get("score", 0) or 0),
+                "notes": "Auto-scanner: below Telegram threshold (70+ and grade A/B required)",
+            })
+        except Exception as exc:
+            log.debug("Watchlist save failed for %s: %s", token.get("address", "")[:12], exc)
 
     for rank, token in enumerate(top3, 1):
         try:
-            msg_id = await send_scanner_alert(context, token, rank, scan_run_id, len(scored))
+            msg_id = await send_scanner_alert(context, token, rank, scan_run_id, len(top3))
             db.save_auto_scan_result(
                 {
                     "scan_run_id": scan_run_id,

@@ -1418,3 +1418,73 @@ ALTER TABLE hl_positions
     ADD COLUMN IF NOT EXISTS trailing_stop_pct FLOAT DEFAULT NULL;
 ALTER TABLE hl_positions
     ADD COLUMN IF NOT EXISTS trailing_stop_order_id VARCHAR(50) DEFAULT NULL;
+
+-- Pending phase signals (phase1/2/3 + phase4 audit)
+CREATE TABLE IF NOT EXISTS pending_signals (
+    id              SERIAL PRIMARY KEY,
+    section         VARCHAR(20) DEFAULT 'perps',
+    pair            VARCHAR(20),
+    direction       VARCHAR(20),
+    phase           INT DEFAULT 1,
+    timeframe       VARCHAR(10),
+    quality_grade   VARCHAR(5),
+    quality_score   FLOAT,
+    signal_data     JSONB DEFAULT '{}',
+    hl_plan         JSONB DEFAULT '{}',
+    status          VARCHAR(20) DEFAULT 'pending',
+    created_at      TIMESTAMP DEFAULT NOW(),
+    expires_at      TIMESTAMP,
+    dismissed_at    TIMESTAMP
+);
+
+-- Prediction models for Polymarket
+CREATE TABLE IF NOT EXISTS prediction_models (
+    id                   SERIAL PRIMARY KEY,
+    name                 VARCHAR(100) NOT NULL,
+    description          TEXT,
+    active               BOOLEAN DEFAULT TRUE,
+    position_type        VARCHAR(10) DEFAULT 'both',
+    categories           JSONB DEFAULT '[]',
+    min_volume_24h       FLOAT DEFAULT 50000,
+    min_liquidity        FLOAT DEFAULT 10000,
+    min_yes_pct          FLOAT DEFAULT 30,
+    max_yes_pct          FLOAT DEFAULT 70,
+    min_days_to_resolve  INT DEFAULT 1,
+    max_days_to_resolve  INT DEFAULT 30,
+    min_size_usd         FLOAT DEFAULT 10,
+    max_size_usd         FLOAT DEFAULT 100,
+    mandatory_checks     JSONB DEFAULT '[]',
+    weighted_checks      JSONB DEFAULT '[]',
+    min_passing_score    FLOAT DEFAULT 60,
+    sentiment_filter     VARCHAR(20) DEFAULT 'any',
+    auto_trade           BOOLEAN DEFAULT FALSE,
+    auto_trade_threshold FLOAT DEFAULT 75,
+    signals_today        INT DEFAULT 0,
+    total_signals        INT DEFAULT 0,
+    win_rate             FLOAT DEFAULT 0,
+    created_at           TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_sl_pct FLOAT DEFAULT 20;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_sl_enabled BOOLEAN DEFAULT TRUE;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_tp1_pct FLOAT DEFAULT 50;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_tp1_sell_pct FLOAT DEFAULT 25;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_tp2_pct FLOAT DEFAULT 100;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_tp2_sell_pct FLOAT DEFAULT 25;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_tp3_pct FLOAT DEFAULT 200;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_tp3_sell_pct FLOAT DEFAULT 50;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_trail_pct FLOAT DEFAULT 20;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_trail_auto BOOLEAN DEFAULT FALSE;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_max_position_usd FLOAT DEFAULT 500;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_max_open INT DEFAULT 10;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS live_daily_limit_usd FLOAT DEFAULT 1000;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_sl_pct FLOAT DEFAULT 20;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_sl_enabled BOOLEAN DEFAULT TRUE;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_tp1_pct FLOAT DEFAULT 50;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_tp1_sell_pct FLOAT DEFAULT 25;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_tp2_pct FLOAT DEFAULT 100;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_tp2_sell_pct FLOAT DEFAULT 25;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_tp3_pct FLOAT DEFAULT 200;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_tp3_sell_pct FLOAT DEFAULT 50;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_trail_pct FLOAT DEFAULT 20;
+ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_trail_auto BOOLEAN DEFAULT FALSE;
