@@ -22,6 +22,11 @@ async def master_callback_router(update: Update, context: ContextTypes.DEFAULT_T
 
     await query.answer()
 
+    if data.startswith("nav:") and data != "nav:home":
+        from handlers.commands import handle_nav
+        await handle_nav(update, context)
+        return
+
     if data == "nav:home":
         from handlers.commands import show_home
         await show_home(update, context)
@@ -103,6 +108,9 @@ async def master_callback_router(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "settings:home":
         from handlers.nav_handler import show_settings_home
         await show_settings_home(query, context)
+    elif data == "settings:notifications":
+        from handlers.risk_handler import show_notification_filter
+        await show_notification_filter(query)
     elif data == "settings:wallets":
         from handlers.nav_handler import show_wallet_settings
         await show_wallet_settings(query, context)
@@ -140,6 +148,9 @@ async def master_callback_router(update: Update, context: ContextTypes.DEFAULT_T
         else:
             await handle_degen_cb(update, context)
     elif data.startswith("risk:"):
+        from handlers.risk_handler import handle_risk_cb
+        await handle_risk_cb(update, context)
+    elif data.startswith("filter:"):
         from handlers.risk_handler import handle_risk_cb
         await handle_risk_cb(update, context)
     elif data.startswith("pending:"):
