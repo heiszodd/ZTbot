@@ -73,7 +73,8 @@ def perps_keyboard():
         [InlineKeyboardButton("💰 Risk Settings", callback_data="nav:risk"), InlineKeyboardButton("✅ Checklist", callback_data="nav:checklist")],
         [InlineKeyboardButton("🌐 Market Regime", callback_data="nav:regime"), InlineKeyboardButton("🔔 Notif Filter", callback_data="nav:notif_filter")],
         [InlineKeyboardButton("🎮 Demo Trades", callback_data="demo:perps:home"), InlineKeyboardButton("⏳ Pending", callback_data="nav:pending")],
-        [InlineKeyboardButton("📓 Session Journal", callback_data="nav:session_journal"), InlineKeyboardButton("🏠 Home", callback_data="nav:home")],
+        [InlineKeyboardButton("🔷 Hyperliquid", callback_data="hl:home"), InlineKeyboardButton("📓 Session Log", callback_data="nav:session_journal")],
+        [InlineKeyboardButton("🏠 Home", callback_data="nav:home")],
     ])
 
 

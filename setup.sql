@@ -1098,3 +1098,104 @@ CREATE TABLE IF NOT EXISTS poly_demo_trades (
     outcome          VARCHAR(20),
     resolution_price FLOAT
 );
+
+-- Hyperliquid section (Phase 1)
+CREATE TABLE IF NOT EXISTS hl_account (
+    id               SERIAL PRIMARY KEY,
+    address          VARCHAR(100) NOT NULL UNIQUE,
+    label            VARCHAR(50) DEFAULT 'main',
+    account_value    FLOAT DEFAULT 0,
+    total_margin     FLOAT DEFAULT 0,
+    available_margin FLOAT DEFAULT 0,
+    total_pnl        FLOAT DEFAULT 0,
+    total_pnl_pct    FLOAT DEFAULT 0,
+    last_synced      TIMESTAMP,
+    created_at       TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS hl_positions (
+    id                SERIAL PRIMARY KEY,
+    address           VARCHAR(100) NOT NULL,
+    coin              VARCHAR(20) NOT NULL,
+    side              VARCHAR(10),
+    size              FLOAT DEFAULT 0,
+    entry_price       FLOAT DEFAULT 0,
+    mark_price        FLOAT DEFAULT 0,
+    liquidation_price FLOAT,
+    unrealized_pnl    FLOAT DEFAULT 0,
+    unrealized_pnl_pct FLOAT DEFAULT 0,
+    margin_used       FLOAT DEFAULT 0,
+    leverage          FLOAT DEFAULT 1,
+    position_value    FLOAT DEFAULT 0,
+    funding_since_open FLOAT DEFAULT 0,
+    last_updated      TIMESTAMP DEFAULT NOW(),
+    last_liq_alert    TIMESTAMP,
+    UNIQUE(address, coin)
+);
+
+CREATE TABLE IF NOT EXISTS hl_trade_history (
+    id               SERIAL PRIMARY KEY,
+    address          VARCHAR(100) NOT NULL,
+    coin             VARCHAR(20),
+    side             VARCHAR(10),
+    size             FLOAT,
+    price            FLOAT,
+    pnl              FLOAT DEFAULT 0,
+    fee              FLOAT DEFAULT 0,
+    order_type       VARCHAR(20),
+    closed_pnl       FLOAT DEFAULT 0,
+    timestamp        TIMESTAMP,
+    hl_order_id      VARCHAR(50),
+    created_at       TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS hl_trade_plans (
+    id               SERIAL PRIMARY KEY,
+    address          VARCHAR(100),
+    coin             VARCHAR(20) NOT NULL,
+    side             VARCHAR(10) NOT NULL,
+    order_type       VARCHAR(20) DEFAULT 'limit',
+    entry_price      FLOAT NOT NULL,
+    stop_loss        FLOAT NOT NULL,
+    take_profit_1    FLOAT,
+    take_profit_2    FLOAT,
+    take_profit_3    FLOAT,
+    size_usd         FLOAT NOT NULL,
+    leverage         FLOAT DEFAULT 1,
+    risk_amount      FLOAT,
+    risk_pct         FLOAT,
+    rr_ratio         FLOAT,
+    quality_grade    VARCHAR(5),
+    quality_score    FLOAT,
+    source           VARCHAR(50) DEFAULT 'manual',
+    signal_id        INT,
+    notes            TEXT,
+    status           VARCHAR(20) DEFAULT 'pending',
+    executed         BOOLEAN DEFAULT FALSE,
+    created_at       TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS hl_markets (
+    id               SERIAL PRIMARY KEY,
+    coin             VARCHAR(20) NOT NULL UNIQUE,
+    sz_decimals      INT DEFAULT 0,
+    max_leverage     INT DEFAULT 50,
+    min_size         FLOAT DEFAULT 0.001,
+    tick_size        FLOAT DEFAULT 0.1,
+    funding_rate     FLOAT DEFAULT 0,
+    open_interest    FLOAT DEFAULT 0,
+    day_volume       FLOAT DEFAULT 0,
+    mark_price       FLOAT DEFAULT 0,
+    index_price      FLOAT DEFAULT 0,
+    last_updated     TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS hl_funding_history (
+    id               SERIAL PRIMARY KEY,
+    address          VARCHAR(100),
+    coin             VARCHAR(20),
+    payment          FLOAT,
+    rate             FLOAT,
+    timestamp        TIMESTAMP,
+    created_at       TIMESTAMP DEFAULT NOW()
+);
