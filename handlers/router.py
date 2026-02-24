@@ -56,6 +56,7 @@ async def master_callback_router(update: Update, context: ContextTypes.DEFAULT_T
 
     await query.answer()
 
+    if data.startswith("nav:") and data != "nav:home":
     if raw_data.startswith("nav:") and raw_data != "nav:home":
         from handlers.commands import handle_nav
         await handle_nav(update, context)
