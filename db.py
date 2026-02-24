@@ -3151,6 +3151,13 @@ def get_phases_awaiting_phase4() -> list:
             return cur.fetchall()
 
 
+def get_setup_phase_by_id(setup_phase_id: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM setup_phases WHERE id=%s", (setup_phase_id,))
+            return cur.fetchone()
+
+
 def expire_old_phases() -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:

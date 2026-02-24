@@ -436,6 +436,45 @@ async def handle_alert_response(update, context: ContextTypes.DEFAULT_TYPE):
     if action in ("chk", "mc", "confirm_entry", "confirm_anyway", "revenge_yes", "revenge_no"):
         return await handle_alert_extras(update, context)
 
+    if action == "demo_phase" and len(parts) > 2:
+        from handlers import demo_handler
+
+        setup_phase_id = int(parts[2])
+        setup = db.get_setup_phase_by_id(setup_phase_id)
+        if not setup:
+            await q.message.reply_text("This setup is no longer available for demo entry.")
+            return
+
+        acct = db.get_demo_account("perps")
+        if not acct:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎮 Setup Demo", callback_data="demo:perps:home")]])
+            await q.message.reply_text("You don't have a demo account yet. Set one up first.", reply_markup=kb)
+            return
+
+        lifecycle = db.get_alert_lifecycle(setup_phase_id) or {}
+        risk_amount = float(lifecycle.get("risk_amount") or (float(acct.get("balance") or 0) * 0.005))
+        position_size = float(lifecycle.get("position_size") or (risk_amount * 10))
+        ok, msg = await demo_handler.open_demo_from_signal(context, "perps", {
+            "pair": setup.get("pair"),
+            "direction": setup.get("direction", "BUY"),
+            "entry_price": setup.get("entry_price"),
+            "sl": setup.get("stop_loss"),
+            "tp1": setup.get("tp1"),
+            "tp2": setup.get("tp2"),
+            "tp3": setup.get("tp3"),
+            "position_size_usd": position_size,
+            "risk_amount_usd": risk_amount,
+            "risk_pct": 0.5,
+            "model_id": setup.get("model_id"),
+            "model_name": setup.get("model_name"),
+            "tier": "A",
+            "score": float(lifecycle.get("quality_score") or 0),
+            "source": "phase3_alert",
+            "notes": "Phase 3 one-click demo entry",
+        })
+        await q.message.reply_text(msg)
+        return
+
     key = parts[2]
     pending = _pending.get(key)
     await q.edit_message_reply_markup(reply_markup=None)
