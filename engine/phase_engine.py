@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 import db
 from config import CHAT_ID, SUPPORTED_PAIRS
@@ -275,7 +276,12 @@ async def phase4_check_job(context):
 async def _send_phase4_result(context, existing, result, model, pair):
     passed = result.get("passed", False)
     text = "✅ *Phase 4 Confirmed*\nSetup is following through as expected.\nEntry is valid — manage your position." if passed else "❌ *Phase 4 Failed*\nSetup did not follow through.\nConsider reducing position or exiting."
-    await context.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown")
+    reply_markup = None
+    if passed:
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎮 Demo Trade", callback_data=f"alert:demo_phase:{existing['id']}")],
+        ])
+    await context.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown", reply_markup=reply_markup)
     lc = db.get_alert_lifecycle(existing["id"])
     if lc:
         db.update_alert_lifecycle(lc["id"], {"phase4_result": "confirmed" if passed else "failed", "phase4_message": text, "phase4_sent_at": datetime.utcnow(), "outcome": "active" if passed else "failed"})
