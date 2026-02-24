@@ -140,12 +140,6 @@ async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_auth_callback
 async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    uid = q.from_user.id
-    allowed, reason = check_command_rate(uid)
-    if not allowed:
-        await q.answer(reason, show_alert=True)
-        return
-    await q.answer()
     dest = q.data.split(":")[1]
     if dest == "home":
         await q.message.reply_text(formatters.fmt_landing(), reply_markup=landing_keyboard())

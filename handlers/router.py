@@ -14,6 +14,23 @@ async def master_callback_router(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     data = query.data or ""
 
+    legacy_aliases = {
+        "nav:perps_home": "perps:home",
+        "nav:degen_home": "degen:home",
+        "nav:degen_models": "degen:models",
+        "nav:polymarket_home": "predictions:home",
+        "nav:solana_home": "degen:live",
+        "nav:scan": "perps:scanner",
+        "nav:models": "perps:models",
+        "nav:journal": "perps:journal",
+        "nav:pending": "perps:pending",
+        "nav:risk": "perps:risk",
+        "nav:notif_filter": "settings:notifications",
+        "nav:status": "settings:home",
+        "nav:guide": "help:home",
+    }
+    data = legacy_aliases.get(data, data)
+
     uid = query.from_user.id
     allowed, reason = check_command_rate(uid)
     if not allowed:
@@ -22,7 +39,10 @@ async def master_callback_router(update: Update, context: ContextTypes.DEFAULT_T
 
     await query.answer()
 
-    if data == "nav:home":
+    if data.startswith("nav:") and data != "nav:home" and data not in legacy_aliases:
+        from handlers.commands import handle_nav
+        await handle_nav(update, context)
+    elif data == "nav:home":
         from handlers.commands import show_home
         await show_home(update, context)
     elif data == "perps:home":
@@ -103,6 +123,9 @@ async def master_callback_router(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "settings:home":
         from handlers.nav_handler import show_settings_home
         await show_settings_home(query, context)
+    elif data == "settings:notifications":
+        from handlers.risk_handler import show_notification_filter
+        await show_notification_filter(query)
     elif data == "settings:wallets":
         from handlers.nav_handler import show_wallet_settings
         await show_wallet_settings(query, context)
@@ -140,6 +163,9 @@ async def master_callback_router(update: Update, context: ContextTypes.DEFAULT_T
         else:
             await handle_degen_cb(update, context)
     elif data.startswith("risk:"):
+        from handlers.risk_handler import handle_risk_cb
+        await handle_risk_cb(update, context)
+    elif data.startswith("filter:"):
         from handlers.risk_handler import handle_risk_cb
         await handle_risk_cb(update, context)
     elif data.startswith("pending:"):
