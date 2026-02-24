@@ -2,7 +2,8 @@ import logging
 
 import db
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CallbackQueryHandler, CommandHandler, ConversationHandler, ContextTypes, MessageHandler, Update, filters
+from telegram.ext import CallbackQueryHandler, CommandHandler, ConversationHandler, ContextTypes, MessageHandler, filters
+from telegram import Update
 
 from engine.polymarket.demo_trading import open_poly_demo_trade
 from engine.polymarket.market_reader import fetch_market_by_id, fetch_markets
