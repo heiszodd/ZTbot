@@ -8,6 +8,9 @@ log = logging.getLogger(__name__)
 
 
 async def _run_once(context):
+    from engine.solana.jupiter_quotes import get_swap_quote, USDC_MINT
+    from engine.solana.executor import execute_sol_sell
+    from engine.execution_pipeline import run_execution_pipeline
     with db.get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM auto_sell_configs WHERE active=TRUE")
@@ -56,7 +59,17 @@ async def _run_once(context):
                     conn.commit()
             continue
 
-        db.log_audit(action="auto_sell_trigger", details={"config_id": cfg["id"], "reason": reason, "pct": sell_pct, "price": price}, success=True)
+        token = cfg.get("token_address")
+        symbol = cfg.get("token_symbol") or token[:6]
+        pos = db.get_sol_position(token)
+        tokens_to_sell = float((pos or {}).get("tokens_held") or 0) * sell_pct / 100
+        amount_usd = tokens_to_sell * price
+        quote = await get_swap_quote(input_mint=token, output_mint=USDC_MINT, amount_usd=amount_usd, input_price=price)
+        if "error" in quote:
+            continue
+        plan = {"coin": symbol, "symbol": symbol, "side": "Sell", "token_address": token, "input_mint": token, "output_mint": USDC_MINT, "size_usd": amount_usd, "entry_price": price, "stop_loss": 0, "sell_pct": sell_pct, "tokens_out": quote["tokens_out"], "slippage_bps": quote["slippage_bps"], "raw_quote": quote["raw_quote"]}
+        result = await run_execution_pipeline("solana", plan, execute_sol_sell, 0, context, skip_confirm=True)
+        db.log_audit(action="auto_sell_triggered", details={"token": token, "amount_sold": sell_pct, "trigger_reason": reason, "execution_result": result, "tx_id": result.get("tx_id", "")}, success=bool(result.get("success")))
         with db.get_conn() as conn:
             with conn.cursor() as cur:
                 for col, val in updates:

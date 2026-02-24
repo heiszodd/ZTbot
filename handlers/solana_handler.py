@@ -6,6 +6,8 @@ import db
 from engine.solana.wallet_reader import get_wallet_summary, get_token_price_usd
 from engine.solana.jupiter_quotes import get_swap_quote, format_quote, USDC_MINT
 from engine.solana.trade_planner import generate_trade_plan, format_trade_plan
+from engine.solana.executor import execute_jupiter_swap, execute_sol_sell
+from engine.execution_pipeline import run_execution_pipeline
 from utils.formatting import format_price, format_usd
 
 
@@ -76,6 +78,98 @@ async def handle_get_quote(query, context):
         "BonkMint123... 50\n"
         "(address then USD amount)"
     )
+
+
+async def _setup_default_auto_sell(token_address: str, token_symbol: str, entry_price: float, settings: dict):
+    db.upsert_auto_sell_config(
+        {
+            "token_address": token_address,
+            "token_symbol": token_symbol,
+            "entry_price": entry_price,
+            "stop_loss_pct": settings.get("sol_stop_loss_pct", -20),
+            "tp1_pct": settings.get("sol_tp1_pct", 50),
+            "tp2_pct": settings.get("sol_tp2_pct", 100),
+            "tp3_pct": settings.get("sol_tp3_pct", 200),
+            "tp1_sell_pct": 25,
+            "tp2_sell_pct": 25,
+            "tp3_sell_pct": 50,
+            "active": True,
+        }
+    )
+
+
+async def handle_sol_execute_buy(query, context, token_address, token_symbol, amount_usd, auto_sell=True):
+    quote = await get_swap_quote(input_mint=USDC_MINT, output_mint=token_address, amount_usd=amount_usd, input_price=1.0)
+    if "error" in quote:
+        await query.answer(f"Quote failed: {quote['error']}", show_alert=True)
+        return
+
+    settings = db.get_user_settings(query.message.chat_id)
+    threshold = settings.get("instant_buy_threshold", 50)
+    instant = settings.get("instant_buy_enabled", True)
+    plan = {
+        "coin": token_symbol,
+        "symbol": token_symbol,
+        "side": "Buy",
+        "token_address": token_address,
+        "input_mint": USDC_MINT,
+        "output_mint": token_address,
+        "size_usd": amount_usd,
+        "entry_price": quote["effective_price"],
+        "stop_loss": 0,
+        "slippage_bps": quote["slippage_bps"],
+        "tokens_out": quote["tokens_out"],
+        "raw_quote": quote["raw_quote"],
+    }
+    result = await run_execution_pipeline("solana", plan, execute_jupiter_swap, query.from_user.id, context, skip_confirm=(instant and amount_usd <= threshold))
+    if result.get("pending"):
+        await query.message.reply_text(result["message"], parse_mode="Markdown", reply_markup=result["keyboard"])
+        return
+    if not result.get("success"):
+        await query.message.reply_text(f"❌ Buy failed\n{result.get('error','Unknown error')}")
+        return
+    db.save_sol_position({"token_address": token_address, "token_symbol": token_symbol, "entry_price": plan["entry_price"], "tokens_held": plan["tokens_out"], "cost_basis": amount_usd, "wallet_index": settings.get("active_wallet", 1)})
+    if auto_sell:
+        await _setup_default_auto_sell(token_address, token_symbol, plan["entry_price"], settings)
+    await query.message.reply_text(f"✅ *Bought {token_symbol}*\n[View on Solscan](https://solscan.io/tx/{result['tx_id']})", parse_mode="Markdown")
+
+
+async def handle_sol_execute_sell(query, context, token_address, token_symbol, sell_pct=100):
+    pos = db.get_sol_position(token_address)
+    if not pos:
+        await query.answer("Position not found", show_alert=True)
+        return
+    token_price = await get_token_price_usd(token_address)
+    tokens_to_sell = float(pos.get("tokens_held") or 0) * sell_pct / 100
+    amount_usd = tokens_to_sell * token_price
+    quote = await get_swap_quote(input_mint=token_address, output_mint=USDC_MINT, amount_usd=amount_usd, input_price=token_price)
+    if "error" in quote:
+        await query.answer(f"Quote failed: {quote['error']}", show_alert=True)
+        return
+    plan = {
+        "coin": token_symbol,
+        "symbol": token_symbol,
+        "side": "Sell",
+        "token_address": token_address,
+        "input_mint": token_address,
+        "output_mint": USDC_MINT,
+        "size_usd": amount_usd,
+        "entry_price": token_price,
+        "stop_loss": 0,
+        "sell_pct": sell_pct,
+        "tokens_out": quote["tokens_out"],
+        "slippage_bps": quote["slippage_bps"],
+        "raw_quote": quote["raw_quote"],
+    }
+    result = await run_execution_pipeline("solana", plan, execute_sol_sell, query.from_user.id, context)
+    if result.get("pending"):
+        await query.message.reply_text(result["message"], parse_mode="Markdown", reply_markup=result["keyboard"])
+        return
+    if not result.get("success"):
+        await query.message.reply_text(f"❌ Sell failed\n{result.get('error','?')}")
+        return
+    db.update_sol_position_after_sell(token_address, sell_pct, quote["tokens_out"], token_price)
+    await query.message.reply_text(f"✅ *Sold {sell_pct}% {token_symbol}*\n[View on Solscan](https://solscan.io/tx/{result['tx_id']})", parse_mode="Markdown")
 
 
 @require_auth
@@ -160,23 +254,10 @@ async def handle_solana_cb(update, context):
         return await handle_get_quote(q, context)
     if data.startswith("solana:execute:"):
         _, _, token, amount = data.split(":", 3)
-        plan = await generate_trade_plan(token, token[:6], "buy", float(amount), db.get_latest_auto_scan(token) or {})
-        if plan.get("success"):
-            db.save_solana_trade_plan(
-                {
-                    "token_address": token,
-                    "token_symbol": token[:6],
-                    "action": "buy",
-                    "amount_usd": float(amount),
-                    "entry_price": await get_token_price_usd(token),
-                    "slippage_pct": plan.get("slippage_bps", 100) / 100,
-                    "priority_fee": (plan.get("fees") or {}).get("medium", 5000),
-                    "jupiter_quote": plan.get("quote", {}),
-                    "dex_route": (plan.get("quote") or {}).get("route", ""),
-                    "status": "pending",
-                }
-            )
-        return await q.message.reply_text(format_trade_plan(plan), parse_mode="Markdown")
+        return await handle_sol_execute_buy(q, context, token, token[:6], float(amount), auto_sell=True)
+    if data.startswith("solana:sell:"):
+        _, _, token, pct = data.split(":", 3)
+        return await handle_sol_execute_sell(q, context, token, token[:6], float(pct))
     if data.startswith("solana:save_watch:"):
         token = data.split(":", 2)[2]
         db.add_solana_watchlist({"token_address": token, "token_symbol": token[:6], "status": "watching"})
