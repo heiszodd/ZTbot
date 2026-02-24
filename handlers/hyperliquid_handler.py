@@ -12,6 +12,8 @@ from engine.hyperliquid.analytics import calculate_hl_performance, format_perfor
 from engine.hyperliquid.market_data import fetch_all_markets
 from engine.hyperliquid.trade_planner import format_hl_trade_plan, generate_hl_trade_plan
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from security.auth import require_auth, require_auth_callback
+from security.rate_limiter import check_command_rate
 
 log = logging.getLogger(__name__)
 
