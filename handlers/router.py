@@ -9,10 +9,36 @@ from security.auth import require_auth_callback
 log = logging.getLogger(__name__)
 
 
+def _normalize_callback_data(raw: str) -> str:
+    data = (raw or "").strip().lower()
+    if not data:
+        return ""
+
+    aliases = {
+        "start": "home",
+        "main": "home",
+        "menu": "home",
+        "dashboard": "home",
+        "home:perps": "perps",
+        "home:degen": "degen",
+        "home:predictions": "predictions",
+        "home:settings": "settings",
+        "menu:perps": "perps",
+        "menu:degen": "degen",
+        "menu:predictions": "predictions",
+        "menu:settings": "settings",
+        "nav:perps": "perps",
+        "nav:degen": "degen",
+        "nav:predictions": "predictions",
+        "nav:settings": "settings",
+    }
+    return aliases.get(data, data)
+
+
 @require_auth_callback
 async def route_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    data = query.data or ""
+    data = _normalize_callback_data(query.data)
 
     from security.rate_limiter import check_command_rate
 
@@ -126,6 +152,9 @@ async def route_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return await query.message.edit_text("❌ Trade cancelled.", reply_markup=None)
 
     log.warning("Unhandled callback: %s", data)
+    from handlers.nav import show_home
+
+    await show_home(update, context)
 
 
 async def route_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
