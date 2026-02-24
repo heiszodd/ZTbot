@@ -600,7 +600,7 @@ def main():
     app.add_handler(CallbackQueryHandler(alerts.handle_pending_cb, pattern="^pending:"), group=0)
     app.add_handler(CallbackQueryHandler(demo_handler.handle_demo_cb, pattern="^demo:"), group=0)
     app.add_handler(CallbackQueryHandler(ca_handler.handle_ca_cb, pattern="^ca:"), group=0)
-    app.add_handler(CallbackQueryHandler(solana_handler.handle_solana_cb, pattern="^solana:"), group=0)
+    app.add_handler(CallbackQueryHandler(solana_handler.handle_solana_cb, pattern="^(solana:|sol:)"), group=0)
     app.add_handler(CallbackQueryHandler(polymarket_handler.handle_polymarket_cb, pattern="^poly:"), group=0)
     app.add_handler(CallbackQueryHandler(hyperliquid_handler.handle_hl_cb, pattern="^hl:"), group=0)
     app.add_handler(CallbackQueryHandler(degen_handler.handle_scan_action, pattern=r"^scan:(whitelist|ignore|ape|full):"), group=0)

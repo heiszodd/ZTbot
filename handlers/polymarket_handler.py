@@ -64,6 +64,16 @@ async def handle_poly_demo_trade(query, context, market_id: str):
 
 
 async def handle_poly_live_trade(query, context, market_id: str):
+    market = await fetch_market_by_id(market_id)
+    question = (market or {}).get("question", "Market")
+    short_q = question[:80] + "..." if len(question) > 80 else question
+    await query.message.reply_text(
+        f"📲 *Live Trade Setup*\n{short_q}\n\nChoose side and size:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("YES $10", callback_data=f"poly:execute:{market_id}:YES:10"), InlineKeyboardButton("NO $10", callback_data=f"poly:execute:{market_id}:NO:10")],
+            [InlineKeyboardButton("YES $25", callback_data=f"poly:execute:{market_id}:YES:25"), InlineKeyboardButton("NO $25", callback_data=f"poly:execute:{market_id}:NO:25")],
+            [InlineKeyboardButton("YES $50", callback_data=f"poly:execute:{market_id}:YES:50"), InlineKeyboardButton("NO $50", callback_data=f"poly:execute:{market_id}:NO:50")],
     await query.message.reply_text(
         "Choose side and size:",
         reply_markup=InlineKeyboardMarkup([
@@ -153,6 +163,12 @@ async def handle_polymarket_cb(update, context):
         return await show_poly_sentiment(q, context)
     if data.startswith("poly:live:"):
         return await handle_poly_live_trade(q, context, data.split(":", 2)[2])
+    if data == "poly:live_top":
+        results = await run_market_scanner()
+        pools = (results or {}).get("high_volume", []) or (results or {}).get("uncertain", [])
+        if not pools:
+            return await q.message.reply_text("No scanner markets available right now.")
+        return await handle_poly_live_trade(q, context, pools[0]["market_id"])
     if data.startswith("poly:execute:"):
         _, _, market_id, side, size = data.split(":", 4)
         return await handle_poly_execute_trade(q, context, market_id, side, float(size))

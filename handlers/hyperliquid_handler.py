@@ -56,6 +56,7 @@ async def show_hl_home(query, context):
     lines = [
         "🔷 *Hyperliquid Dashboard*",
         "",
+        "⚡ *Phase 2 Live Trading Enabled*",
         f"Address: `{short_addr}`",
         f"Account Value: ${summary.get('account_value', 0):,.2f}",
         f"Available: ${summary.get('available', 0):,.2f}",
@@ -158,7 +159,7 @@ async def handle_hl_live_plan(query, context):
     }
     plan = await generate_hl_trade_plan(signal)
     await query.message.reply_text(
-        format_hl_trade_plan(plan),
+        format_hl_trade_plan(plan) + "\n\n⚡ *Phase 2*: confirm to place a real signed order.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📲 Execute Live", callback_data=f"hl:execute:{setup_id}"), InlineKeyboardButton("📋 Save Plan", callback_data=f"hl:save_plan:{setup_id}")],

@@ -29,9 +29,8 @@ async def show_solana_home(query, context):
             "No wallet connected yet.\n\n"
             "To get started, provide your\n"
             "Solana *public key* (wallet address).\n\n"
-            "⚠️ _Phase 1: read-only monitoring._\n"
-            "_No private keys needed yet._\n"
-            "_Auto-trading comes in Phase 2._"
+            "⚡ *Phase 2 Live Execution Ready*\n"
+            "Connect wallet to enable live Jupiter swaps."
         )
         buttons = [[InlineKeyboardButton(mode_label, callback_data="solana:toggle_mode")],[InlineKeyboardButton("🔑 Connect Wallet", callback_data="solana:connect")], [InlineKeyboardButton("🏠 Home", callback_data="nav:home")]]
     else:
@@ -50,9 +49,14 @@ async def show_solana_home(query, context):
             for t in summary["other_tokens"][:5]:
                 short_mint = t["mint"][:6] + "..." + t["mint"][-4:]
                 text += f"  {short_mint}: ${t['usd_val']:.2f}\n"
-        text += f"\n*Total: {format_usd(summary['total_usd'])}*\n"
+        text += (
+            f"\n*Total: {format_usd(summary['total_usd'])}*\n\n"
+            "⚡ *Phase 2 Live Trading Enabled*\n"
+            "Use Quick Buy, Quote, or CA-detected buy actions to execute live swaps."
+        )
         buttons = [[InlineKeyboardButton(mode_label, callback_data="solana:toggle_mode")],
             [InlineKeyboardButton("🔄 Refresh Balance", callback_data="solana:refresh")],
+            [InlineKeyboardButton("🟢 Quick Buy $25", callback_data="sol:quick_buy:25"), InlineKeyboardButton("🟢 Quick Buy $50", callback_data="sol:quick_buy:50")],
             [InlineKeyboardButton("📋 Trade Plans", callback_data="solana:plans"), InlineKeyboardButton("👁 Watchlist", callback_data="solana:watchlist")],
             [InlineKeyboardButton("💱 Get Quote", callback_data="solana:quote")],
             [InlineKeyboardButton("🏠 Home", callback_data="nav:home")],
@@ -220,7 +224,7 @@ async def handle_solana_text(update, context):
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(
                 [
-                    [InlineKeyboardButton("📲 Execute Manually", callback_data=f"solana:execute:{token}:{amount}")],
+                    [InlineKeyboardButton("📲 Execute Live Buy", callback_data=f"sol:execute:{token}:{amount}")],
                     [InlineKeyboardButton("💾 Save to Watchlist", callback_data=f"solana:save_watch:{token}")],
                     [InlineKeyboardButton("❌ Cancel", callback_data="solana:cancel")],
                 ]
@@ -242,6 +246,8 @@ async def handle_solana_cb(update, context):
         return
     await q.answer()
     data = q.data
+    if data.startswith("sol:"):
+        data = "solana:" + data[len("sol:"):]
     if data == "solana:toggle_mode":
         st = db.get_user_settings(q.message.chat_id)
         db.update_user_settings(q.message.chat_id, {"sol_mode": "advanced" if st.get("sol_mode") == "simple" else "simple"})
@@ -258,6 +264,14 @@ async def handle_solana_cb(update, context):
     if data.startswith("solana:sell:"):
         _, _, token, pct = data.split(":", 3)
         return await handle_sol_execute_sell(q, context, token, token[:6], float(pct))
+    if data.startswith("solana:quick_buy:"):
+        _, _, amount = data.split(":", 2)
+        await q.message.reply_text(
+            "Paste token address to execute quick buy amount:\n"
+            f"${float(amount):.0f}\n\n"
+            "Then tap quote -> execute live."
+        )
+        return
     if data.startswith("solana:save_watch:"):
         token = data.split(":", 2)[2]
         db.add_solana_watchlist({"token_address": token, "token_symbol": token[:6], "status": "watching"})

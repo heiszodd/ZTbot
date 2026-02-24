@@ -1514,6 +1514,11 @@ async def handle_setup(update, context):
         return await update.message.reply_text(
             "Solana Phase 2 Setup\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "1. Generate new keypair (dedicated bot wallet)\n"
+            "2. Fund with max $500 USDC + 0.1 SOL\n"
+            "3. Copy private key (base58 or byte-array)\n"
+            "4. Send: /addkey sol_hot_wallet\n\n"
+            "⚠️ Keep this wallet small. Only fund what you can risk."
             "1. Generate new keypair\n2. Fund with max $500 USDC + 0.1 SOL\n"
             "3. Copy private key\n4. Send: /addkey sol_hot_wallet"
         )
@@ -1521,6 +1526,13 @@ async def handle_setup(update, context):
         return await update.message.reply_text(
             "Polymarket Phase 2 Setup\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "1. Create Polygon hot wallet + fund with USDC\n"
+            "2. polymarket.com → Profile → API Keys → Generate\n"
+            "3. Store all credentials:\n"
+            "/addkey poly_hot_wallet\n"
+            "/addkey poly_api_key\n"
+            "/addkey poly_api_secret\n"
+            "/addkey poly_api_passphrase"
             "Run:\n/addkey poly_hot_wallet\n/addkey poly_api_key\n/addkey poly_api_secret\n/addkey poly_api_passphrase"
         )
     await update.message.reply_text("Unknown section. Use /setup hl, /setup sol, or /setup poly")
