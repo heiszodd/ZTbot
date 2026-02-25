@@ -3,7 +3,7 @@
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
-from . import phase_engine, rules, session_journal
+from . import ict_engine, phase_engine, rules, session_journal
 
 _legacy = None
 legacy_path = Path(__file__).resolve().parent.parent / "engine.py"
@@ -20,4 +20,4 @@ def __getattr__(name):
     raise AttributeError(name)
 
 
-__all__ = ["phase_engine", "rules", "session_journal"]
+__all__ = ["ict_engine", "phase_engine", "rules", "session_journal"]
