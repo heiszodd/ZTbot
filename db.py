@@ -358,6 +358,7 @@ def setup_db():
     ALTER TABLE models ADD COLUMN IF NOT EXISTS regime_managed BOOLEAN DEFAULT FALSE;
     ALTER TABLE models ADD COLUMN IF NOT EXISTS quality_grade VARCHAR(5);
     ALTER TABLE models ADD COLUMN IF NOT EXISTS min_quality_grade VARCHAR(5);
+    ALTER TABLE models ADD COLUMN IF NOT EXISTS features JSONB DEFAULT '[]';
 
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
     ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS direction VARCHAR(20) DEFAULT 'Bullish';
@@ -1310,11 +1311,11 @@ def save_model(model: dict) -> str:
             cur.execute("""
                 INSERT INTO models
                     (id, name, pair, timeframe, session, bias,
-                     status, rules, phase_timeframes, tier_a_threshold,
+                     status, rules, features, phase_timeframes, tier_a_threshold,
                      tier_b_threshold, tier_c_threshold, rr_target,
                      min_score, description, created_at, updated_at)
                 VALUES
-                    (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+                    (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
                 ON CONFLICT (id) DO UPDATE SET
                     name             = EXCLUDED.name,
                     pair             = EXCLUDED.pair,
@@ -1322,6 +1323,7 @@ def save_model(model: dict) -> str:
                     session          = EXCLUDED.session,
                     bias             = EXCLUDED.bias,
                     rules            = EXCLUDED.rules,
+                    features         = EXCLUDED.features,
                     phase_timeframes = EXCLUDED.phase_timeframes,
                     tier_a_threshold = EXCLUDED.tier_a_threshold,
                     tier_b_threshold = EXCLUDED.tier_b_threshold,
@@ -1340,6 +1342,7 @@ def save_model(model: dict) -> str:
                 model.get("bias", "Both"),
                 model.get("status", "inactive"),
                 json.dumps(model.get("rules", [])),
+                json.dumps(model.get("features", [])),
                 json.dumps(model.get("phase_timeframes", {"1":"4h","2":"1h","3":"15m","4":"5m"})),
                 model.get("tier_a_threshold", 0),
                 model.get("tier_b_threshold", 0),
