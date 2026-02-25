@@ -1,6 +1,6 @@
-import functools
 import logging
 import os
+from functools import wraps
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -8,39 +8,19 @@ from telegram.ext import ContextTypes
 log = logging.getLogger(__name__)
 
 
-def _parse_allowed_ids(raw: str) -> set[int]:
-    ids: set[int] = set()
-    for part in (raw or "").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            ids.add(int(part))
-        except ValueError:
-            log.warning("Invalid user ID in ALLOWED_USER_IDS: %s", part)
-    return ids
-
-
 def _get_allowed_ids() -> set[int]:
-    ids = _parse_allowed_ids(os.getenv("ALLOWED_USER_IDS", ""))
+    raw = os.getenv("ALLOWED_USER_IDS", "")
+    if not raw:
+        log.warning("ALLOWED_USER_IDS not set — all users allowed (dev mode)")
+        return set()
 
-    # Safety fallback: if ALLOWED_USER_IDS isn't configured,
-    # still allow configured CHAT_ID owner account.
-    if not ids:
-        try:
-            from config import CHAT_ID
-
-            ids.add(int(CHAT_ID))
-            log.warning(
-                "ALLOWED_USER_IDS empty; falling back to CHAT_ID=%s for owner access.",
-                CHAT_ID,
-            )
-        except Exception as exc:
-            log.critical("Auth fallback failed (CHAT_ID unavailable): %s", exc)
-
-    if not ids:
-        log.critical("No allowed users resolved; bot will reject all users.")
-
+    ids: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+        elif part:
+            log.warning("Invalid user ID in ALLOWED_USER_IDS: %s", part)
     return ids
 
 
@@ -48,6 +28,8 @@ ALLOWED_USER_IDS = _get_allowed_ids()
 
 
 def is_authorised(user_id: int) -> bool:
+    if not ALLOWED_USER_IDS:
+        return True
     return user_id in ALLOWED_USER_IDS
 
 
@@ -66,23 +48,6 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
         user.full_name,
     )
 
-    try:
-        import db
-
-        db.log_audit(
-            action="unauthorised_access",
-            details={
-                "user_id": user.id,
-                "username": user.username,
-                "name": user.full_name,
-            },
-            user_id=user.id,
-            success=False,
-            error="User not in whitelist",
-        )
-    except Exception:
-        pass
-
     if update.message:
         await update.message.reply_text(
             "⛔ Access denied.\n"
@@ -93,27 +58,29 @@ async def check_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
     return False
 
 
-def require_auth(func):
-    @functools.wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        if not await check_auth(update, context):
+def require_auth(fn):
+    @wraps(fn)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *a, **kw):
+        uid = update.effective_user.id
+        if not is_authorised(uid):
+            log.warning("Unauthorised: %s", uid)
             return
-        return await func(update, context, *args, **kwargs)
+        return await fn(update, context, *a, **kw)
 
     return wrapper
 
 
-def require_auth_callback(func):
-    @functools.wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+def require_auth_callback(fn):
+    @wraps(fn)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *a, **kw):
         query = update.callback_query
-        user = query.from_user if query else None
-        uid = user.id if user else 0
-        if not is_authorised(uid):
-            log.warning("UNAUTHORISED CALLBACK: user_id=%s data=%s", uid, query.data if query else "?")
-            if query:
-                await query.answer(f"Unauthorised. Your ID: {uid}", show_alert=True)
+        if not query:
             return
-        return await func(update, context, *args, **kwargs)
+        uid = query.from_user.id
+        if not is_authorised(uid):
+            log.warning("Unauthorised callback: %s", uid)
+            await query.answer()
+            return
+        return await fn(update, context, *a, **kw)
 
     return wrapper

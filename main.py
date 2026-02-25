@@ -10,9 +10,6 @@ from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from config import TOKEN as TELEGRAM_BOT_TOKEN
-from handlers.commands import cmd_help, cmd_resume, cmd_security, cmd_start, cmd_stop
-from handlers.router import route_callback, route_text_message
-from handlers.wallet_setup import hl_setup_conv, poly_setup_conv, sol_setup_conv
 
 from engine.phase_engine import run_phase_engine
 from engine.hyperliquid.monitor import run_hl_monitor
@@ -39,7 +36,7 @@ async def post_init(app):
     if ALLOWED_USER_IDS:
         log.info("✅ Auth: %s user(s)", len(ALLOWED_USER_IDS))
     else:
-        log.critical("❌ ALLOWED_USER_IDS empty")
+        log.warning("⚠️ ALLOWED_USER_IDS empty (dev mode: all users allowed)")
 
     from security.emergency_stop import is_halted
 
@@ -54,9 +51,15 @@ async def post_init(app):
 def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
+    # Conversation handlers (if any) first.
+    from handlers.wallet_setup import hl_setup_conv, poly_setup_conv, sol_setup_conv
+
     app.add_handler(hl_setup_conv)
     app.add_handler(sol_setup_conv)
     app.add_handler(poly_setup_conv)
+
+    # Commands.
+    from handlers.commands import cmd_help, cmd_resume, cmd_security, cmd_start, cmd_stop
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("stop", cmd_stop))
@@ -64,7 +67,14 @@ def main():
     app.add_handler(CommandHandler("security", cmd_security))
     app.add_handler(CommandHandler("help", cmd_help))
 
+    # Free text message routing.
+    from handlers.router import route_text_message
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_text_message))
+
+    # One master callback router, last.
+    from handlers.router import route_callback
+
     app.add_handler(CallbackQueryHandler(route_callback))
 
     jq = app.job_queue
