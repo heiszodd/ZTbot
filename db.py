@@ -4884,6 +4884,14 @@ def update_user_settings(chat_id: int, fields: dict) -> None:
 def save_pending_signal(data: dict) -> int:
     phase = int(data.get("phase") or 1)
     expiry_minutes = 240 if phase <= 1 else 60 if phase == 2 else 30 if phase == 3 else 360
+    expires_at = data.get("expires_at")
+    if expires_at:
+        try:
+            expires_at = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        except Exception:
+            expires_at = None
+    if not expires_at:
+        expires_at = datetime.utcnow() + timedelta(minutes=expiry_minutes)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -4891,7 +4899,7 @@ def save_pending_signal(data: dict) -> int:
                 INSERT INTO pending_signals (
                     section, pair, direction, phase, timeframe, quality_grade,
                     quality_score, signal_data, hl_plan, status, expires_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, NOW() + (%s || ' minutes')::interval)
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING id
                 """,
                 (
@@ -4905,7 +4913,7 @@ def save_pending_signal(data: dict) -> int:
                     json.dumps(data.get("signal_data") or {}),
                     json.dumps(data.get("hl_plan") or {}),
                     data.get("status", "pending"),
-                    expiry_minutes,
+                    expires_at,
                 ),
             )
             row = cur.fetchone() or {}
@@ -5721,6 +5729,16 @@ def save_hl_trailing_stop(coin: str, pct: float) -> None:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE hl_positions SET trailing_stop_pct=%s WHERE coin=%s AND status='open'", (pct, coin))
+        conn.commit()
+
+
+def save_hl_trailing_stop_order_id(coin: str, order_id: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE hl_positions SET trailing_stop_order_id=%s WHERE coin=%s AND status='open'",
+                (str(order_id), coin),
+            )
         conn.commit()
 
 
