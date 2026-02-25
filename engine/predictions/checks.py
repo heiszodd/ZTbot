@@ -1,81 +1,96 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from typing import Any
+
+import pandas as pd
+
+from engine.ict_engine import ConfluenceEngine, FeatureLayer, ModelFactory
 
 
-def _safe(fn, market: dict, model: dict) -> bool:
-    try:
-        return bool(fn(market, model))
-    except Exception:
-        return False
+def _coerce_model_features(model: dict[str, Any]) -> list[dict[str, Any]]:
+    """Resolve merge-conflicting model schemas into ICT feature config.
+
+    Supports both:
+    - new schema: {features:[...]}
+    - transitional schema: {conditions:[...]}
+    - legacy prediction schema: {mandatory_checks:[...], weighted_checks:[...]}
+    """
+    if model.get("features"):
+        return list(model.get("features") or [])
+    if model.get("conditions"):
+        return list(model.get("conditions") or [])
+
+    # Legacy fallback mapping (best-effort).
+    mapped: list[dict[str, Any]] = []
+    for name in model.get("mandatory_checks", []) or []:
+        mapped.append({"type": str(name), "tf": "5m", "weight": 1.0})
+    for wc in model.get("weighted_checks", []) or []:
+        mapped.append(
+            {
+                "type": str(wc.get("check", "unknown")),
+                "tf": str(wc.get("tf", "5m")),
+                "weight": float(wc.get("weight", 1.0) or 1.0),
+            }
+        )
+    return mapped
 
 
-def _days_to_resolve(market: dict) -> float:
-    ts = market.get("resolve_at") or market.get("end_date")
-    if not ts:
-        return 999
-    if isinstance(ts, str):
-        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    return max(0.0, (ts - datetime.now(timezone.utc)).total_seconds() / 86400)
+def _coerce_ohlcv_payload(market: dict[str, Any]) -> dict[str, pd.DataFrame]:
+    raw = market.get("ohlcv") or market.get("tf_ohlcv") or {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, pd.DataFrame] = {}
+    for tf, frame in raw.items():
+        if isinstance(frame, pd.DataFrame) and not frame.empty:
+            out[str(tf)] = frame
+    return out
 
 
-CHECKS = {
-    "check_min_volume": lambda m, o: float(m.get("volume_24h", 0) or 0) >= float(o.get("min_volume_24h", 0) or 0),
-    "check_min_liquidity": lambda m, o: float(m.get("liquidity", 0) or 0) >= float(o.get("min_liquidity", 0) or 0),
-    "check_not_resolved": lambda m, o: bool(m.get("resolved", False)) is False,
-    "check_resolves_in_range": lambda m, o: float(o.get("min_days_to_resolve", 0) or 0) <= _days_to_resolve(m) <= float(o.get("max_days_to_resolve", 999) or 999),
-    "check_active_market": lambda m, o: bool(m.get("active", True)) is True,
-    "check_has_counterparty": lambda m, o: float(m.get("yes_liquidity", 0) or 0) > 0 and float(m.get("no_liquidity", 0) or 0) > 0,
-    "check_yes_in_range": lambda m, o: float(o.get("min_yes_pct", 0) or 0) <= float(m.get("yes_pct", 0) or 0) <= float(o.get("max_yes_pct", 100) or 100),
-    "check_uncertain_market": lambda m, o: 40 <= float(m.get("yes_pct", 0) or 0) <= 60,
-    "check_mispriced_yes": lambda m, o: float(m.get("yes_pct", 100) or 100) < 30 and str(m.get("sentiment", "")).lower() == "bullish",
-    "check_mispriced_no": lambda m, o: float(m.get("yes_pct", 0) or 0) > 70 and str(m.get("sentiment", "")).lower() == "bearish",
-    "check_probability_trending_up": lambda m, o: float(m.get("yes_pct", 0) or 0) > float(m.get("yes_pct_24h_ago", 0) or 0),
-    "check_probability_trending_down": lambda m, o: float(m.get("yes_pct", 0) or 0) < float(m.get("yes_pct_24h_ago", 0) or 0),
-    "check_crypto_category": lambda m, o: "crypto" in str(m.get("category", "")).lower(),
-    "check_macro_category": lambda m, o: "macro" in str(m.get("category", "")).lower(),
-    "check_sentiment_aligned": lambda m, o: str(o.get("sentiment_filter", "any")).lower() in {"any", str(m.get("sentiment", "")).lower()},
-    "check_correlated_with_perps": lambda m, o: bool(m.get("perps_aligned", False)),
-    "check_high_volume_spike": lambda m, o: float(m.get("volume_24h", 0) or 0) > 3 * max(float(m.get("volume_7d_avg", 1) or 1), 1),
-}
+async def evaluate_market_against_model(market: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate dynamic ICT model against multi-timeframe OHLCV payload."""
 
+    ohlcv = _coerce_ohlcv_payload(market)
+    if not ohlcv:
+        return {"passed": False, "score": 0.0, "grade": "F", "reason": "missing_ohlcv", "triggered_features": []}
 
-async def evaluate_market_against_model(market: dict, model: dict) -> dict:
-    passed_checks, failed_checks, mandatory_fails = [], [], []
-    weighted_score, total_weight = 0.0, 0.0
+    features = _coerce_model_features(model)
+    if not features:
+        return {"passed": False, "score": 0.0, "grade": "F", "reason": "missing_model_features", "triggered_features": []}
 
-    for name in model.get("mandatory_checks", []):
-        fn = CHECKS.get(name)
-        if not fn:
-            continue
-        if _safe(fn, market, model):
-            passed_checks.append(name)
-        else:
-            mandatory_fails.append(name)
+    ict_model = ModelFactory.create_model(
+        {
+            "name": model.get("name", "ICT_DYNAMIC_MODEL"),
+            "features": features,
+            "min_score": model.get("min_score", model.get("min_passing_score", 3)),
+            "max_time_delta": model.get("max_time_delta", 180),
+            "price_proximity_threshold": model.get("price_proximity_threshold", 0.3),
+        }
+    )
 
-    if mandatory_fails:
-        return {"passed": False, "score": 0.0, "grade": "F", "passed_checks": passed_checks, "failed_checks": mandatory_fails, "mandatory_fails": mandatory_fails}
+    layer = FeatureLayer()
+    event_map: dict[str, list[dict[str, Any]]] = {}
+    for tf, frame in ohlcv.items():
+        _, structure_events = layer.detect_structure_events(frame)
+        sweeps = layer.detect_liquidity_sweeps(frame)
+        fvgs = layer.detect_fvg(frame)
+        event_map[tf] = structure_events + sweeps + fvgs
 
-    for wc in model.get("weighted_checks", []):
-        name = wc.get("check", "")
-        weight = float(wc.get("weight", 1) or 1)
-        fn = CHECKS.get(name)
-        if not fn:
-            continue
-        total_weight += weight
-        if _safe(fn, market, model):
-            weighted_score += weight
-            passed_checks.append(name)
-        else:
-            failed_checks.append(name)
+    price = float(market.get("price") or 0.0)
+    if price <= 0:
+        first_df = next(iter(ohlcv.values()))
+        price = float(first_df["close"].iloc[-1])
 
-    score = weighted_score / total_weight * 100 if total_weight else 0
-    grade = "A" if score >= 85 else "B" if score >= 70 else "C" if score >= 55 else "D" if score >= 40 else "F"
+    confluence = ConfluenceEngine().evaluate(ict_model, event_map, price=price)
+    score = float(confluence["score"])
+    grade = "A" if score >= ict_model.min_score * 1.25 else "B" if score >= ict_model.min_score else "C" if score >= ict_model.min_score * 0.8 else "F"
     return {
-        "passed": score >= float(model.get("min_passing_score", 60) or 60),
-        "score": round(score, 1),
+        "passed": bool(confluence["passed"]),
+        "score": round(score, 3),
         "grade": grade,
-        "passed_checks": passed_checks,
-        "failed_checks": failed_checks,
-        "mandatory_fails": [],
+        "triggered_features": confluence["triggered_features"],
+        "confidence_score": confluence["confidence_score"],
+        "direction": confluence["direction"],
+        "time_span_minutes": confluence["time_span_minutes"],
+        "hierarchy_ok": confluence["hierarchy_ok"],
+        "directional_ok": confluence["directional_ok"],
     }
