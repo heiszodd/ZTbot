@@ -108,6 +108,10 @@ async def _route(query, data, update, context):
                 await p.handle_perps_model_delete(query, context, data.split(":", 3)[-1])
             elif data == "perps:models:master":
                 await p.show_perps_master_model(query, context)
+            elif data == "perps:models:master:seed":
+                await p.handle_perps_master_model_seed(query, context)
+            elif data == "perps:models:master:activate":
+                await p.handle_perps_master_model_activate(query, context)
             elif data == "perps:journal":
                 await p.show_perps_journal(query, context)
             elif data in {"perps:live", "hl:refresh"}:

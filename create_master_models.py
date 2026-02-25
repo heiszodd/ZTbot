@@ -88,6 +88,7 @@ def seed_dynamic_models() -> list[str]:
             "name": "BOS_Sweep_FVG_Model",
             "pair": "BTCUSDT",
             "timeframe": "5m",
+            "status": "active",
             "features": [
                 {"type": "BOS", "tf": "4h", "direction": "bullish", "weight": 2.0},
                 {"type": "LiquiditySweep", "tf": "15m", "direction": "bullish", "weight": 1.0},
@@ -97,7 +98,37 @@ def seed_dynamic_models() -> list[str]:
             "max_time_delta": 180,
             "price_proximity_threshold": 0.3,
             "description": "HTF BOS + ITF sweep + LTF FVG CE continuation model.",
-        }
+        },
+        {
+            "name": "CHOCH_OB_Reversal_Model",
+            "pair": "ETHUSDT",
+            "timeframe": "5m",
+            "status": "active",
+            "features": [
+                {"type": "CHoCH", "tf": "1h", "direction": "bearish", "weight": 2.0},
+                {"type": "OrderBlock", "tf": "15m", "direction": "bearish", "weight": 1.5},
+                {"type": "FVG", "tf": "5m", "entry": "CE", "direction": "bearish", "weight": 1.5},
+            ],
+            "min_score": 3.5,
+            "max_time_delta": 150,
+            "price_proximity_threshold": 0.35,
+            "description": "Market-structure shift into OB retest with LTF inefficiency trigger.",
+        },
+        {
+            "name": "MSS_Breaker_Continuation_Model",
+            "pair": "SOLUSDT",
+            "timeframe": "5m",
+            "status": "active",
+            "features": [
+                {"type": "MSS", "tf": "4h", "direction": "bullish", "weight": 1.5},
+                {"type": "Breaker", "tf": "15m", "direction": "bullish", "weight": 1.5},
+                {"type": "FVG", "tf": "5m", "entry": "CE", "direction": "bullish", "weight": 1.0},
+            ],
+            "min_score": 3,
+            "max_time_delta": 180,
+            "price_proximity_threshold": 0.3,
+            "description": "Continuation model after MSS + breaker mitigation with LTF trigger.",
+        },
     ]
 
     ids: list[str] = []
