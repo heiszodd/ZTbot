@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+
 OHLCV_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 
 
 @dataclass
-class FeatureCondition:
+class ModelCondition:
     type: str
     tf: str
     direction: str | None = None
@@ -19,12 +20,11 @@ class FeatureCondition:
 
 
 @dataclass
-class ICTModel:
+class TradingModel:
     name: str
-    features: list[FeatureCondition]
+    conditions: list[ModelCondition]
     min_score: float
     max_time_delta: int
-    price_proximity_threshold: float
 
 
 @dataclass
@@ -37,11 +37,6 @@ class TradeSignal:
     risk_reward: float
     confluences_triggered: list[str]
     confidence_score: float
-
-
-# Compatibility aliases for merged branches.
-ModelCondition = FeatureCondition
-TradingModel = ICTModel
 
 
 @dataclass
@@ -57,331 +52,338 @@ class Zone:
     invalidated_idx: int | None = None
 
 
-class DataLayer:
-    """OHLCV ingestion and deterministic timeframe resampling."""
+class ICTStructureEngine:
+    """Production-oriented ICT structure intelligence layer built only from OHLCV data.
 
-    TF_MINUTES = {
-        "1m": 1,
-        "3m": 3,
-        "5m": 5,
-        "15m": 15,
-        "30m": 30,
-        "1h": 60,
-        "2h": 120,
-        "4h": 240,
-        "1d": 1440,
-    }
+    The engine is deterministic and backtest-safe:
+    * no repainting (swing points only become actionable after right-side candles close)
+    * no future candle leakage (all event timestamps are generated with confirmation delay)
+    * pandas-first API for batched backtests and efficient live incremental updates.
+    """
+
+    def __init__(self, swing_window: int = 3, regime_window: int = 20, liquidity_lookback: int = 100):
+        self.swing_window = int(max(2, swing_window))
+        self.regime_window = int(max(5, regime_window))
+        self.liquidity_lookback = int(max(20, liquidity_lookback))
+        self.order_blocks: list[Zone] = []
 
     @staticmethod
     def validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
         missing = [c for c in OHLCV_COLUMNS if c not in df.columns]
         if missing:
             raise ValueError(f"Missing OHLCV columns: {missing}")
-        out = df.loc[:, OHLCV_COLUMNS].copy()
-        out["timestamp"] = pd.to_datetime(out["timestamp"], unit="ms", errors="coerce").fillna(pd.to_datetime(out["timestamp"], errors="coerce"))
-        for c in ["open", "high", "low", "close", "volume"]:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
-        out = out.dropna(subset=["timestamp", "open", "high", "low", "close"]).sort_values("timestamp").reset_index(drop=True)
-        return out
-
-    def resample(self, df: pd.DataFrame, tf: str) -> pd.DataFrame:
-        base = self.validate_ohlcv(df)
-        if tf not in self.TF_MINUTES:
-            raise ValueError(f"Unsupported timeframe '{tf}'")
-        if tf == "1m":
-            return base
-        out = (
-            base.set_index("timestamp")
-            .resample(f"{self.TF_MINUTES[tf]}min", label="left", closed="left")
-            .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
-            .dropna(subset=["open", "high", "low", "close"])
-            .reset_index()
+        frame = df.loc[:, OHLCV_COLUMNS].copy()
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], unit="ms", errors="coerce").fillna(
+            pd.to_datetime(frame["timestamp"], errors="coerce")
         )
-        return out
-
-
-class FeatureLayer:
-    """ICT feature calculations with no future leakage."""
-
-    def __init__(self, swing_window: int = 3, regime_window: int = 20, liquidity_lookback: int = 120):
-        self.data = DataLayer()
-        self.swing_window = max(2, int(swing_window))
-        self.regime_window = max(5, int(regime_window))
-        self.liquidity_lookback = max(20, int(liquidity_lookback))
-        self.order_blocks: list[Zone] = []
+        for c in ["open", "high", "low", "close", "volume"]:
+            frame[c] = pd.to_numeric(frame[c], errors="coerce")
+        frame = frame.dropna(subset=["timestamp", "open", "high", "low", "close"]).reset_index(drop=True)
+        return frame
 
     @staticmethod
     def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
         prev_close = df["close"].shift(1)
-        tr = pd.concat([
-            (df["high"] - df["low"]).abs(),
-            (df["high"] - prev_close).abs(),
-            (df["low"] - prev_close).abs(),
-        ], axis=1).max(axis=1)
+        tr = pd.concat(
+            [
+                (df["high"] - df["low"]).abs(),
+                (df["high"] - prev_close).abs(),
+                (df["low"] - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
         return tr.rolling(period, min_periods=period).mean()
 
     def detect_swings(self, df: pd.DataFrame) -> pd.DataFrame:
-        frame = self.data.validate_ohlcv(df)
+        frame = self.validate_ohlcv(df)
         n = self.swing_window
+        high = frame["high"]
+        low = frame["low"]
 
-        ph = frame["high"].shift(1).rolling(n, min_periods=n).max()
-        nh = frame["high"].iloc[::-1].shift(1).rolling(n, min_periods=n).max().iloc[::-1]
-        pl = frame["low"].shift(1).rolling(n, min_periods=n).min()
-        nl = frame["low"].iloc[::-1].shift(1).rolling(n, min_periods=n).min().iloc[::-1]
+        prev_high_max = high.shift(1).rolling(n, min_periods=n).max()
+        next_high_max = high.iloc[::-1].shift(1).rolling(n, min_periods=n).max().iloc[::-1]
+        prev_low_min = low.shift(1).rolling(n, min_periods=n).min()
+        next_low_min = low.iloc[::-1].shift(1).rolling(n, min_periods=n).min().iloc[::-1]
 
-        frame["is_swing_high"] = (frame["high"] > ph) & (frame["high"] > nh)
-        frame["is_swing_low"] = (frame["low"] < pl) & (frame["low"] < nl)
-
-        # Confirmed only after right-side n bars close.
-        frame["confirmed_swing_high"] = frame["is_swing_high"].shift(n, fill_value=False).astype(bool)
-        frame["confirmed_swing_low"] = frame["is_swing_low"].shift(n, fill_value=False).astype(bool)
-        frame["confirmed_swing_high_level"] = frame["high"].shift(n).where(frame["confirmed_swing_high"])
-        frame["confirmed_swing_low_level"] = frame["low"].shift(n).where(frame["confirmed_swing_low"])
+        frame["is_swing_high"] = (high > prev_high_max) & (high > next_high_max)
+        frame["is_swing_low"] = (low < prev_low_min) & (low < next_low_min)
+        frame["swing_high_price"] = np.where(frame["is_swing_high"], high, np.nan)
+        frame["swing_low_price"] = np.where(frame["is_swing_low"], low, np.nan)
+        frame["swing_confirmed_at"] = frame["timestamp"].shift(-n)
+        frame["swing_valid"] = frame["swing_confirmed_at"].notna() & (frame["is_swing_high"] | frame["is_swing_low"])
         return frame
 
-    def detect_structure_events(self, df: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    def detect_bos_mss_choch(self, df: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
         frame = self.detect_swings(df)
-        events: list[dict[str, Any]] = []
+        n = self.swing_window
 
-        last_high: float | None = None
-        last_low: float | None = None
+        events: list[dict[str, Any]] = []
         trend = "neutral"
+        latest_sw_h: tuple[int, float] | None = None
+        latest_sw_l: tuple[int, float] | None = None
 
         for i in range(len(frame)):
-            if bool(frame.at[i, "confirmed_swing_high"]):
-                last_high = float(frame.at[i, "confirmed_swing_high_level"])
-            if bool(frame.at[i, "confirmed_swing_low"]):
-                last_low = float(frame.at[i, "confirmed_swing_low_level"])
+            confirm_idx = i - n
+            if confirm_idx >= 0 and bool(frame.at[confirm_idx, "is_swing_high"]):
+                latest_sw_h = (confirm_idx, float(frame.at[confirm_idx, "high"]))
+            if confirm_idx >= 0 and bool(frame.at[confirm_idx, "is_swing_low"]):
+                latest_sw_l = (confirm_idx, float(frame.at[confirm_idx, "low"]))
 
             close_i = float(frame.at[i, "close"])
+            ts = frame.at[i, "timestamp"]
 
-            if last_high is not None and close_i > last_high:
-                choch = trend == "bearish"
-                events.append(
-                    {
-                        "type": "BOS",
-                        "direction": "bullish",
-                        "timestamp": frame.at[i, "timestamp"],
-                        "index": i,
-                        "broken_level": last_high,
-                        "choch": choch,
-                        "mss": choch,
-                    }
-                )
+            if latest_sw_h and close_i > latest_sw_h[1]:
+                ev = {
+                    "type": "BOS",
+                    "direction": "bullish",
+                    "broken_level": latest_sw_h[1],
+                    "break_candle_index": i,
+                    "swing_index": latest_sw_h[0],
+                    "timestamp": ts,
+                }
+                if trend in {"bearish", "neutral"}:
+                    ev["choch"] = trend == "bearish"
+                    ev["mss"] = trend == "bearish"
                 trend = "bullish"
-                last_high = None
+                events.append(ev)
+                latest_sw_h = None
 
-            if last_low is not None and close_i < last_low:
-                choch = trend == "bullish"
-                events.append(
-                    {
-                        "type": "BOS",
-                        "direction": "bearish",
-                        "timestamp": frame.at[i, "timestamp"],
-                        "index": i,
-                        "broken_level": last_low,
-                        "choch": choch,
-                        "mss": choch,
-                    }
-                )
+            if latest_sw_l and close_i < latest_sw_l[1]:
+                ev = {
+                    "type": "BOS",
+                    "direction": "bearish",
+                    "broken_level": latest_sw_l[1],
+                    "break_candle_index": i,
+                    "swing_index": latest_sw_l[0],
+                    "timestamp": ts,
+                }
+                if trend in {"bullish", "neutral"}:
+                    ev["choch"] = trend == "bullish"
+                    ev["mss"] = trend == "bullish"
                 trend = "bearish"
-                last_low = None
+                events.append(ev)
+                latest_sw_l = None
 
         frame["trend"] = trend
         return frame, events
 
-    # Compatibility alias retained for merged branch references.
-    def detect_bos_mss_choch(self, df: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
-        frame, events = self.detect_structure_events(df)
-        remapped = []
-        for e in events:
-            remapped.append({
-                **e,
-                "break_candle_index": int(e.get("index", -1)),
-                "swing_index": int(e.get("index", -1)),
-            })
-        return frame, remapped
-
     def detect_fvg(self, df: pd.DataFrame) -> list[dict[str, Any]]:
-        frame = self.data.validate_ohlcv(df)
+        frame = self.validate_ohlcv(df)
         events: list[dict[str, Any]] = []
 
         for i in range(2, len(frame)):
-            if float(frame.at[i, "low"]) > float(frame.at[i - 2, "high"]):
-                lower = float(frame.at[i - 2, "high"])
-                upper = float(frame.at[i, "low"])
-                events.append({"type": "FVG", "direction": "bullish", "index": i, "timestamp": frame.at[i, "timestamp"], "lower": lower, "upper": upper, "ce": (lower + upper) / 2, "ifvg": 0})
+            hi_2 = float(frame.at[i - 2, "high"])
+            lo_2 = float(frame.at[i - 2, "low"])
+            low_i = float(frame.at[i, "low"])
+            high_i = float(frame.at[i, "high"])
 
-            if float(frame.at[i, "high"]) < float(frame.at[i - 2, "low"]):
-                lower = float(frame.at[i, "high"])
-                upper = float(frame.at[i - 2, "low"])
-                events.append({"type": "FVG", "direction": "bearish", "index": i, "timestamp": frame.at[i, "timestamp"], "lower": lower, "upper": upper, "ce": (lower + upper) / 2, "ifvg": 0})
+            if low_i > hi_2:
+                lower, upper = hi_2, low_i
+                events.append(
+                    {
+                        "type": "FVG",
+                        "direction": "bullish",
+                        "index": i,
+                        "timestamp": frame.at[i, "timestamp"],
+                        "lower": lower,
+                        "upper": upper,
+                        "ce": (lower + upper) / 2,
+                        "status": "open",
+                    }
+                )
+            if high_i < lo_2:
+                lower, upper = high_i, lo_2
+                events.append(
+                    {
+                        "type": "FVG",
+                        "direction": "bearish",
+                        "index": i,
+                        "timestamp": frame.at[i, "timestamp"],
+                        "lower": lower,
+                        "upper": upper,
+                        "ce": (lower + upper) / 2,
+                        "status": "open",
+                    }
+                )
 
-        for e in events:
-            after = frame.iloc[int(e["index"]) + 1 :]
+        for event in events:
+            idx = int(event["index"])
+            after = frame.iloc[idx + 1 :]
             if after.empty:
                 continue
-            if e["direction"] == "bullish":
-                if (after["close"] < e["lower"]).any():
-                    e["ifvg"] = 1
-                    e["status"] = "inverse"
-                elif (after["low"] <= e["upper"]).any():
-                    e["status"] = "mitigated"
-                else:
-                    e["status"] = "open"
+            if event["direction"] == "bullish":
+                mitigated = after["low"] <= event["upper"]
+                invalid = after["close"] < event["lower"]
             else:
-                if (after["close"] > e["upper"]).any():
-                    e["ifvg"] = 1
-                    e["status"] = "inverse"
-                elif (after["high"] >= e["lower"]).any():
-                    e["status"] = "mitigated"
-                else:
-                    e["status"] = "open"
+                mitigated = after["high"] >= event["lower"]
+                invalid = after["close"] > event["upper"]
+            if mitigated.any():
+                event["mitigated_at"] = after.index[mitigated.argmax()] if mitigated.any() else None
+                event["status"] = "mitigated"
+            if invalid.any():
+                event["inverse"] = True
+                event["flipped_at"] = after.index[invalid.argmax()]
+                event["status"] = "inverse"
         return events
 
     def detect_volume_imbalance(self, df: pd.DataFrame, window: int = 20) -> pd.Series:
-        frame = self.data.validate_ohlcv(df)
-        bull = np.where(frame["close"] >= frame["open"], frame["volume"], 0.0)
-        bear = np.where(frame["close"] < frame["open"], frame["volume"], 0.0)
-        bsum = pd.Series(bull).rolling(window, min_periods=max(3, window // 2)).sum()
-        ssum = pd.Series(bear).rolling(window, min_periods=max(3, window // 2)).sum()
-        return (bsum - ssum) / (bsum + ssum + 1e-9)
+        frame = self.validate_ohlcv(df)
+        bull_vol = np.where(frame["close"] >= frame["open"], frame["volume"], 0.0)
+        bear_vol = np.where(frame["close"] < frame["open"], frame["volume"], 0.0)
+        bull_sum = pd.Series(bull_vol).rolling(window, min_periods=window // 2).sum()
+        bear_sum = pd.Series(bear_vol).rolling(window, min_periods=window // 2).sum()
+        return (bull_sum - bear_sum) / (bull_sum + bear_sum + 1e-9)
 
-    def detect_equal_levels(self, df: pd.DataFrame) -> list[dict[str, Any]]:
+    def detect_equal_highs_lows(self, df: pd.DataFrame) -> list[dict[str, Any]]:
         frame = self.detect_swings(df)
         atr = self._atr(frame).bfill().fillna(0)
+        swings_h = frame.index[frame["is_swing_high"]].tolist()
+        swings_l = frame.index[frame["is_swing_low"]].tolist()
+        levels: list[dict[str, Any]] = []
 
-        equal: list[dict[str, Any]] = []
-        for side, is_col, px_col in [
-            ("high", "is_swing_high", "high"),
-            ("low", "is_swing_low", "low"),
-        ]:
-            idxs = frame.index[frame[is_col]].tolist()
-            for a, b in zip(idxs[:-1], idxs[1:]):
-                p1 = float(frame.at[a, px_col])
-                p2 = float(frame.at[b, px_col])
-                tol = max(float(atr.at[b]) * 0.1, p2 * 0.0005)
-                if abs(p1 - p2) <= tol:
-                    equal.append({"type": f"equal_{side}s", "index_a": a, "index_b": b, "level": (p1 + p2) / 2, "tolerance": tol, "timestamp": frame.at[b, "timestamp"]})
-        return equal
+        def _append_equal(indices: list[int], side: str):
+            for a, b in zip(indices[:-1], indices[1:]):
+                pa = float(frame.at[a, "high"] if side == "high" else frame.at[a, "low"])
+                pb = float(frame.at[b, "high"] if side == "high" else frame.at[b, "low"])
+                tol = max(float(atr.at[b]) * 0.1, pb * 0.0005)
+                if abs(pa - pb) <= tol:
+                    levels.append(
+                        {
+                            "type": f"equal_{side}s",
+                            "index_a": a,
+                            "index_b": b,
+                            "level": (pa + pb) / 2,
+                            "tolerance": tol,
+                            "timestamp": frame.at[b, "timestamp"],
+                        }
+                    )
 
-    # Compatibility alias retained for merged branch references.
-    def detect_equal_highs_lows(self, df: pd.DataFrame) -> list[dict[str, Any]]:
-        return self.detect_equal_levels(df)
+        _append_equal(swings_h, "high")
+        _append_equal(swings_l, "low")
+        return levels
 
     def detect_liquidity_sweeps(self, df: pd.DataFrame) -> list[dict[str, Any]]:
-        frame = self.data.validate_ohlcv(df)
-        levels = self.detect_equal_levels(frame)
-        out: list[dict[str, Any]] = []
+        frame = self.validate_ohlcv(df)
+        equal_levels = self.detect_equal_highs_lows(frame)
+        sweeps: list[dict[str, Any]] = []
 
-        for lv in levels:
-            start = int(lv["index_b"]) + 1
-            sub = frame.iloc[start : start + self.liquidity_lookback]
-            if sub.empty:
-                continue
+        for lv in equal_levels:
             level = float(lv["level"])
+            start = int(lv["index_b"]) + 1
+            subset = frame.iloc[start : start + self.liquidity_lookback]
+            if subset.empty:
+                continue
             if lv["type"] == "equal_lows":
-                cond = (sub["low"] < level) & (sub["close"] > level)
+                cond = (subset["low"] < level) & (subset["close"] > level)
                 if cond.any():
-                    idx = int(sub.index[np.argmax(cond.values)])
-                    out.append({"type": "LiquiditySweep", "direction": "bullish", "timestamp": frame.at[idx, "timestamp"], "index": idx, "level": level})
+                    idx = int(subset.index[np.argmax(cond.values)])
+                    sweeps.append({"type": "LiquiditySweep", "direction": "bullish", "index": idx, "timestamp": frame.at[idx, "timestamp"], "level": level})
             else:
-                cond = (sub["high"] > level) & (sub["close"] < level)
+                cond = (subset["high"] > level) & (subset["close"] < level)
                 if cond.any():
-                    idx = int(sub.index[np.argmax(cond.values)])
-                    out.append({"type": "LiquiditySweep", "direction": "bearish", "timestamp": frame.at[idx, "timestamp"], "index": idx, "level": level})
-        return out
+                    idx = int(subset.index[np.argmax(cond.values)])
+                    sweeps.append({"type": "LiquiditySweep", "direction": "bearish", "index": idx, "timestamp": frame.at[idx, "timestamp"], "level": level})
+        return sweeps
 
     def liquidity_density_map(self, df: pd.DataFrame, bins: int = 40) -> pd.DataFrame:
-        frame = self.data.validate_ohlcv(df)
-        px = pd.concat([frame["high"], frame["low"]], axis=0)
-        vol = pd.concat([frame["volume"], frame["volume"]], axis=0)
-        buckets = pd.cut(px, bins=bins)
-        touches = px.groupby(buckets, observed=False).size()
-        volume = vol.groupby(buckets, observed=False).sum()
-        out = pd.DataFrame({"touches": touches, "volume": volume}).fillna(0)
+        frame = self.validate_ohlcv(df)
+        prices = pd.concat([frame["high"], frame["low"]], axis=0)
+        volume = pd.concat([frame["volume"], frame["volume"]], axis=0)
+        cuts = pd.cut(prices, bins=bins)
+        touch_count = prices.groupby(cuts).size()
+        volume_sum = volume.groupby(cuts).sum()
+        out = pd.DataFrame({"touches": touch_count, "volume": volume_sum}).fillna(0)
         out["density_score"] = out["touches"] * 0.6 + out["volume"].rank(pct=True) * 0.4
         return out.sort_values("density_score", ascending=False)
 
     def detect_order_blocks(self, df: pd.DataFrame) -> list[Zone]:
-        frame, structure_events = self.detect_structure_events(df)
+        frame, structure_events = self.detect_bos_mss_choch(df)
         zones: list[Zone] = []
 
-        for e in structure_events:
-            idx = int(e["index"])
-            lookback = frame.iloc[max(0, idx - 15) : idx]
+        for ev in structure_events:
+            idx = int(ev["break_candle_index"])
+            direction = ev["direction"]
+            lookback = frame.iloc[max(0, idx - 12) : idx]
             if lookback.empty:
                 continue
-            if e["direction"] == "bullish":
+            if direction == "bullish":
                 candidates = lookback[lookback["close"] < lookback["open"]]
             else:
                 candidates = lookback[lookback["close"] > lookback["open"]]
             if candidates.empty:
                 continue
-            c = candidates.iloc[-1]
-            body = abs(float(c["close"] - c["open"]))
-            rng = max(float(c["high"] - c["low"]), 1e-9)
+            candle = candidates.iloc[-1]
+            rng = max(float(candle["high"] - candle["low"]), 1e-9)
+            body = abs(float(candle["close"] - candle["open"]))
             if body / rng <= 0.5:
                 continue
-            if e["direction"] == "bullish":
-                zones.append(Zone("order_block", "bullish", int(c.name), upper=float(c["open"]), lower=float(c["low"])))
+            if direction == "bullish":
+                zone = Zone("order_block", "bullish", int(candle.name), upper=float(candle["open"]), lower=float(candle["low"]))
             else:
-                zones.append(Zone("order_block", "bearish", int(c.name), upper=float(c["high"]), lower=float(c["open"])))
+                zone = Zone("order_block", "bearish", int(candle.name), upper=float(candle["high"]), lower=float(candle["open"]))
+            zones.append(zone)
 
         self.order_blocks = zones
         self._update_zone_lifecycle(frame)
         return self.order_blocks
 
     def _update_zone_lifecycle(self, frame: pd.DataFrame) -> None:
-        for z in self.order_blocks:
-            after = frame.iloc[z.created_idx + 1 :]
+        if not self.order_blocks:
+            return
+        for zone in self.order_blocks:
+            after = frame.iloc[zone.created_idx + 1 :]
             if after.empty:
                 continue
-            inside = (after["low"] <= z.upper) & (after["high"] >= z.lower)
-            z.touches = int(inside.sum())
-            z.time_alive = int((after["timestamp"].iloc[-1] - frame.at[z.created_idx, "timestamp"]).total_seconds() / 60)
-            if z.direction == "bullish":
-                if (after["close"] < z.lower).any():
-                    z.status = "invalid"
-                    z.invalidated_idx = int(after.index[np.argmax((after["close"] < z.lower).values)])
-                elif z.touches:
-                    z.status = "mitigated"
+            inside = (after["low"] <= zone.upper) & (after["high"] >= zone.lower)
+            zone.touches = int(inside.sum())
+            zone.time_alive = int((after["timestamp"].iloc[-1] - frame.at[zone.created_idx, "timestamp"]).total_seconds() / 60)
+            if zone.direction == "bullish":
+                if (after["close"] < zone.lower).any():
+                    zone.status = "invalid"
+                    zone.invalidated_idx = int(after.index[np.argmax((after["close"] < zone.lower).values)])
+                elif zone.touches > 0:
+                    zone.status = "mitigated"
             else:
-                if (after["close"] > z.upper).any():
-                    z.status = "invalid"
-                    z.invalidated_idx = int(after.index[np.argmax((after["close"] > z.upper).values)])
-                elif z.touches:
-                    z.status = "mitigated"
+                if (after["close"] > zone.upper).any():
+                    zone.status = "invalid"
+                    zone.invalidated_idx = int(after.index[np.argmax((after["close"] > zone.upper).values)])
+                elif zone.touches > 0:
+                    zone.status = "mitigated"
 
     def detect_breaker_blocks(self, df: pd.DataFrame) -> list[Zone]:
-        frame = self.data.validate_ohlcv(df)
-        out: list[Zone] = []
-        for z in self.order_blocks:
-            if z.status == "invalid" and z.invalidated_idx is not None and z.invalidated_idx < len(frame):
-                out.append(Zone("breaker", "bearish" if z.direction == "bullish" else "bullish", z.invalidated_idx, z.upper, z.lower))
-        return out
+        frame = self.validate_ohlcv(df)
+        breakers: list[Zone] = []
+        for zone in self.order_blocks:
+            if zone.status != "invalid" or zone.invalidated_idx is None:
+                continue
+            after = frame.iloc[zone.invalidated_idx :]
+            if after.empty:
+                continue
+            flipped = "bearish" if zone.direction == "bullish" else "bullish"
+            breakers.append(Zone("breaker", flipped, zone.invalidated_idx, zone.upper, zone.lower, status="active"))
+        return breakers
 
-    def premium_discount_state(self, htf_df: pd.DataFrame, price: float | None = None) -> dict[str, float]:
+    def premium_discount_state(self, htf_df: pd.DataFrame, price: float | None = None) -> dict[str, Any]:
         frame = self.detect_swings(htf_df)
         highs = frame.loc[frame["is_swing_high"], "high"].tail(1)
         lows = frame.loc[frame["is_swing_low"], "low"].tail(1)
         if highs.empty or lows.empty:
-            return {"state": 0.0, "equilibrium": np.nan, "range_high": np.nan, "range_low": np.nan}
-        hi = float(highs.iloc[-1])
-        lo = float(lows.iloc[-1])
-        eq = (hi + lo) / 2
+            return {"state": 0, "equilibrium": np.nan, "range_high": np.nan, "range_low": np.nan}
+        range_high = float(highs.iloc[-1])
+        range_low = float(lows.iloc[-1])
+        eq = (range_high + range_low) / 2
         px = float(price) if price is not None else float(frame["close"].iloc[-1])
-        state = 1.0 if px > eq else -1.0 if px < eq else 0.0
-        return {"state": state, "equilibrium": eq, "range_high": hi, "range_low": lo}
+        state = 1 if px > eq else -1 if px < eq else 0
+        return {"state": state, "equilibrium": eq, "range_high": range_high, "range_low": range_low}
 
     def detect_regime(self, df: pd.DataFrame, funding_rate: pd.Series | None = None) -> pd.DataFrame:
-        frame = self.data.validate_ohlcv(df)
+        frame = self.validate_ohlcv(df)
         atr = self._atr(frame, 14)
-        atr_ma = atr.rolling(self.regime_window, min_periods=max(5, self.regime_window // 2)).mean()
-        atr_state = np.where(atr > atr_ma * 1.2, 1, np.where(atr < atr_ma * 0.8, -1, 0))
+        atr_ma = atr.rolling(self.regime_window, min_periods=self.regime_window // 2).mean()
+        atr_state = np.where(atr > atr_ma * 1.2, "expansion", np.where(atr < atr_ma * 0.8, "contraction", "normal"))
 
         ret = frame["close"].pct_change()
-        vol = ret.rolling(self.regime_window, min_periods=max(5, self.regime_window // 2)).std()
+        vol = ret.rolling(self.regime_window, min_periods=self.regime_window // 2).std()
         vol_pct = vol.rolling(self.regime_window * 2, min_periods=10).rank(pct=True)
 
         up = (frame["high"] - frame["high"].shift(1)).clip(lower=0)
@@ -389,272 +391,215 @@ class FeatureLayer:
         tr = pd.concat([(frame["high"] - frame["low"]), (frame["high"] - frame["close"].shift()).abs(), (frame["low"] - frame["close"].shift()).abs()], axis=1).max(axis=1)
         plus_di = 100 * (up.rolling(14).mean() / (tr.rolling(14).mean() + 1e-9))
         minus_di = 100 * (dn.rolling(14).mean() / (tr.rolling(14).mean() + 1e-9))
-        adx_like = (plus_di - minus_di).abs()
+        adx_strength = (plus_di - minus_di).abs()
 
-        width = (frame["high"].rolling(self.regime_window).max() - frame["low"].rolling(self.regime_window).min()) / frame["close"]
-        compression = (width < width.rolling(self.regime_window).median() * 0.8).astype(int)
+        range_width = (frame["high"].rolling(self.regime_window).max() - frame["low"].rolling(self.regime_window).min()) / frame["close"]
+        compression = range_width < range_width.rolling(self.regime_window).median() * 0.8
 
-        vol_delta = self.detect_volume_imbalance(frame, self.regime_window)
-        funding = funding_rate.reindex(frame.index).values if funding_rate is not None else np.full(len(frame), np.nan)
+        volume_delta = self.detect_volume_imbalance(frame, window=self.regime_window)
 
-        return pd.DataFrame(
+        regime = pd.DataFrame(
             {
                 "timestamp": frame["timestamp"],
                 "atr_state": atr_state,
-                "vol_percentile": vol_pct.fillna(0),
-                "trend_strength": adx_like.fillna(0),
-                "compression": compression,
-                "volume_delta": vol_delta.fillna(0),
-                "funding_rate": funding,
+                "vol_percentile": vol_pct,
+                "trend_strength": adx_strength,
+                "compression": compression.astype(int),
+                "volume_delta": volume_delta,
+                "funding_rate": funding_rate.reindex(frame.index).values if funding_rate is not None else np.nan,
             }
         )
+        regime["regime_label"] = np.where(
+            (regime["atr_state"] == "expansion") & (regime["trend_strength"] > 25),
+            "trend_breakout",
+            np.where(regime["compression"] == 1, "compression_reversal", "balanced"),
+        )
+        return regime
 
-    def build_feature_frame(self, df: pd.DataFrame, tf_name: str, funding_rate: pd.Series | None = None) -> pd.DataFrame:
-        frame, structure = self.detect_structure_events(df)
-        fvgs = self.detect_fvg(frame)
+    def build_feature_frame(self, df: pd.DataFrame, tf_name: str) -> pd.DataFrame:
+        frame, structure = self.detect_bos_mss_choch(df)
+        fvg = self.detect_fvg(frame)
         sweeps = self.detect_liquidity_sweeps(frame)
         obs = self.detect_order_blocks(frame)
-        breakers = self.detect_breaker_blocks(frame)
-        regime = self.detect_regime(frame, funding_rate=funding_rate)
         pd_state = self.premium_discount_state(frame)
+        regime = self.detect_regime(frame)
 
-        f = pd.DataFrame({"timestamp": frame["timestamp"]})
-        f[f"bos_bullish_{tf_name}"] = 0
-        f[f"bos_bearish_{tf_name}"] = 0
-        f[f"mss_bullish_{tf_name}"] = 0
-        f[f"mss_bearish_{tf_name}"] = 0
-        f[f"choch_bullish_{tf_name}"] = 0
-        f[f"choch_bearish_{tf_name}"] = 0
-        f[f"sweep_{tf_name}"] = 0
-        f[f"fvg_{tf_name}"] = 0
-        f[f"ifvg_{tf_name}"] = 0
-        f[f"fvg_ce_{tf_name}"] = np.nan
-        f[f"volume_imbalance_{tf_name}"] = self.detect_volume_imbalance(frame).fillna(0)
-        f[f"ob_active_count_{tf_name}"] = len([z for z in obs if z.status == "active"])
-        f[f"breaker_count_{tf_name}"] = len(breakers)
-        f[f"premium_discount_state_{tf_name}"] = pd_state["state"]
-        f[f"regime_atr_state_{tf_name}"] = regime["atr_state"]
-        f[f"regime_vol_pct_{tf_name}"] = regime["vol_percentile"]
-        f[f"regime_trend_strength_{tf_name}"] = regime["trend_strength"]
-        f[f"regime_compression_{tf_name}"] = regime["compression"]
-        f[f"regime_volume_delta_{tf_name}"] = regime["volume_delta"]
+        features = pd.DataFrame({"timestamp": frame["timestamp"]})
+        features[f"bos_bullish_{tf_name}"] = 0
+        features[f"bos_bearish_{tf_name}"] = 0
+        features[f"sweep_{tf_name}"] = 0
+        features[f"fvg_discount_{tf_name}"] = 0
+        features[f"distance_to_ob_{tf_name}"] = np.nan
+        features[f"premium_discount_state_{tf_name}"] = pd_state["state"]
+        features[f"htf_trend_strength_{tf_name}"] = regime["trend_strength"].fillna(0)
 
-        for e in structure:
-            idx = int(e["index"])
-            d = e["direction"]
-            f.at[idx, f"bos_{d}_{tf_name}"] = 1
-            if e.get("mss"):
-                f.at[idx, f"mss_{d}_{tf_name}"] = 1
-            if e.get("choch"):
-                f.at[idx, f"choch_{d}_{tf_name}"] = 1
-        for e in sweeps:
-            f.at[int(e["index"]), f"sweep_{tf_name}"] = 1
-        for e in fvgs:
-            idx = int(e["index"])
-            f.at[idx, f"fvg_{tf_name}"] = 1
-            f.at[idx, f"ifvg_{tf_name}"] = int(e.get("ifvg", 0))
-            f.at[idx, f"fvg_ce_{tf_name}"] = float(e["ce"])
+        for ev in structure:
+            col = f"bos_bullish_{tf_name}" if ev["direction"] == "bullish" else f"bos_bearish_{tf_name}"
+            features.at[ev["break_candle_index"], col] = 1
+        for ev in sweeps:
+            features.at[ev["index"], f"sweep_{tf_name}"] = 1
+        for ev in fvg:
+            if ev["direction"] == "bullish" and pd_state["state"] == -1:
+                features.at[ev["index"], f"fvg_discount_{tf_name}"] = 1
 
         active_obs = [z for z in obs if z.status in {"active", "mitigated"}]
         if active_obs:
-            z = active_obs[-1]
-            mid = (z.upper + z.lower) / 2
-            f[f"distance_to_ob_{tf_name}"] = (frame["close"] - mid).abs()
-        else:
-            f[f"distance_to_ob_{tf_name}"] = np.nan
-
-        density = self.liquidity_density_map(frame)
-        f[f"liquidity_density_score_{tf_name}"] = float(density["density_score"].iloc[0]) if not density.empty else 0.0
-        return f
-
-    def build_multi_tf_features(self, tf_data: dict[str, pd.DataFrame], funding_rate: pd.Series | None = None) -> dict[str, pd.DataFrame]:
-        return {tf: self.build_feature_frame(df, tf, funding_rate=funding_rate) for tf, df in tf_data.items()}
+            latest_zone = active_obs[-1]
+            zone_mid = (latest_zone.upper + latest_zone.lower) / 2
+            features[f"distance_to_ob_{tf_name}"] = (frame["close"] - zone_mid).abs()
+        return features
 
 
 class ConfluenceEngine:
-    """Weighted, directional, hierarchical confluence validation."""
+    def __init__(self, max_time_delta_minutes: int = 180, price_threshold_pct: float = 0.003):
+        self.max_time_delta_minutes = max_time_delta_minutes
+        self.price_threshold_pct = price_threshold_pct
 
-    def evaluate(self, model_or_events: ICTModel | dict[str, list[dict[str, Any]]], events_or_model: dict[str, list[dict[str, Any]]] | ICTModel, price: float) -> dict[str, Any]:
-        # Supports both call orders from conflicting branches:
-        # evaluate(model, events, price) and evaluate(events, model, price)
-        if isinstance(model_or_events, dict):
-            events_by_tf = model_or_events
-            model = events_or_model  # type: ignore[assignment]
-        else:
-            model = model_or_events
-            events_by_tf = events_or_model  # type: ignore[assignment]
-
-        score = 0.0
-        matches: list[str] = []
-        directions: list[str] = []
-        timestamps: list[pd.Timestamp] = []
-
-        for cond in model.features:
-            tf_events = [e for e in events_by_tf.get(cond.tf, []) if str(e.get("type", "")).lower() == cond.type.lower()]
-            if cond.direction:
-                tf_events = [e for e in tf_events if e.get("direction") == cond.direction]
-            if not tf_events:
-                continue
-
-            picked = tf_events[-1]
-            lvl = float(picked.get("level", picked.get("ce", picked.get("broken_level", price))))
-            proximity = abs(lvl - price) / max(abs(price), 1e-9)
-            if proximity > model.price_proximity_threshold / 100.0:
-                continue
-
-            ts = pd.Timestamp(picked["timestamp"])
-            timestamps.append(ts)
-            matches.append(f"{cond.type}:{cond.tf}")
-            directions.append(str(picked.get("direction", cond.direction or "neutral")))
-            score += cond.weight
-
-        if len(timestamps) > 1:
-            dt_minutes = (max(timestamps) - min(timestamps)).total_seconds() / 60
-        else:
-            dt_minutes = 0
-
-        # HTF -> ITF -> LTF ordering
-        hierarchy_ok = True
-        tf_rank = {"1d": 5, "4h": 4, "1h": 3, "15m": 2, "5m": 1, "1m": 0}
-        ordered = sorted(
-            [(c, next((e for e in events_by_tf.get(c.tf, []) if str(e.get("type", "")).lower() == c.type.lower()), None)) for c in model.features],
-            key=lambda x: tf_rank.get(x[0].tf.lower(), 0),
-            reverse=True,
-        )
+    def evaluate(self, events: dict[str, list[dict[str, Any]]], model: TradingModel, price: float) -> dict[str, Any]:
+        matched: list[str] = []
+        directional: list[str] = []
         last_ts: pd.Timestamp | None = None
-        for cond, ev in ordered:
-            if ev is None:
+        score = 0.0
+
+        for condition in model.conditions:
+            c_events = [e for e in events.get(condition.tf, []) if e.get("type", "").lower() == condition.type.lower()]
+            if condition.direction:
+                c_events = [e for e in c_events if e.get("direction") == condition.direction]
+            if not c_events:
                 continue
-            ts = pd.Timestamp(ev["timestamp"])
-            if last_ts is not None and ts < last_ts:
-                hierarchy_ok = False
-                break
-            last_ts = ts
 
-        non_neutral = [d for d in directions if d != "neutral"]
-        directional_ok = bool(non_neutral) and (all(d == "bullish" for d in non_neutral) or all(d == "bearish" for d in non_neutral))
+            selected = c_events[-1]
+            ts = pd.Timestamp(selected["timestamp"])
+            if last_ts is not None:
+                dt = abs((ts - last_ts).total_seconds()) / 60
+                if dt > model.max_time_delta:
+                    continue
+            level = float(selected.get("level", selected.get("ce", price)))
+            if abs(level - price) / max(price, 1e-9) > self.price_threshold_pct:
+                continue
 
-        passed = directional_ok and hierarchy_ok and dt_minutes <= model.max_time_delta and score >= model.min_score
+            last_ts = ts if last_ts is None else max(last_ts, ts)
+            matched.append(f"{condition.type}:{condition.tf}")
+            directional.append(selected.get("direction", condition.direction or "neutral"))
+            score += condition.weight
+
+        all_bullish = all(d == "bullish" for d in directional if d != "neutral")
+        all_bearish = all(d == "bearish" for d in directional if d != "neutral")
+        aligned = all_bullish or all_bearish
         return {
-            "passed": passed,
+            "passed": aligned and score >= model.min_score,
             "score": score,
-            "confidence_score": round(score / max(model.min_score, 1.0), 3),
-            "direction": non_neutral[0] if directional_ok else "neutral",
-            "triggered_features": matches,
-            "time_span_minutes": dt_minutes,
-            "hierarchy_ok": hierarchy_ok,
-            "directional_ok": directional_ok,
+            "direction": "bullish" if all_bullish else "bearish" if all_bearish else "neutral",
+            "matched_conditions": matched,
         }
 
 
 class SignalGenerator:
-    @staticmethod
-    def generate(price: float, direction: str, fvg: dict[str, Any] | None = None, ob: Zone | None = None, sweep: dict[str, Any] | None = None, triggered_features: list[str] | None = None, confidence_score: float = 0.0) -> dict[str, Any]:
-        if fvg is not None:
-            entry_zone = (float(fvg["ce"]), float(fvg["ce"]))
-        elif ob is not None:
-            entry_zone = (float(ob.lower), float(ob.upper))
+    def generate(
+        self,
+        latest_price: float,
+        direction: str,
+        fvg_event: dict[str, Any] | None,
+        ob_zone: Zone | None,
+        sweep_event: dict[str, Any] | None,
+        confidence: float,
+        triggered: list[str],
+    ) -> TradeSignal:
+        if fvg_event:
+            entry = (float(fvg_event["ce"]), float(fvg_event["ce"]))
+        elif ob_zone:
+            entry = (ob_zone.lower, ob_zone.upper)
         else:
-            entry_zone = (float(price), float(price))
+            entry = (latest_price, latest_price)
 
         if direction == "bullish":
-            stop_loss = float(ob.lower) if ob else (float(sweep["level"]) if sweep else price * 0.995)
-            risk = max(entry_zone[0] - stop_loss, price * 0.001)
-            take_profit = price + 2 * risk
+            stop = ob_zone.lower if ob_zone else (float(sweep_event["level"]) if sweep_event else latest_price * 0.995)
+            risk = max(entry[0] - stop, latest_price * 0.001)
+            take = latest_price + (2 * risk)
         else:
-            stop_loss = float(ob.upper) if ob else (float(sweep["level"]) if sweep else price * 1.005)
-            risk = max(stop_loss - entry_zone[0], price * 0.001)
-            take_profit = price - 2 * risk
+            stop = ob_zone.upper if ob_zone else (float(sweep_event["level"]) if sweep_event else latest_price * 1.005)
+            risk = max(stop - entry[0], latest_price * 0.001)
+            take = latest_price - (2 * risk)
 
-        rr = abs(take_profit - entry_zone[0]) / max(abs(entry_zone[0] - stop_loss), 1e-9)
-        signal = TradeSignal(
+        rr = abs(take - entry[0]) / max(abs(entry[0] - stop), 1e-9)
+        return TradeSignal(
             timestamp=pd.Timestamp.utcnow(),
             direction=direction,
-            entry_zone=entry_zone,
-            stop_loss=float(stop_loss),
-            take_profit=float(take_profit),
+            entry_zone=entry,
+            stop_loss=float(stop),
+            take_profit=float(take),
             risk_reward=float(rr),
-            confluences_triggered=(triggered_features or []),
-            confidence_score=float(confidence_score),
+            confluences_triggered=triggered,
+            confidence_score=float(confidence),
         )
-        # dict-style output preserved for compatibility with existing callers.
-        return {
-            "timestamp": signal.timestamp,
-            "direction": signal.direction,
-            "entry_zone": signal.entry_zone,
-            "stop_loss": signal.stop_loss,
-            "take_profit": signal.take_profit,
-            "risk_reward": signal.risk_reward,
-            "triggered_features": signal.confluences_triggered,
-            "confluences_triggered": signal.confluences_triggered,
-            "confidence_score": signal.confidence_score,
-        }
 
 
 class PerformanceTracker:
-    def __init__(self, rolling_window: int = 30, kill_threshold: float = -0.1):
+    def __init__(self, rolling_window: int = 30, expectancy_kill_threshold: float = -0.1):
         self.rolling_window = rolling_window
-        self.kill_threshold = kill_threshold
-        self.ledger: list[dict[str, float]] = []
+        self.expectancy_kill_threshold = expectancy_kill_threshold
+        self.results: list[dict[str, float]] = []
 
-    def add_trade(self, pnl_r: float, equity: float) -> None:
-        self.ledger.append({"pnl_r": float(pnl_r), "equity": float(equity)})
+    def add_trade(self, pnl_r: float, equity_curve: list[float]) -> None:
+        self.results.append({"pnl_r": float(pnl_r), "equity": float(equity_curve[-1])})
 
     def metrics(self) -> dict[str, float | bool]:
-        if not self.ledger:
-            return {"win_rate": 0.0, "avg_rr": 0.0, "expectancy": 0.0, "max_drawdown": 0.0, "profit_factor": 0.0, "sharpe_ratio": 0.0, "kill_switch": False}
-        rr = np.array([r["pnl_r"] for r in self.ledger], dtype=float)
+        if not self.results:
+            return {"win_rate": 0.0, "avg_rr": 0.0, "expectancy": 0.0, "max_drawdown": 0.0, "profit_factor": 0.0, "sharpe": 0.0, "kill_switch": False}
+        rr = np.array([r["pnl_r"] for r in self.results], dtype=float)
         wins = rr[rr > 0]
         losses = rr[rr <= 0]
         win_rate = float((rr > 0).mean())
         avg_rr = float(rr.mean())
-        expectancy = float(avg_rr)
-        pf = float(wins.sum() / abs(losses.sum())) if abs(losses.sum()) > 1e-9 else float("inf")
+        expectancy = float(win_rate * wins.mean() + (1 - win_rate) * losses.mean()) if len(wins) and len(losses) else avg_rr
+        profit_factor = float(wins.sum() / abs(losses.sum())) if abs(losses.sum()) > 1e-9 else float("inf")
 
-        eq = np.array([r["equity"] for r in self.ledger], dtype=float)
-        peak = np.maximum.accumulate(eq)
-        dd = (eq - peak) / np.maximum(peak, 1e-9)
-        max_dd = float(dd.min())
+        equity = np.array([r["equity"] for r in self.results])
+        peak = np.maximum.accumulate(equity)
+        drawdown = (equity - peak) / np.maximum(peak, 1e-9)
+        max_dd = float(drawdown.min())
         sharpe = float(rr.mean() / (rr.std() + 1e-9) * np.sqrt(252))
 
-        rolling_exp = float(rr[-self.rolling_window :].mean()) if len(rr) else 0.0
+        rolling = rr[-self.rolling_window :]
+        kill = float(rolling.mean()) < self.expectancy_kill_threshold if len(rolling) else False
         return {
             "win_rate": win_rate,
             "avg_rr": avg_rr,
             "expectancy": expectancy,
             "max_drawdown": max_dd,
-            "profit_factor": pf,
-            "sharpe_ratio": sharpe,
-            "kill_switch": rolling_exp < self.kill_threshold,
+            "profit_factor": profit_factor,
+            "sharpe": sharpe,
+            "kill_switch": kill,
         }
 
 
 class ExecutionIntelligence:
     @staticmethod
-    def model_fill(entry: float, side: str, spread_bps: float = 2.0, slippage_bps: float = 3.0, partial_fill_ratio: float = 1.0) -> dict[str, float]:
-        spread = entry * spread_bps / 10_000
-        slippage = entry * slippage_bps / 10_000
-        if side.lower() == "buy":
-            limit = entry - spread / 2
-            market = entry + spread / 2 + slippage
-        else:
-            limit = entry + spread / 2
-            market = entry - spread / 2 - slippage
-        fill = market * partial_fill_ratio + limit * (1 - partial_fill_ratio)
-        return {"limit_price": float(limit), "market_price": float(market), "modeled_fill_price": float(fill), "spread_cost": float(spread), "slippage_cost": float(slippage)}
-
-
-    @staticmethod
     def apply_execution_model(entry: float, side: str, spread_bps: float = 2.0, slippage_bps: float = 3.0, partial_fill_ratio: float = 1.0) -> dict[str, float]:
-        return ExecutionIntelligence.model_fill(entry, side, spread_bps, slippage_bps, partial_fill_ratio)
+        spread = entry * spread_bps / 10_000
+        slip = entry * slippage_bps / 10_000
+        if side == "buy":
+            limit_price = entry - spread / 2
+            market_price = entry + spread / 2 + slip
+        else:
+            limit_price = entry + spread / 2
+            market_price = entry - spread / 2 - slip
+        fill_price = (market_price * partial_fill_ratio) + (limit_price * (1 - partial_fill_ratio))
+        return {
+            "limit_price": float(limit_price),
+            "market_price": float(market_price),
+            "modeled_fill_price": float(fill_price),
+            "spread_cost": float(spread),
+            "slippage_cost": float(slip),
+        }
 
 
 class WalkForwardValidator:
-    def __init__(self, feature_layer: FeatureLayer):
-        self.feature_layer = feature_layer
+    def __init__(self, engine: ICTStructureEngine):
+        self.engine = engine
 
     def split(self, df: pd.DataFrame) -> dict[str, pd.DataFrame]:
-        frame = self.feature_layer.data.validate_ohlcv(df)
+        frame = self.engine.validate_ohlcv(df)
         years = frame["timestamp"].dt.year
         return {
             "train": frame[(years >= 2021) & (years <= 2023)].copy(),
@@ -662,56 +607,36 @@ class WalkForwardValidator:
             "forward": frame[years == 2025].copy(),
         }
 
-    def validate_features(self, df: pd.DataFrame, tf: str = "5m") -> dict[str, Any]:
+    def feature_validation(self, df: pd.DataFrame, tf: str = "5m") -> dict[str, Any]:
+        splits = self.split(df)
         out: dict[str, Any] = {}
-        for split_name, chunk in self.split(df).items():
-            if chunk.empty:
-                out[split_name] = {"rows": 0, "feature_columns": [], "signal_density": 0.0}
+        for name, sample in splits.items():
+            if sample.empty:
+                out[name] = {"rows": 0, "features": []}
                 continue
-            feat = self.feature_layer.build_feature_frame(chunk, tf)
-            cols = [c for c in feat.columns if c != "timestamp"]
-            out[split_name] = {
-                "rows": len(feat),
-                "feature_columns": cols,
-                "signal_density": float(feat[cols].sum(numeric_only=True).sum() / max(len(feat), 1)),
+            f = self.engine.build_feature_frame(sample, tf)
+            out[name] = {
+                "rows": len(f),
+                "features": [c for c in f.columns if c != "timestamp"],
+                "signal_density": float((f.drop(columns=["timestamp"]).sum().sum()) / max(len(f), 1)),
             }
         return out
 
 
-    # Compatibility alias retained for merged branch references.
-    def feature_validation(self, df: pd.DataFrame, tf: str = "5m") -> dict[str, Any]:
-        return self.validate_features(df, tf)
-
-
-class ModelFactory:
-    """Dynamic model builder replacing legacy hardcoded master model sets."""
-
-    @staticmethod
-    def create_model(config: dict[str, Any]) -> ICTModel:
-        feats = [
-            FeatureCondition(
-                type=str(f["type"]),
-                tf=str(f["tf"]),
-                direction=f.get("direction"),
-                entry=f.get("entry"),
-                weight=float(f.get("weight", 1.0)),
-            )
-            for f in config.get("features", config.get("conditions", []))
-        ]
-        if not feats:
-            raise ValueError("Model config requires at least one feature condition")
-        return ICTModel(
-            name=str(config["name"]),
-            features=feats,
-            min_score=float(config.get("min_score", len(feats))),
-            max_time_delta=int(config.get("max_time_delta", 180)),
-            price_proximity_threshold=float(config.get("price_proximity_threshold", 0.3)),
+def create_model(config: dict[str, Any]) -> TradingModel:
+    conditions = [
+        ModelCondition(
+            type=str(c["type"]),
+            tf=str(c["tf"]),
+            direction=c.get("direction"),
+            entry=c.get("entry"),
+            weight=float(c.get("weight", 1.0)),
         )
-
-
-# Backward-compatible aliases
-ICTStructureEngine = FeatureLayer
-
-
-def create_model(config: dict[str, Any]) -> ICTModel:
-    return ModelFactory.create_model(config)
+        for c in config.get("conditions", [])
+    ]
+    return TradingModel(
+        name=str(config["name"]),
+        conditions=conditions,
+        min_score=float(config.get("min_score", len(conditions))),
+        max_time_delta=int(config.get("max_time_delta", 180)),
+    )
