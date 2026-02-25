@@ -73,6 +73,33 @@ async def execute_jupiter_swap(plan: dict) -> dict:
 
     submitted = await _submit_transaction(signed_bytes, mev_protection)
     if not submitted.get("success"):
+        err_msg = str(submitted.get("error", "")).lower()
+        if "slippage" in err_msg and not plan.get("_retried"):
+            log.info("Slippage error — retrying with 3%%")
+            input_mint = raw_quote.get("inputMint")
+            output_mint = raw_quote.get("outputMint")
+            amount_lamports = raw_quote.get("inAmount")
+            if input_mint and output_mint and amount_lamports:
+                try:
+                    async with httpx.AsyncClient(timeout=10) as c:
+                        q = await c.get(
+                            "https://quote-api.jup.ag/v6/quote",
+                            params={
+                                "inputMint": input_mint,
+                                "outputMint": output_mint,
+                                "amount": amount_lamports,
+                                "slippageBps": 300,
+                            },
+                        )
+                        q.raise_for_status()
+                        quote = q.json()
+                    if quote:
+                        retry_plan = dict(plan)
+                        retry_plan["raw_quote"] = quote
+                        retry_plan["_retried"] = True
+                        return await execute_jupiter_swap(retry_plan)
+                except Exception:
+                    pass
         return submitted
     signature = submitted["signature"]
     confirmed = await _confirm_transaction(signature)

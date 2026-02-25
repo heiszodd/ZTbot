@@ -29,6 +29,83 @@ async def _run_monitor_inner(context) -> None:
     for pos in positions:
         db.upsert_hl_position(HL_ADDRESS, pos)
 
+    # Trailing stop automation
+    for pos in positions:
+        coin = pos["coin"]
+        side = pos["side"]
+        size = pos["size"]
+        upnl_p = float(pos.get("live_upnl_pct", 0) or 0)
+
+        row = db.get_hl_position_by_coin(coin)
+        if not row:
+            continue
+        trail_pct = row.get("trailing_stop_pct")
+        if not trail_pct:
+            continue
+
+        if upnl_p >= float(trail_pct):
+            old_oid = row.get("trailing_stop_order_id")
+            entry_px = float(pos.get("entry_price", 0) or 0)
+            if entry_px <= 0:
+                continue
+
+            if side == "Long":
+                new_stop = entry_px * 1.001
+            else:
+                new_stop = entry_px * 0.999
+
+            if old_oid:
+                try:
+                    from engine.hyperliquid.executor import cancel_order
+
+                    await cancel_order(coin, int(old_oid))
+                except Exception:
+                    pass
+
+            try:
+                from engine.hyperliquid.executor import get_hl_exchange
+
+                exchange = await get_hl_exchange()
+                raw = exchange.order(
+                    name=coin,
+                    is_buy=side != "Long",
+                    sz=size,
+                    limit_px=new_stop,
+                    order_type={"trigger": {"triggerPx": new_stop, "isMarket": True, "tpsl": "sl"}},
+                    reduce_only=True,
+                )
+                oid = ""
+                try:
+                    status = raw.get("response", {}).get("data", {}).get("statuses", [])[0]
+                    oid = status.get("resting", {}).get("oid", "") or status.get("filled", {}).get("oid", "")
+                except Exception:
+                    oid = ""
+                result = {"success": raw.get("status") != "err", "order_id": oid}
+            except Exception:
+                continue
+
+            if result.get("success"):
+                try:
+                    db.save_hl_trailing_stop_order_id(coin, str(result.get("order_id", "")))
+                except Exception:
+                    pass
+
+                msg = (
+                    f"🔒 *Trailing Stop Moved*\n"
+                    f"{coin} {side}\n"
+                    f"Stop moved to breakeven at ${new_stop:,.4f}\n"
+                    f"PnL locked: ≥ 0%"
+                )
+                try:
+                    from security.auth import ALLOWED_USER_IDS
+                except Exception:
+                    ALLOWED_USER_IDS = [CHAT_ID]
+                for uid in ALLOWED_USER_IDS:
+                    try:
+                        await context.bot.send_message(chat_id=uid, text=msg, parse_mode="Markdown")
+                    except Exception:
+                        pass
+
     alerts = []
     account_value = float(summary.get("account_value", 0) or 0)
     saved_positions = {p.get("coin"): p for p in db.get_hl_positions(HL_ADDRESS)}

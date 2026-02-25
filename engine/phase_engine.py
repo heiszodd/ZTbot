@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 import db
@@ -15,6 +15,17 @@ PHASE_THRESHOLDS = {1: 60, 2: 55, 3: 70, 4: 50}
 
 
 DEFAULT_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XAUUSD"]
+
+
+def normalise_pair_for_hl(pair: str) -> str:
+    """
+    Strips USDT/BUSD/USD suffix so pairs like
+    BTCUSDT become BTC for HL compatibility.
+    """
+    for suffix in ("USDT", "BUSD", "USDC", "USD", "PERP"):
+        if pair.upper().endswith(suffix):
+            return pair[:-len(suffix)]
+    return pair
 
 
 def get_pairs_for_model(model: dict) -> list[str]:
@@ -105,6 +116,12 @@ async def evaluate_phase(phase_num: int, rules: list, pair: str, timeframe: str,
 
 
 async def run_phase_engine(context):
+    # Expire signals older than 24h
+    try:
+        db.expire_old_pending_signals()
+    except Exception:
+        pass
+
     try:
         await asyncio.wait_for(_run_phase_engine_inner(context), timeout=240)
     except asyncio.TimeoutError:
@@ -112,6 +129,16 @@ async def run_phase_engine(context):
     except Exception as e:
         log.error(f"phase_engine error: {e}")
 
+
+
+
+async def run_phase_scanner(context):
+    # Expire signals older than 24h
+    try:
+        db.expire_old_pending_signals()
+    except Exception:
+        pass
+    await run_phase_engine(context)
 
 async def _run_phase_engine_inner(context):
     models = db.get_active_models()
@@ -288,6 +315,7 @@ async def _fire_alert(context, existing, result, model, pair):
     except Exception as exc:
         log.error("HL signal enrichment failed for %s: %s", pair, exc)
 
+    expires = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
     signal_payload = {
         "section": "perps",
         "pair": pair,
@@ -299,6 +327,7 @@ async def _fire_alert(context, existing, result, model, pair):
         "signal_data": {
             "model_id": model.get("id"),
             "model_name": model.get("name"),
+            "hl_coin": normalise_pair_for_hl(pair),
             "entry_price": price,
             "stop_loss": sl,
             "tp1": tp1,
@@ -307,6 +336,7 @@ async def _fire_alert(context, existing, result, model, pair):
             "passed_rules": result.get("passed_rules", []),
         },
         "hl_plan": signal.get("hl_plan", {}),
+        "expires_at": expires,
     }
     db.save_pending_signal(signal_payload)
     log.info("Signal phase %s — stored in Pending, no alert sent", signal_payload["phase"])
@@ -329,8 +359,51 @@ async def _send_phase4_result(context, existing, result, model, pair):
     text = "✅ *Phase 4 Confirmed*\nSetup is following through as expected.\nEntry is valid — manage your position." if passed else "❌ *Phase 4 Failed*\nSetup did not follow through.\nConsider reducing position or exiting."
     reply_markup = None
     if passed:
+        pair = existing.get("pair", pair)
+        direction = existing.get("direction", "bullish")
+        timeframe = "5m"
+        quality_score = existing.get("phase4_score", 0)
+        grade = "A" if quality_score >= 70 else "B" if quality_score >= 50 else "C"
+        entry_price = float(existing.get("entry_price") or 0)
+        stop_loss = float(existing.get("stop_loss") or 0)
+        take_profit = float(existing.get("tp1") or 0)
+        rules_passed = result.get("passed_rules", [])
+        model_name = model.get("name")
+        phase_number = 4
+        hl_coin = normalise_pair_for_hl(pair)
+        expires = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+
+        signal_data = {
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "rules_passed": rules_passed if isinstance(rules_passed, list) else [],
+            "model_name": model_name,
+            "hl_coin": hl_coin,
+        }
+
+        signal_id = db.save_pending_signal({
+            "section": "perps",
+            "pair": pair,
+            "direction": direction,
+            "phase": phase_number,
+            "timeframe": timeframe,
+            "quality_score": quality_score,
+            "quality_grade": grade,
+            "signal_data": signal_data,
+            "status": "pending",
+            "expires_at": expires,
+        })
+
         reply_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎮 Demo Trade", callback_data=f"alert:demo_phase:{existing['id']}")],
+            [
+                InlineKeyboardButton("📲 Live Trade", callback_data=f"hl:live:{signal_id}"),
+                InlineKeyboardButton("🎮 Demo", callback_data=f"hl:demo:{signal_id}"),
+            ],
+            [
+                InlineKeyboardButton("📋 Full Plan", callback_data=f"pending:plan:{signal_id}"),
+                InlineKeyboardButton("❌ Skip", callback_data=f"pending:dismiss:{signal_id}"),
+            ],
         ])
     await context.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown", reply_markup=reply_markup)
     lc = db.get_alert_lifecycle(existing["id"])
