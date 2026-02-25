@@ -5557,37 +5557,29 @@ def is_trading_halted() -> bool:
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT halted FROM trading_state WHERE id=1")
+                cur.execute("SELECT halted FROM emergency_stop ORDER BY id DESC LIMIT 1")
                 row = cur.fetchone()
                 if not row:
-                    return True
+                    return False
                 return bool(row.get("halted"))
     except Exception:
         return True
 
 
 def set_trading_halted(halted: bool, reason: str = "") -> None:
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            if halted:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE trading_state
-                    SET halted=%s, halted_at=NOW(), halted_reason=%s
-                    WHERE id=1
+                    INSERT INTO emergency_stop (halted, reason, set_at)
+                    VALUES (%s, %s, NOW())
                     """,
-                    (True, reason),
+                    (bool(halted), reason or ("manual stop" if halted else "manual resume")),
                 )
-            else:
-                cur.execute(
-                    """
-                    UPDATE trading_state
-                    SET halted=%s, resumed_at=NOW(), halted_reason=%s
-                    WHERE id=1
-                    """,
-                    (False, reason),
-                )
-        conn.commit()
+            conn.commit()
+    except Exception:
+        return
 
 
 def signal_already_executed(signal_id: str) -> bool:
