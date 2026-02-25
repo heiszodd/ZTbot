@@ -346,21 +346,287 @@ async def _bool_guard(fn, *args):
         return False
 
 
-async def rule_htf_bullish(pair, tf, direction, cache):
-    return is_bullish_trend(await get_candles(pair, get_htf(tf), 80, cache))
 
+# ── Rule Registry ───────────────────────────────────────
 
-async def rule_htf_bearish(pair, tf, direction, cache):
-    return is_bearish_trend(await get_candles(pair, get_htf(tf), 80, cache))
+async def wrapper_htf_bull(candles, **kwargs):
+    cache = kwargs.get("cache")
+    pair = kwargs.get("pair")
+    tf = kwargs.get("tf")
+    htf = get_htf(tf)
+    htf_candles = await get_candles(pair, htf, 80, cache)
+    return is_bullish_trend(htf_candles)
 
+async def wrapper_htf_bear(candles, **kwargs):
+    cache = kwargs.get("cache")
+    pair = kwargs.get("pair")
+    tf = kwargs.get("tf")
+    htf = get_htf(tf)
+    htf_candles = await get_candles(pair, htf, 80, cache)
+    return is_bearish_trend(htf_candles)
 
-async def rule_ltf_bullish_structure(pair, tf, direction, cache):
-    return is_bullish_trend(await get_candles(pair, tf, 80, cache))
+def rule_htf_bullish(candles: list, **kwargs) -> bool:
+    try: return is_bullish_trend(candles) # This is called with HTF candles if model tf is htf
+    except Exception: return False
 
+def rule_htf_bearish(candles: list, **kwargs) -> bool:
+    try: return is_bearish_trend(candles)
+    except Exception: return False
 
-async def rule_ltf_bearish_structure(pair, tf, direction, cache):
-    return is_bearish_trend(await get_candles(pair, tf, 80, cache))
+def rule_ltf_bullish_structure(candles: list, **kwargs) -> bool:
+    try: return is_bullish_trend(candles)
+    except Exception: return False
 
+def rule_ltf_bearish_structure(candles: list, **kwargs) -> bool:
+    try: return is_bearish_trend(candles)
+    except Exception: return False
+
+def rule_bullish_ob_present(candles: list, **kwargs) -> bool:
+    try:
+        if len(candles) < 10: return False
+        obs = find_order_blocks(candles, "bullish", lookback=80)
+        if not obs: return False
+        current = candles[-1]["close"]
+        for ob in reversed(obs[-3:]):
+            if ob["bottom"] <= current <= ob["top"]: return True
+            tolerance = ob["top"] * 0.003
+            if ob["top"] <= current <= ob["top"] + tolerance: return True
+        return False
+    except Exception: return False
+
+def rule_bearish_ob_present(candles: list, **kwargs) -> bool:
+    try:
+        if len(candles) < 10: return False
+        obs = find_order_blocks(candles, "bearish", lookback=80)
+        if not obs: return False
+        current = candles[-1]["close"]
+        for ob in reversed(obs[-3:]):
+            if ob["bottom"] <= current <= ob["top"]: return True
+            tolerance = ob["bottom"] * 0.003
+            if ob["bottom"] - tolerance <= current <= ob["bottom"]: return True
+        return False
+    except Exception: return False
+
+def rule_ob_respected(candles: list, **kwargs) -> bool:
+    try:
+        direction = kwargs.get("direction", "bullish")
+        if len(candles) < 12: return False
+        obs = find_order_blocks(candles, direction, lookback=80)
+        if not obs: return False
+        confirmed = _confirmed(candles)
+        current = candles[-1]["close"]
+        for ob in reversed(obs[-3:]):
+            tapped = any(c["low"] <= ob["top"] and c["high"] >= ob["bottom"] for c in confirmed[-4:-1])
+            moving = current > ob["top"] if direction == "bullish" else current < ob["bottom"]
+            if tapped and moving: return True
+        return False
+    except Exception: return False
+
+def rule_breaker_block(candles: list, **kwargs) -> bool:
+    try:
+        direction = kwargs.get("direction", "bullish")
+        if len(candles) < 12: return False
+        opp = "bearish" if direction == "bullish" else "bullish"
+        obs = find_order_blocks(candles, opp, lookback=100)
+        if not obs: return False
+        current = candles[-1]["close"]
+        for ob in reversed(obs[-5:]):
+            if direction == "bullish" and ob["top"] * 0.997 <= current <= ob["top"] * 1.003: return True
+            if direction == "bearish" and ob["bottom"] * 0.997 <= current <= ob["bottom"] * 1.003: return True
+        return False
+    except Exception: return False
+
+def rule_bullish_fvg(candles: list, **kwargs) -> bool:
+    try:
+        if len(candles) < 10: return False
+        fvgs = find_fvg(candles, "bullish", lookback=80)
+        if not fvgs: return False
+        current = candles[-1]["close"]
+        return any(f["bottom"] <= current <= f["top"] for f in reversed(fvgs[-3:]))
+    except Exception: return False
+
+def rule_bearish_fvg(candles: list, **kwargs) -> bool:
+    try:
+        if len(candles) < 10: return False
+        fvgs = find_fvg(candles, "bearish", lookback=80)
+        if not fvgs: return False
+        current = candles[-1]["close"]
+        return any(f["bottom"] <= current <= f["top"] for f in reversed(fvgs[-3:]))
+    except Exception: return False
+
+def rule_fvg_within_ob(candles: list, **kwargs) -> bool:
+    try:
+        direction = kwargs.get("direction", "bullish")
+        if len(candles) < 12: return False
+        obs = find_order_blocks(candles, direction, lookback=100)
+        fvgs = find_fvg(candles, direction, lookback=100)
+        if not obs or not fvgs: return False
+        latest_ob = obs[-1]
+        return any(f["bottom"] >= latest_ob["bottom"] and f["top"] <= latest_ob["top"] for f in fvgs)
+    except Exception: return False
+
+def rule_liquidity_swept_bull(candles: list, **kwargs) -> bool:
+    try: return detect_liquidity_sweep(candles, "bullish")
+    except Exception: return False
+
+def rule_liquidity_swept_bear(candles: list, **kwargs) -> bool:
+    try: return detect_liquidity_sweep(candles, "bearish")
+    except Exception: return False
+
+def rule_mss_bullish(candles: list, **kwargs) -> bool:
+    try: return detect_mss(candles, "bullish")
+    except Exception: return False
+
+def rule_mss_bearish(candles: list, **kwargs) -> bool:
+    try: return detect_mss(candles, "bearish")
+    except Exception: return False
+
+def rule_bos_bullish(candles: list, **kwargs) -> bool:
+    try:
+        conf = _confirmed(candles)
+        if len(conf) < 20: return False
+        split = len(conf) // 2
+        older, recent = conf[:split], conf[split:]
+        return recent[-1]["close"] > max(c["high"] for c in older)
+    except Exception: return False
+
+def rule_bos_bearish(candles: list, **kwargs) -> bool:
+    try:
+        conf = _confirmed(candles)
+        if len(conf) < 20: return False
+        split = len(conf) // 2
+        older, recent = conf[:split], conf[split:]
+        return recent[-1]["close"] < min(c["low"] for c in older)
+    except Exception: return False
+
+def rule_pin_bar_bull(candles: list, **kwargs) -> bool:
+    try:
+        if len(candles) < 2: return False
+        c = candles[-1]
+        body = abs(c["close"] - c["open"])
+        rng = c["high"] - c["low"]
+        if rng <= 0: return False
+        upper_wick = c["high"] - max(c["open"], c["close"])
+        lower_wick = min(c["open"], c["close"]) - c["low"]
+        return lower_wick > body * 2.5 and lower_wick > upper_wick * 2
+    except Exception: return False
+
+def rule_pin_bar_bear(candles: list, **kwargs) -> bool:
+    try:
+        if len(candles) < 2: return False
+        c = candles[-1]
+        body = abs(c["close"] - c["open"])
+        rng = c["high"] - c["low"]
+        if rng <= 0: return False
+        upper_wick = c["high"] - max(c["open"], c["close"])
+        lower_wick = min(c["open"], c["close"]) - c["low"]
+        return upper_wick > body * 2.5 and upper_wick > lower_wick * 2
+    except Exception: return False
+
+def rule_bearish_engulfing(candles: list, **kwargs) -> bool:
+    try:
+        if len(candles) < 2: return False
+        prev, curr = candles[-2], candles[-1]
+        return prev["close"] > prev["open"] and curr["close"] < curr["open"] and curr["close"] < prev["open"] and curr["open"] > prev["close"]
+    except Exception: return False
+
+def rule_bullish_engulfing(candles: list, **kwargs) -> bool:
+    try:
+        if len(candles) < 2: return False
+        prev, curr = candles[-2], candles[-1]
+        return prev["close"] < prev["open"] and curr["close"] > curr["open"] and curr["close"] > prev["open"] and curr["open"] < prev["close"]
+    except Exception: return False
+
+def rule_volume_spike(candles: list, **kwargs) -> bool:
+    try:
+        if len(candles) < 21: return False
+        avg = sum(x["volume"] for x in candles[-21:-1]) / 20
+        return candles[-1]["volume"] > avg * 2
+    except Exception: return False
+
+# Rule Registry
+RULE_REGISTRY = {
+    "htf_bullish": wrapper_htf_bull,
+    "htf_bearish": wrapper_htf_bear,
+    "ltf_bullish": rule_ltf_bullish_structure,
+    "ltf_bearish": rule_ltf_bearish_structure,
+    "ob_bullish": rule_bullish_ob_present,
+    "ob_bearish": rule_bearish_ob_present,
+    "ob_respected": rule_ob_respected,
+    "fvg_bullish": rule_bullish_fvg,
+    "fvg_bearish": rule_bearish_fvg,
+    "mss_bullish": rule_mss_bullish,
+    "mss_bearish": rule_mss_bearish,
+    "bos_bullish": rule_bos_bullish,
+    "bos_bearish": rule_bos_bearish,
+    "liquidity_swept_bull": rule_liquidity_swept_bull,
+    "liquidity_swept_bear": rule_liquidity_swept_bear,
+    "pin_bar_bull": rule_pin_bar_bull,
+    "pin_bar_bear": rule_pin_bar_bear,
+    "engulfing_bull": rule_bullish_engulfing,
+    "engulfing_bear": rule_bearish_engulfing,
+    "volume_spike": rule_volume_spike,
+    "choch_bullish": rule_choch_bullish,
+    "choch_bearish": rule_choch_bearish,
+    "breaker_bullish": rule_breaker_block,
+    "breaker_bearish": rule_breaker_block,
+    
+    # Direction-agnostic aliases (resolved in evaluate_rule)
+    "bos": "bos",
+    "mss": "mss",
+    "choch": "choch",
+    "fvg": "fvg",
+    "ifvg": "fvg",
+    "order_block": "ob",
+    "ob": "ob",
+    "liquidity_sweep": "liquidity_swept",
+    "breaker": "breaker",
+}
+
+async def evaluate_rule(rule: dict, pair: str, timeframe: str, direction: str, cache: dict) -> bool:
+    rule = rule or {}
+    raw_id = str(rule.get("rule_id") or rule.get("tag") or rule.get("function") or rule.get("id") or "").lower()
+    if not raw_id:
+        return False
+        
+    # Resolve aliases and direction
+    is_bull = "bull" in direction.lower() or direction.lower() in {"long", "buy"}
+    suffix = "_bullish" if is_bull else "_bearish"
+    
+    fn_key = raw_id
+    if fn_key in RULE_REGISTRY:
+        val = RULE_REGISTRY[fn_key]
+        if isinstance(val, str): # It's an alias like "bos" -> "bos_bullish"
+            fn_key = f"{val}{suffix}"
+    
+    # Final check if key exists
+    if fn_key not in RULE_REGISTRY:
+        # One last try: append suffix if not present
+        if not fn_key.endswith("_bullish") and not fn_key.endswith("_bearish"):
+            if f"{fn_key}{suffix}" in RULE_REGISTRY:
+                fn_key = f"{fn_key}{suffix}"
+        
+    if fn_key not in RULE_REGISTRY:
+        log.warning("Rule not found: '%s' (resolved from '%s') - returning False", fn_key, raw_id)
+        return False
+        
+    fn = RULE_REGISTRY[fn_key]
+    if isinstance(fn, str): # Nested alias? shouldn't happen but safe-guard
+        fn = RULE_REGISTRY.get(f"{fn}{suffix}")
+        if not fn: return False
+
+    candles = await get_candles(pair, timeframe, 150, cache)
+    if not candles:
+        return False
+
+    try:
+        kwargs = {"pair": pair, "tf": timeframe, "direction": direction, "cache": cache}
+        if asyncio.iscoroutinefunction(fn):
+            return await fn(candles, **kwargs)
+        return bool(fn(candles, **kwargs))
+    except Exception as e:
+        log.error("Rule evaluation failed for '%s': %s", fn_key, e)
+        return False
 
 async def rule_htf_ltf_aligned_bull(pair, tf, direction, cache):
     h = await get_candles(pair, get_htf(tf), 80, cache)
@@ -374,110 +640,8 @@ async def rule_htf_ltf_aligned_bear(pair, tf, direction, cache):
     return is_bearish_trend(h) and is_bearish_trend(l)
 
 
-async def rule_bullish_ob_present(pair, timeframe, direction, cache) -> bool:
-    candles = await get_candles(pair, timeframe, 100, cache)
-    if len(candles) < 10:
-        return False
-    obs = find_order_blocks(candles, "bullish", lookback=80)
-    if not obs:
-        return False
-    current = candles[-1]["close"]
-    for ob in reversed(obs[-3:]):
-        if ob["bottom"] <= current <= ob["top"]:
-            return True
-        tolerance = ob["bottom"] * 0.003
-        if ob["bottom"] - tolerance <= current <= ob["bottom"]:
-            return True
-    return False
-
-
-async def rule_bearish_ob_present(pair, timeframe, direction, cache) -> bool:
-    candles = await get_candles(pair, timeframe, 100, cache)
-    if len(candles) < 10:
-        return False
-    obs = find_order_blocks(candles, "bearish", lookback=80)
-    if not obs:
-        return False
-    current = candles[-1]["close"]
-    for ob in reversed(obs[-3:]):
-        if ob["bottom"] <= current <= ob["top"]:
-            return True
-        tolerance = ob["top"] * 0.003
-        if ob["top"] <= current <= ob["top"] + tolerance:
-            return True
-    return False
-
-
-async def rule_ob_respected(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 120, cache)
-    if len(candles) < 12:
-        return False
-    obs = find_order_blocks(candles, direction, lookback=80)
-    if not obs:
-        return False
-    confirmed = _confirmed(candles)
-    current = candles[-1]["close"]
-    for ob in reversed(obs[-3:]):
-        tapped = any(c["low"] <= ob["top"] and c["high"] >= ob["bottom"] for c in confirmed[-4:-1])
-        moving = current > ob["top"] if direction == "bullish" else current < ob["bottom"]
-        if tapped and moving:
-            return True
-    return False
-
-
-async def rule_breaker_block(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 120, cache)
-    if len(candles) < 12:
-        return False
-    opp = "bearish" if direction == "bullish" else "bullish"
-    obs = find_order_blocks(candles, opp, lookback=100)
-    if not obs:
-        return False
-    current = candles[-1]["close"]
-    for ob in reversed(obs[-5:]):
-        if direction == "bullish" and ob["top"] * 0.997 <= current <= ob["top"] * 1.003:
-            return True
-        if direction == "bearish" and ob["bottom"] * 0.997 <= current <= ob["bottom"] * 1.003:
-            return True
-    return False
-
-
 async def rule_ob_on_htf(pair, tf, direction, cache):
     return len(find_order_blocks(await get_candles(pair, get_htf(tf), 120, cache), direction, lookback=100)) > 0
-
-
-async def rule_bullish_fvg(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 120, cache)
-    if len(candles) < 10:
-        return False
-    fvgs = find_fvg(candles, "bullish", lookback=80)
-    if not fvgs:
-        return False
-    current = candles[-1]["close"]
-    return any(f["bottom"] <= current <= f["top"] for f in reversed(fvgs[-3:]))
-
-
-async def rule_bearish_fvg(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 120, cache)
-    if len(candles) < 10:
-        return False
-    fvgs = find_fvg(candles, "bearish", lookback=80)
-    if not fvgs:
-        return False
-    current = candles[-1]["close"]
-    return any(f["bottom"] <= current <= f["top"] for f in reversed(fvgs[-3:]))
-
-
-async def rule_fvg_within_ob(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 120, cache)
-    if len(candles) < 12:
-        return False
-    obs = find_order_blocks(candles, direction, lookback=100)
-    fvgs = find_fvg(candles, direction, lookback=100)
-    if not obs or not fvgs:
-        return False
-    latest_ob = obs[-1]
-    return any(f["bottom"] >= latest_ob["bottom"] and f["top"] <= latest_ob["top"] for f in fvgs)
 
 
 async def rule_nested_fvg(pair, tf, direction, cache):
@@ -489,14 +653,6 @@ async def rule_nested_fvg(pair, tf, direction, cache):
         return False
     h_last = hf[-1]
     return any(x["bottom"] >= h_last["bottom"] and x["top"] <= h_last["top"] for x in lf)
-
-
-async def rule_liquidity_swept_bull(pair, tf, direction, cache):
-    return detect_liquidity_sweep(await get_candles(pair, tf, 60, cache), "bullish")
-
-
-async def rule_liquidity_swept_bear(pair, tf, direction, cache):
-    return detect_liquidity_sweep(await get_candles(pair, tf, 60, cache), "bearish")
 
 
 async def rule_asian_range_swept(pair, tf, direction, cache):
@@ -531,40 +687,6 @@ async def rule_stop_hunt(pair, tf, direction, cache):
     if direction == "bullish":
         return lower_wick > body * 2.5 and lower_wick > upper_wick * 2 and nxt["close"] > nxt["open"]
     return upper_wick > body * 2.5 and upper_wick > lower_wick * 2 and nxt["close"] < nxt["open"]
-
-
-async def rule_mss_bullish(pair, tf, direction, cache):
-    return detect_mss(await get_candles(pair, tf, 60, cache), "bullish")
-
-
-async def rule_mss_bearish(pair, tf, direction, cache):
-    return detect_mss(await get_candles(pair, tf, 60, cache), "bearish")
-
-
-async def rule_bos_bullish(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 60, cache)
-    confirmed = _confirmed(candles)
-    if len(confirmed) < 20:
-        return False
-    split = len(confirmed) // 2
-    older = confirmed[:split]
-    recent = confirmed[split:]
-    if not older or not recent:
-        return False
-    return recent[-1]["close"] > max(c["high"] for c in older)
-
-
-async def rule_bos_bearish(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 60, cache)
-    confirmed = _confirmed(candles)
-    if len(confirmed) < 20:
-        return False
-    split = len(confirmed) // 2
-    older = confirmed[:split]
-    recent = confirmed[split:]
-    if not older or not recent:
-        return False
-    return recent[-1]["close"] < min(c["low"] for c in older)
 
 
 async def rule_choch_bullish(pair, timeframe, direction, cache) -> bool:
@@ -690,56 +812,6 @@ async def rule_near_htf_level(pair, tf, direction, cache):
     return any(abs(current - lvl) / lvl < 0.005 for lvl in levels if lvl)
 
 
-async def rule_bullish_engulfing(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 12, cache)
-    confirmed = _confirmed(candles)
-    if len(confirmed) < 2:
-        return False
-    prev = confirmed[-2]
-    curr = confirmed[-1]
-    return prev["close"] < prev["open"] and curr["close"] > curr["open"] and curr["close"] > prev["open"] and curr["open"] < prev["close"]
-
-
-async def rule_bearish_engulfing(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 12, cache)
-    confirmed = _confirmed(candles)
-    if len(confirmed) < 2:
-        return False
-    prev = confirmed[-2]
-    curr = confirmed[-1]
-    return prev["close"] > prev["open"] and curr["close"] < curr["open"] and curr["close"] < prev["open"] and curr["open"] > prev["close"]
-
-
-async def rule_pin_bar_bull(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 8, cache)
-    confirmed = _confirmed(candles)
-    if len(confirmed) < 2:
-        return False
-    c = confirmed[-2]
-    body = abs(c["close"] - c["open"])
-    total = c["high"] - c["low"]
-    if total <= 0:
-        return False
-    upper_wick = c["high"] - max(c["open"], c["close"])
-    lower_wick = min(c["open"], c["close"]) - c["low"]
-    return lower_wick > body * 2.5 and lower_wick > upper_wick * 2
-
-
-async def rule_pin_bar_bear(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 8, cache)
-    confirmed = _confirmed(candles)
-    if len(confirmed) < 2:
-        return False
-    c = confirmed[-2]
-    body = abs(c["close"] - c["open"])
-    total = c["high"] - c["low"]
-    if total <= 0:
-        return False
-    upper_wick = c["high"] - max(c["open"], c["close"])
-    lower_wick = min(c["open"], c["close"]) - c["low"]
-    return upper_wick > body * 2.5 and upper_wick > lower_wick * 2
-
-
 async def rule_doji_rejection(pair, tf, direction, cache):
     candles = await get_candles(pair, tf, 12, cache)
     confirmed = _confirmed(candles)
@@ -750,15 +822,6 @@ async def rule_doji_rejection(pair, tf, direction, cache):
     if rng <= 0:
         return False
     return abs(c["close"] - c["open"]) / rng < 0.15
-
-
-async def rule_volume_spike(pair, tf, direction, cache):
-    candles = await get_candles(pair, tf, 25, cache)
-    confirmed = _confirmed(candles)
-    if len(confirmed) < 21:
-        return False
-    avg = sum(x["volume"] for x in confirmed[-21:-1]) / 20
-    return confirmed[-1]["volume"] > avg * 2
 
 
 async def rule_volume_declining_pullback(pair, tf, direction, cache):
@@ -900,60 +963,24 @@ async def rule_lower_low_confirmation(pair, tf, direction, cache):
     return await rule_bos_bearish(pair, tf, direction, cache)
 
 
-RULE_FUNCTIONS = {k: v for k, v in globals().items() if k.startswith("rule_")}
-
-
 async def evaluate_rule(rule: dict, pair: str, timeframe: str, direction: str, cache: dict) -> bool:
     rule = rule or {}
-    lookup_fields = [rule.get("tag"), rule.get("rule_id"), rule.get("function"), rule.get("rule_name"), rule.get("id"), rule.get("name")]
-
-    fn = None
-    matched_key = None
-    for candidate in lookup_fields:
-        if not candidate:
-            continue
-        candidate = str(candidate).strip()
-        if not candidate:
-            continue
-        if candidate in RULE_FUNCTIONS:
-            fn = RULE_FUNCTIONS[candidate]
-            matched_key = candidate
-            break
-        prefixed = f"rule_{candidate}"
-        if prefixed in RULE_FUNCTIONS:
-            fn = RULE_FUNCTIONS[prefixed]
-            matched_key = prefixed
-            break
-        normalized = candidate.lower().replace(" ", "_").replace("-", "_").replace("/", "_")
-        if normalized in RULE_FUNCTIONS:
-            fn = RULE_FUNCTIONS[normalized]
-            matched_key = normalized
-            break
-        normalized_prefixed = f"rule_{normalized}"
-        if normalized_prefixed in RULE_FUNCTIONS:
-            fn = RULE_FUNCTIONS[normalized_prefixed]
-            matched_key = normalized_prefixed
-            break
-
-    if fn is None:
-        name = str(rule.get("name", "")).strip().lower()
-        if name:
-            name_words = set(name.replace("-", " ").replace("_", " ").split())
-            for rule_key in RULE_FUNCTIONS:
-                comparable_key = rule_key.removeprefix("rule_")
-                key_words = set(comparable_key.split("_"))
-                if len(key_words & name_words) >= 2:
-                    fn = RULE_FUNCTIONS[rule_key]
-                    matched_key = rule_key
-                    log.debug("Fuzzy matched rule '%s' -> '%s'", rule.get("name"), comparable_key)
-                    break
-
-    if fn is None:
-        log.warning("No function found for rule: id='%s' name='%s' tag='%s' - returning False", rule.get("id"), rule.get("name"), rule.get("tag"))
+    rule_id = str(rule.get("rule_id") or rule.get("tag") or rule.get("function") or rule.get("id") or "").lower()
+    
+    if rule_id not in RULE_REGISTRY:
+        log.warning("Rule not found: '%s' - returning False", rule_id)
+        return False
+        
+    fn = RULE_REGISTRY[rule_id]
+    candles = await get_candles(pair, timeframe, 150, cache)
+    if not candles:
         return False
 
     try:
-        return bool(await fn(pair, timeframe, direction, cache))
-    except Exception as exc:
-        log.error("Rule '%s' failed on %s/%s/%s: %s: %s", matched_key, pair, timeframe, direction, type(exc).__name__, exc)
+        kwargs = {"pair": pair, "tf": timeframe, "direction": direction, "cache": cache}
+        if asyncio.iscoroutinefunction(fn):
+            return await fn(candles, **kwargs)
+        return bool(fn(candles, **kwargs))
+    except Exception as e:
+        log.error("Rule evaluation failed for '%s': %s", rule_id, e)
         return False

@@ -164,6 +164,10 @@ async def _route(query, data, update, context):
                 await p.handle_hl_live_trade(query, context, data.split(":")[-1])
             elif data.startswith("hl:demo:"):
                 await p.handle_hl_demo_trade(query, context, data.split(":")[-1])
+            elif data.startswith("hl:exec:live:"):
+                await p.handle_perps_exec_live(query, context, int(data.split(":")[-1]))
+            elif data.startswith("hl:exec:demo:"):
+                await p.handle_perps_exec_demo(query, context, int(data.split(":")[-1]))
             elif data.startswith("pending:dismiss:"):
                 import db
                 db.dismiss_pending_signal(int(data.split(":")[-1]))

@@ -144,9 +144,11 @@ async def run_phase_scanner(context):
 async def _run_phase_engine_inner(context):
     models = db.get_active_models()
     if not models:
-        log.info("Phase engine: no active models")
+        log.info("Phase scanner: running 0 models")
+        log.info("Phase scanner complete")
         return
 
+    log.info("Phase scanner: running %s models", len(models))
     candle_cache = {}
     for model in models:
         rules = model.get("rules", [])
@@ -156,6 +158,7 @@ async def _run_phase_engine_inner(context):
         for pair in get_pairs_for_model(model):
             for direction in get_directions_for_model(model):
                 await evaluate_model_phases(context, model, pair, direction, rules, candle_cache)
+    log.info("Phase scanner complete")
 
 
 async def evaluate_model_phases(context, model, pair, direction, rules, candle_cache):
@@ -269,6 +272,25 @@ async def _invalidate_setup(existing: dict, result: dict):
 
 async def _complete_phase(context, existing, phase_num, result, model, pair, direction):
     db.update_phase_status(existing["id"], phase_num, "completed", result)
+    
+    expires = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    db.save_pending_signal({
+        "section": "perps",
+        "pair": pair,
+        "direction": direction,
+        "phase": phase_num,
+        "timeframe": result.get("timeframe", "1h"),
+        "quality_grade": "B",
+        "quality_score": result.get("score_pct", 0),
+        "signal_data": {
+            "model_id": model["id"],
+            "model_name": model["name"],
+            "passed_rules": result.get("passed_rules", []),
+        },
+        "status": "pending",
+        "expires_at": expires
+    })
+
     if phase_num == 1:
         msg = await context.bot.send_message(chat_id=CHAT_ID, text=f"🔭 *Phase 1 Complete — Context Set*\n⚙️ {model['name']} | 🪙 {pair}\n📊 Direction: {direction.upper()}\n✅ {len(result['passed_rules'])} HTF rules passed\n⏳ Watching for Phase 2 (MTF Setup)...", parse_mode="Markdown")
         db.save_setup_phase({"id": existing["id"], "overall_status": "phase2", "alert_message_id": msg.message_id})

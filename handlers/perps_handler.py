@@ -858,11 +858,134 @@ async def handle_hl_close(query, context, coin, pct):
 
 
 async def handle_hl_live_trade(query, context, signal_id):
-    await query.message.reply_text(f"Trade confirmation flow for signal {signal_id}.")
-
+    from engine.hyperliquid.trade_planner import generate_hl_trade_plan, format_hl_trade_plan
+    
+    signals = db.get_pending_signals(section="perps", active_only=True)
+    signal = next((s for s in signals if int(s.get("id", 0)) == int(signal_id)), None)
+    if not signal:
+        await query.answer("Signal not found", show_alert=True)
+        return
+        
+    plan = await generate_hl_trade_plan(signal.get("signal_data") or signal)
+    if not plan["success"]:
+        await query.answer(f"Plan failed: {plan['error']}", show_alert=True)
+        return
+        
+    text = format_hl_trade_plan(plan)
+    text = f"🚨 *CONFIRM LIVE TRADE*\n\n{text}"
+    
+    kb = IKM([
+        [IKB("⚡ CONFIRM LIVE ORDER", callback_data=f"hl:exec:live:{signal_id}")],
+        [IKB("← Cancel", callback_data=f"pending:plan:{signal_id}")]
+    ])
+    await _edit(query, text, kb)
 
 async def handle_hl_demo_trade(query, context, signal_id):
-    await query.message.reply_text(f"Demo trade opened for signal {signal_id}.")
+    from engine.hyperliquid.trade_planner import generate_hl_trade_plan
+    
+    signals = db.get_pending_signals(section="perps", active_only=True)
+    signal = next((s for s in signals if int(s.get("id", 0)) == int(signal_id)), None)
+    if not signal:
+        await query.answer("Signal not found", show_alert=True)
+        return
+        
+    sdata = signal.get("signal_data") or signal
+    plan = await generate_hl_trade_plan(sdata)
+    if not plan["success"]:
+        await query.answer(f"Plan failed: {plan['error']}", show_alert=True)
+        return
+        
+    sd = plan["signal"]
+    text = (
+        f"🎮 *CONFIRM DEMO TRADE*\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Pair:    {plan['pair']}\n"
+        f"Side:    {plan['side']}\n"
+        f"Entry:   ${plan['entry_price']:,.4f}\n"
+        f"SL:      ${plan['stop_loss']:,.4f}\n"
+        f"TP1:     ${plan['tp1']:,.4f}\n"
+        f"TP2:     ${plan['tp2']:,.4f}\n"
+        f"TP3:     ${plan['tp3']:,.4f}\n\n"
+        f"Size:    ${plan['size_usd']:,.2f}\n"
+        f"Risk:    ${plan['risk_amount']:,.2f}\n"
+        f"Leverage:{plan['leverage']}x\n"
+        f"RR:      {plan['rr1']:.2f} (TP1)\n\n"
+        "This will use your demo balance and log to your journal."
+    )
+    
+    kb = IKM([
+        [IKB("🎮 CONFIRM DEMO TRADE", callback_data=f"hl:exec:demo:{signal_id}")],
+        [IKB("← Cancel", callback_data=f"pending:plan:{signal_id}")]
+    ])
+    await _edit(query, text, kb)
+
+async def handle_perps_exec_demo(query, context, signal_id):
+    from engine.hyperliquid.trade_planner import generate_hl_trade_plan
+    
+    signals = db.get_pending_signals(section="perps", active_only=True)
+    signal = next((s for s in signals if int(s.get("id", 0)) == int(signal_id)), None)
+    if not signal:
+        await query.answer("Signal not found", show_alert=True)
+        return
+
+    sdata = signal.get("signal_data") or signal
+    plan = await generate_hl_trade_plan(sdata)
+    if not plan["success"]:
+        await query.answer(f"Plan failed: {plan['error']}", show_alert=True)
+        return
+
+    trade_payload = {
+        "section": "perps",
+        "pair": plan["pair"],
+        "token_symbol": plan["coin"],
+        "direction": plan["side"],
+        "entry_price": plan["entry_price"],
+        "sl": plan["stop_loss"],
+        "tp1": plan["tp1"],
+        "tp2": plan["tp2"],
+        "tp3": plan["tp3"],
+        "position_size_usd": plan["size_usd"],
+        "risk_amount_usd": plan["risk_amount"],
+        "margin_reserved": plan["margin_required"],
+        "risk_pct": (plan["risk_amount"] / 10000.0) * 100, # Simplified
+        "model_id": sdata.get("model_id", "manual"),
+        "model_name": sdata.get("model_name", "Manual"),
+        "tier": "A" if plan["quality_grade"] == "A" else "B",
+        "score": plan["quality_score"],
+        "source": "signal",
+        "notes": f"Automated demo trade from {sdata.get('model_name')}",
+    }
+    
+    try:
+        tid = db.open_demo_trade(trade_payload)
+        db.dismiss_pending_signal(int(signal_id))
+        await query.answer("✅ Demo trade opened and logged!", show_alert=True)
+        await show_perps_demo_positions(query, context)
+    except Exception as e:
+        await query.answer(f"Execution error: {e}", show_alert=True)
+
+async def handle_perps_exec_live(query, context, signal_id):
+    from engine.hyperliquid.trade_planner import generate_hl_trade_plan
+    from engine.hyperliquid.executor import place_limit_order
+    
+    signals = db.get_pending_signals(section="perps", active_only=True)
+    signal = next((s for s in signals if int(s.get("id", 0)) == int(signal_id)), None)
+    if not signal:
+        await query.answer("Signal not found", show_alert=True)
+        return
+
+    sdata = signal.get("signal_data") or signal
+    plan = await generate_hl_trade_plan(sdata)
+    if not plan["success"]:
+        await query.answer(f"Plan failed: {plan['error']}", show_alert=True)
+        return
+
+    res = await place_limit_order(plan)
+    if res["success"]:
+        db.dismiss_pending_signal(int(signal_id))
+        await query.answer("✅ Live order placed on Hyperliquid!", show_alert=True)
+        await show_hl_orders(query, context)
+    else:
+        await query.answer(f"Order error: {res.get('error')}", show_alert=True)
 
 
 async def show_pending_plan(query, context, signal_id):
