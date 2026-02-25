@@ -176,7 +176,7 @@ async def show_perps_models(query, context):
             IKB(toggle, callback_data=toggle_cb),
         ])
 
-    rows.append([IKB("➕ Create Model", callback_data="perps:models:create"), IKB("🏆 Master Model", callback_data="perps:models:master")])
+    rows.append([IKB("➕ Create Model", callback_data="perps:models:create"), IKB("📚 Presets", callback_data="perps:models:create")])
     rows.append([IKB("← Perps", callback_data="perps")])
     await _edit(query, text, IKM(rows))
 
@@ -369,21 +369,19 @@ async def show_perps_model_create(query, context):
     text = (
         "➕ *Create Perps Model*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Use the wizard to build a model:\n\n"
-        "1. Choose a pair (BTC, ETH, SOL...)\n"
-        "2. Choose a timeframe (1h, 4h, 1d)\n"
-        "3. Select Phase rules for each phase\n"
-        "4. Set quality score threshold\n"
-        "5. Save and activate\n\n"
-        "_Send /wizard to start the model\n"
-        "creation wizard._\n\n"
-        "Or tap a preset below to add a\n"
-        "pre-built model instantly:"
+        "Select a pre-built model preset to\n"
+        "add instantly, or create a custom\n"
+        "model with the wizard.\n\n"
+        "Each model scans for specific ICT\n"
+        "setups on a pair + timeframe.\n\n"
+        "_Tap a preset to get started:_"
     )
     kb = IKM([
         [IKB("📚 BTC 4H Trend", callback_data="perps:models:preset:btc4h")],
+        [IKB("📚 BTC 1H Scalp", callback_data="perps:models:preset:btc1h")],
         [IKB("📚 ETH 1H Scalp", callback_data="perps:models:preset:eth1h")],
         [IKB("📚 SOL 1H Momentum", callback_data="perps:models:preset:sol1h")],
+        [IKB("📚 SOL 15m Sniper", callback_data="perps:models:preset:sol15m")],
         [IKB("← Models", callback_data="perps:models")],
     ])
     await _edit(query, text, kb)
@@ -403,6 +401,15 @@ async def handle_perps_model_preset(query, context, preset: str):
             "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
             "min_quality_score": 60,
         },
+        "btc1h": {
+            "name": "BTC 1H Scalp", "pair": "BTCUSDT", "timeframe": "1h", "active": True,
+            "description": "BTC scalp on 1H. Session overlaps, FVG entries.",
+            "phase1_rules": [{"rule_id": "rule_htf_bullish", "weight": 1}],
+            "phase2_rules": [{"rule_id": "rule_fvg_bullish", "weight": 1}, {"rule_id": "rule_liquidity_sweep", "weight": 1}],
+            "phase3_rules": [{"rule_id": "rule_session_overlap", "weight": 1}],
+            "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
+            "min_quality_score": 55,
+        },
         "eth1h": {
             "name": "ETH 1H Scalp", "pair": "ETHUSDT", "timeframe": "1h", "active": True,
             "description": "ETH scalp on 1H. Session-based entries.",
@@ -420,6 +427,15 @@ async def handle_perps_model_preset(query, context, preset: str):
             "phase3_rules": [{"rule_id": "rule_ote_zone", "weight": 1}],
             "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
             "min_quality_score": 55,
+        },
+        "sol15m": {
+            "name": "SOL 15m Sniper", "pair": "SOLUSDT", "timeframe": "15m", "active": True,
+            "description": "SOL aggressive scalp on 15m. Quick entries on displacement.",
+            "phase1_rules": [{"rule_id": "rule_bos_bullish", "weight": 1}],
+            "phase2_rules": [{"rule_id": "rule_liquidity_sweep", "weight": 1}],
+            "phase3_rules": [{"rule_id": "rule_fvg_bullish", "weight": 1}, {"rule_id": "rule_displacement", "weight": 1}],
+            "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
+            "min_quality_score": 50,
         },
     }
 

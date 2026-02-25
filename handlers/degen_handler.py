@@ -710,7 +710,8 @@ async def handle_ca_input(update, context, address: str):
 
         rows = []
         if not honeypot and score >= 40:
-            settings = db.get_user_settings()
+            from config import CHAT_ID
+            settings = db.get_user_settings(int(CHAT_ID))
             p1 = int(settings.get("buy_preset_1", 25))
             p2 = int(settings.get("buy_preset_2", 50))
             p3 = int(settings.get("buy_preset_3", 100))

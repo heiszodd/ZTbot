@@ -326,7 +326,7 @@ async def _route(query, data, update, context):
         except Exception as e:
             await _edit(f"Error: {e}", _kb([[_btn("← Home", "home")]]))
 
-    elif data.startswith("settings"):
+    elif data.startswith("settings") or data.startswith("display:"):
         try:
             if data == "settings":
                 from handlers.settings_handler import show_settings
@@ -340,6 +340,22 @@ async def _route(query, data, update, context):
             elif data == "settings:security":
                 from handlers.nav import show_security_status
                 await show_security_status(update, context)
+            elif data == "settings:display":
+                from handlers.settings_handler import show_display_settings
+                await show_display_settings(query, context)
+            elif data.startswith("display:set:"):
+                parts = data.split(":")
+                if len(parts) >= 4:
+                    from handlers.settings_handler import handle_display_setting
+                    await handle_display_setting(query, context, parts[2], parts[3])
+            elif data == "settings:alerts":
+                await _edit("🔔 *Alert Settings*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\nConfigure your alert preferences\nin each section's settings.", _kb([[_btn("← Settings", "settings")]]))
+            elif data == "settings:presets":
+                await _edit("⚡ *Buy Presets*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\nConfigure quick-buy amounts\nin Degen → Live → Risk.", _kb([[_btn("← Settings", "settings")]]))
+            elif data == "settings:risk":
+                await _edit("💰 *Risk Settings*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\nManage risk per section:\n📈 Perps → Risk\n🔥 Degen → Risk", _kb([[_btn("📈 Perps Risk", "perps:risk"), _btn("🔥 Degen Risk", "degen:live:risk")], [_btn("← Settings", "settings")]]))
+            elif data == "settings:mev":
+                await _edit("🛡 *MEV Protection*\n━━━━━━━━━━━━━━━━━━━━━━━━\n\nMEV protection is *enabled*\nfor all Solana trades.\n\nThis adds priority fees to help\nyour transactions land faster.", _kb([[_btn("← Settings", "settings")]]))
             else:
                 await _edit("Unknown Settings action.", _kb([[_btn("← Settings", "settings")]]))
         except Exception as e:

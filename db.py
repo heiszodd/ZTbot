@@ -1019,6 +1019,185 @@ def setup_db():
                 outcome VARCHAR(20),
                 resolution_price FLOAT
             );
+            CREATE TABLE IF NOT EXISTS risk_settings (
+                section VARCHAR(20) PRIMARY KEY,
+                max_risk_pct FLOAT DEFAULT 1.0,
+                daily_loss_limit FLOAT DEFAULT 200,
+                max_positions INT DEFAULT 5,
+                max_leverage INT DEFAULT 10,
+                max_daily_trades INT DEFAULT 10,
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS demo_balance (
+                section VARCHAR(20) PRIMARY KEY,
+                balance FLOAT DEFAULT 10000.0,
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS prediction_models (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100),
+                active BOOLEAN DEFAULT FALSE,
+                config JSONB DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS pending_signals (
+                id SERIAL PRIMARY KEY,
+                section VARCHAR(20),
+                coin VARCHAR(20),
+                side VARCHAR(10),
+                entry_price FLOAT,
+                sl FLOAT,
+                tp FLOAT,
+                status VARCHAR(20) DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMP DEFAULT NOW(),
+                action VARCHAR(50),
+                details JSONB,
+                user_id BIGINT,
+                success BOOLEAN,
+                error TEXT
+            );
+            CREATE TABLE IF NOT EXISTS emergency_stop (
+                id SERIAL PRIMARY KEY,
+                halted BOOLEAN DEFAULT FALSE,
+                reason TEXT,
+                set_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS executed_signals (
+                signal_id VARCHAR(100) PRIMARY KEY,
+                section VARCHAR(20),
+                coin VARCHAR(20),
+                executed_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS hl_positions (
+                id SERIAL PRIMARY KEY,
+                coin VARCHAR(20),
+                side VARCHAR(10),
+                size FLOAT,
+                entry_price FLOAT,
+                current_price FLOAT,
+                leverage FLOAT,
+                pnl FLOAT,
+                status VARCHAR(20) DEFAULT 'open',
+                trailing_stop_pct FLOAT,
+                trailing_stop_order_id VARCHAR(50),
+                opened_at TIMESTAMP DEFAULT NOW(),
+                closed_at TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS hl_orders (
+                id SERIAL PRIMARY KEY,
+                coin VARCHAR(20),
+                side VARCHAR(10),
+                order_type VARCHAR(20),
+                price FLOAT,
+                size FLOAT,
+                size_usd FLOAT,
+                order_id VARCHAR(50) UNIQUE,
+                status VARCHAR(20) DEFAULT 'open',
+                leverage FLOAT,
+                stop_loss FLOAT,
+                tp1 FLOAT,
+                tp2 FLOAT,
+                tp3 FLOAT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS poly_live_trades (
+                id SERIAL PRIMARY KEY,
+                market_id VARCHAR(100),
+                question TEXT,
+                position VARCHAR(10),
+                token_id VARCHAR(100),
+                entry_price FLOAT,
+                current_price FLOAT,
+                size_usd FLOAT,
+                shares FLOAT,
+                order_id VARCHAR(100),
+                status VARCHAR(20) DEFAULT 'open',
+                opened_at TIMESTAMP DEFAULT NOW(),
+                closed_at TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS hl_trade_plans (
+                id SERIAL PRIMARY KEY,
+                address VARCHAR(100),
+                coin VARCHAR(20),
+                side VARCHAR(10),
+                order_type VARCHAR(20),
+                entry_price FLOAT,
+                stop_loss FLOAT,
+                take_profit_1 FLOAT,
+                take_profit_2 FLOAT,
+                take_profit_3 FLOAT,
+                size_usd FLOAT,
+                leverage FLOAT,
+                risk_amount FLOAT,
+                risk_pct FLOAT,
+                rr_ratio FLOAT,
+                quality_grade VARCHAR(5),
+                quality_score FLOAT,
+                source VARCHAR(30),
+                signal_id VARCHAR(100),
+                notes TEXT,
+                status VARCHAR(20) DEFAULT 'pending',
+                executed BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            CREATE TABLE IF NOT EXISTS hl_trade_history (
+                id SERIAL PRIMARY KEY,
+                address VARCHAR(100),
+                coin VARCHAR(20),
+                side VARCHAR(10),
+                size FLOAT,
+                price FLOAT,
+                pnl FLOAT,
+                fee FLOAT,
+                order_type VARCHAR(20),
+                closed_pnl FLOAT,
+                timestamp TIMESTAMP DEFAULT NOW(),
+                hl_order_id VARCHAR(100) UNIQUE
+            );
+            CREATE TABLE IF NOT EXISTS solana_trade_plans (
+                id SERIAL PRIMARY KEY,
+                token_address VARCHAR(100) NOT NULL,
+                token_symbol VARCHAR(20),
+                action VARCHAR(10),
+                amount_usd FLOAT,
+                entry_price FLOAT,
+                slippage_pct FLOAT DEFAULT 1.0,
+                priority_fee INT DEFAULT 1000,
+                jupiter_quote JSONB DEFAULT '{}',
+                dex_route VARCHAR(100),
+                status VARCHAR(20) DEFAULT 'pending',
+                executed BOOLEAN DEFAULT FALSE,
+                tx_hash VARCHAR(100),
+                created_at TIMESTAMP DEFAULT NOW(),
+                executed_at TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS sol_positions (
+                id SERIAL PRIMARY KEY,
+                token_address VARCHAR(100),
+                token_symbol VARCHAR(20),
+                wallet_index INT DEFAULT 1,
+                tokens_held FLOAT DEFAULT 0,
+                cost_basis FLOAT DEFAULT 0,
+                entry_price FLOAT DEFAULT 0,
+                current_price FLOAT DEFAULT 0,
+                realised_pnl FLOAT DEFAULT 0,
+                status VARCHAR(20) DEFAULT 'open',
+                opened_at TIMESTAMP DEFAULT NOW(),
+                closed_at TIMESTAMP,
+                UNIQUE(token_address, wallet_index)
+            );
+            CREATE TABLE IF NOT EXISTS encrypted_keys (
+                id SERIAL PRIMARY KEY,
+                key_name VARCHAR(100) UNIQUE,
+                encrypted TEXT,
+                label TEXT,
+                stored_at TIMESTAMP DEFAULT NOW(),
+                last_used TIMESTAMP
+            );
             """)
         conn.commit()
     validate_schema()
@@ -5449,8 +5628,7 @@ def save_hl_fills(address: str, fills: list) -> None:
                         f.get("closed_pnl", 0),
                         f.get("fee", 0),
                         f.get("order_type", "Limit"),
-                        f.get("closed_pnl", 0),
-                        f.get("timestamp"),
+                        f.get("timestamp"), # Removed duplicate 'closed_pnl'
                         f.get("order_id"),
                     )
                 )
@@ -5467,21 +5645,7 @@ def save_hl_fills(address: str, fills: list) -> None:
 
 # ── Security tables/helpers ─────────────────────────
 
-def save_encrypted_key(data: dict) -> None:
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO encrypted_keys (key_name, encrypted, label, stored_at)
-                VALUES (%s, %s, %s, NOW())
-                ON CONFLICT (key_name) DO UPDATE SET
-                    encrypted = EXCLUDED.encrypted,
-                    label = EXCLUDED.label,
-                    stored_at = NOW()
-                """,
-                (data.get("key_name"), data.get("encrypted"), data.get("label", "")),
-            )
-        conn.commit()
+
 
 
 def get_encrypted_key(key_name: str) -> dict | None:
@@ -5935,6 +6099,16 @@ def get_all_prediction_models() -> list:
         return []
 
 
+def get_active_prediction_models() -> list:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM prediction_models WHERE active=TRUE")
+                return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
 def toggle_prediction_model(model_id: int, active: bool) -> bool:
     try:
         with get_conn() as conn:
@@ -6084,12 +6258,16 @@ def get_user_settings(chat_id: int | None = None) -> dict:
         return {}
 
 
-def update_user_setting(key: str, value) -> bool:
+def update_user_setting(key: str, value, chat_id: int | None = None) -> bool:
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("INSERT INTO user_settings (user_id) VALUES (0) ON CONFLICT DO NOTHING")
-                cur.execute(f"UPDATE user_settings SET {key}=%s WHERE user_id=0", (value,))
+                if chat_id is None:
+                    cur.execute("INSERT INTO user_settings (user_id) VALUES (0) ON CONFLICT DO NOTHING")
+                    cur.execute(f"UPDATE user_settings SET {key}=%s WHERE user_id=0", (value,))
+                else:
+                    cur.execute("INSERT INTO user_settings (chat_id) VALUES (%s) ON CONFLICT DO NOTHING", (int(chat_id),))
+                    cur.execute(f"UPDATE user_settings SET {key}=%s WHERE chat_id=%s", (value, int(chat_id)))
             conn.commit()
         return True
     except Exception:

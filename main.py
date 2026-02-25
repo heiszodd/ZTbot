@@ -44,7 +44,7 @@ async def post_init(app):
     log.info("%s Trading: %s", "⏸" if halted else "✅", "HALTED" if halted else "Active")
 
     import db
-
+    db.setup_db()
     db.verify_connection()
     db.log_audit({"action": "bot_started", "details": {}, "success": True})
 
@@ -83,6 +83,11 @@ def main():
     jq.run_repeating(run_hl_monitor, interval=300, first=90, name="hl_monitor")
     jq.run_repeating(run_auto_sell_monitor, interval=60, first=120, name="auto_sell")
     jq.run_repeating(run_polymarket_monitor, interval=900, first=150, name="poly_monitor")
+
+    from engine.market_alerts import check_session_opens, check_price_changes
+
+    jq.run_repeating(check_session_opens, interval=300, first=30, name="session_alerts")
+    jq.run_repeating(check_price_changes, interval=600, first=180, name="price_alerts")
 
     from security.heartbeat import send_heartbeat
 

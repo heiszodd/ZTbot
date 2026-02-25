@@ -70,11 +70,15 @@ async def show_home(update, context):
         f"{pending_str}"
     )
 
+    bottom_rows = []
+    if pending_cnt > 0:
+        bottom_rows.append([_btn("⏳ Pending Signals", "perps:pending")])
+    bottom_rows.append([_btn("🔐 Security", "settings:security"), _btn("❓ Help", "help")])
+
     kb = _kb([
         [_btn("📈 Perps", "perps"), _btn("🔥 Degen", "degen")],
         [_btn("🎯 Predictions", "predictions"), _btn("⚙️ Settings", "settings")],
-        [_btn("⏳ Pending Signals", "perps:pending") if pending_cnt > 0 else _btn("❓ Help", "help")],
-        [_btn("🔐 Security", "settings:security"), _btn("❓ Help", "help")],
+        *bottom_rows,
     ])
 
     if update.callback_query:

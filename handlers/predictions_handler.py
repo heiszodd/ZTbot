@@ -34,7 +34,25 @@ async def show_predictions_home(query, context):
 
 
 async def show_predictions_scanner(query, context):
-    await _edit(query, "🔍 *Prediction Scanner*", _kb([[_btn("← Predictions", "predictions")]]))
+    await _edit(query, "🔍 *Scanning markets...*", _kb([[_btn("← Predictions", "predictions")]]))
+    try:
+        from engine.polymarket.scanner import run_market_scanner, format_scanner_results
+        markets = await run_market_scanner()
+        text = format_scanner_results(markets)
+
+        rows = []
+        for i, m in enumerate(markets[:5]):
+            mid = m.get("condition_id") or m.get("id") or str(i)
+            q = (m.get("question") or "?")[:25]
+            rows.append([
+                _btn(f"📲 {q}", f"poly:detail:{mid}"),
+                _btn("⭐ Watch", f"poly:watch:{mid}"),
+            ])
+        rows.append([_btn("🔄 Rescan", "predictions:scanner")])
+        rows.append([_btn("← Predictions", "predictions")])
+        await _edit(query, text, _kb(rows))
+    except Exception as e:
+        await _edit(query, f"🔍 *Prediction Scanner*\n\nError: {e}", _kb([[_btn("🔄 Retry", "predictions:scanner")], [_btn("← Predictions", "predictions")]]))
 
 
 async def show_predictions_watchlist(query, context):

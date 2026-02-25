@@ -121,3 +121,56 @@ async def show_limits(query, context):
     )
     kb = _kb([[_btn("← Settings", "settings")]])
     await _edit(query, text, kb)
+
+
+async def show_display_settings(query, context):
+    from config import CHAT_ID
+
+    settings = db.get_user_settings(int(CHAT_ID))
+    chart_style = settings.get("chart_style", "detailed")
+    alert_verbosity = settings.get("alert_verbosity", "full")
+    emoji_density = settings.get("emoji_density", "normal")
+    theme = settings.get("theme", "dark")
+
+    chart_icon = "📊" if chart_style == "detailed" else "📉"
+    alert_icon = "🔔" if alert_verbosity == "full" else "🔕" if alert_verbosity == "minimal" else "🔉"
+    emoji_icon = "😀" if emoji_density == "normal" else "📝"
+    theme_icon = "🌙" if theme == "dark" else "☀️"
+
+    text = (
+        f"🎨 *Display Settings*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{chart_icon} *Chart Style:* {chart_style.title()}\n"
+        f"   How much detail in analysis messages\n\n"
+        f"{alert_icon} *Alert Verbosity:* {alert_verbosity.title()}\n"
+        f"   Amount of info in alerts\n\n"
+        f"{emoji_icon} *Emoji Density:* {emoji_density.title()}\n"
+        f"   Emoji usage in messages\n\n"
+        f"{theme_icon} *Theme:* {theme.title()}\n"
+        f"   Message formatting style\n"
+    )
+
+    chart_next = "compact" if chart_style == "detailed" else "detailed"
+    alert_next = {"full": "compact", "compact": "minimal", "minimal": "full"}.get(alert_verbosity, "full")
+    emoji_next = "minimal" if emoji_density == "normal" else "normal"
+    theme_next = "light" if theme == "dark" else "dark"
+
+    kb = _kb([
+        [_btn(f"📊 Chart: {chart_next.title()}", f"display:set:chart_style:{chart_next}")],
+        [_btn(f"🔔 Alerts: {alert_next.title()}", f"display:set:alert_verbosity:{alert_next}")],
+        [_btn(f"😀 Emoji: {emoji_next.title()}", f"display:set:emoji_density:{emoji_next}")],
+        [_btn(f"🌓 Theme: {theme_next.title()}", f"display:set:theme:{theme_next}")],
+        [_btn("← Settings", "settings")],
+    ])
+    await _edit(query, text, kb)
+
+
+async def handle_display_setting(query, context, key, value):
+    from config import CHAT_ID
+
+    try:
+        db.update_user_setting(key, value, int(CHAT_ID))
+        await query.answer(f"✅ {key.replace('_', ' ').title()} set to {value}", show_alert=False)
+    except Exception as e:
+        await query.answer(f"Failed: {e}", show_alert=True)
+    await show_display_settings(query, context)

@@ -74,7 +74,7 @@ async def hl_receive_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 label="Hyperliquid API Wallet",
                 chain="hyperliquid",
             ),
-            timeout=10.0,
+            timeout=30.0,
         )
         address = result["address"]
         fmt = result["format"]
@@ -172,7 +172,7 @@ async def sol_receive_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 label="Solana Hot Wallet",
                 chain="solana",
             ),
-            timeout=10.0,
+            timeout=30.0,
         )
         address = result["address"]
         fmt = result["format"]
@@ -260,7 +260,7 @@ async def poly_receive_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 label="Polymarket Wallet",
                 chain="polymarket",
             ),
-            timeout=10.0,
+            timeout=30.0,
         )
         db.save_poly_wallet_address(result.get("address", ""))
         await status_msg.edit_text("✅ Wallet saved.\nNow send your *Polymarket API key*.", parse_mode="Markdown")
@@ -308,7 +308,7 @@ async def poly_receive_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 label="Polymarket API Key",
                 chain="api",
             ),
-            timeout=10.0,
+            timeout=30.0,
         )
         await status_msg.edit_text("✅ API key saved.\nNow send your *Polymarket API secret*.", parse_mode="Markdown")
         return POLY_WAIT_SECRET
@@ -343,7 +343,7 @@ async def poly_receive_secret(update: Update, context: ContextTypes.DEFAULT_TYPE
                 label="Polymarket API Secret",
                 chain="api",
             ),
-            timeout=10.0,
+            timeout=30.0,
         )
         await status_msg.edit_text("✅ API secret saved.\nNow send your *Polymarket API passphrase*.", parse_mode="Markdown")
         return POLY_WAIT_PASS
@@ -378,7 +378,7 @@ async def poly_receive_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 label="Polymarket API Passphrase",
                 chain="api",
             ),
-            timeout=10.0,
+            timeout=30.0,
         )
         await status_msg.edit_text(
             "✅ *Polymarket Connected*\nAll credentials saved securely.",
