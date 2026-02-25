@@ -270,7 +270,51 @@ async def handle_perps_model_delete(query, context, mid: str):
 
 
 async def show_perps_master_model(query, context):
-    await _edit(query, "🏆 *Master Model*\nFeature coming soon.", _kb([[_btn("← Models", "perps:models")]]))
+    models = db.get_all_models() or []
+    dynamic = [m for m in models if "MODEL" in str(m.get("id", "")).upper()]
+    active = sum(1 for m in dynamic if str(m.get("status", "")).lower() == "active")
+
+    text = (
+        "🏆 *Master Models (ICT Dynamic)*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Seed and manage the new ICT models\n"
+        "used by the perps phase engine.\n\n"
+        f"Loaded dynamic models: {len(dynamic)}\n"
+        f"Active dynamic models: {active}\n"
+    )
+
+    kb = _kb([
+        [_btn("🌱 Seed / Refresh Dynamic Models", "perps:models:master:seed")],
+        [_btn("✅ Activate Dynamic Models", "perps:models:master:activate")],
+        [_btn("← Models", "perps:models")],
+    ])
+    await _edit(query, text, kb)
+
+
+async def handle_perps_master_model_seed(query, context):
+    try:
+        from create_master_models import purge_legacy_master_models, seed_dynamic_models
+
+        deleted = purge_legacy_master_models()
+        seeded = seed_dynamic_models()
+        await query.answer(f"Seeded {len(seeded)} dynamic model(s)", show_alert=True)
+        msg = f"✅ Seeded dynamic ICT models.\nDeleted legacy: {deleted}\nCreated/updated: {len(seeded)}"
+        await _edit(query, msg, _kb([[_btn("← Master Models", "perps:models:master")]]))
+    except Exception as e:
+        await query.answer("Failed to seed models", show_alert=True)
+        await _edit(query, f"❌ Failed to seed dynamic models: {e}", _kb([[_btn("← Master Models", "perps:models:master")]]))
+
+
+async def handle_perps_master_model_activate(query, context):
+    try:
+        models = db.get_all_models() or []
+        dynamic = [m for m in models if "MODEL" in str(m.get("id", "")).upper()]
+        for m in dynamic:
+            db.set_model_status(m.get("id"), "active")
+        await query.answer(f"Activated {len(dynamic)} model(s)", show_alert=False)
+    except Exception as e:
+        await query.answer(str(e), show_alert=True)
+    await show_perps_master_model(query, context)
 
 
 async def show_perps_journal(query, context):
