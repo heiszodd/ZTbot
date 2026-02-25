@@ -102,17 +102,14 @@ def store_private_key(
         )
 
     import db
-    ok = db.save_encrypted_key({
-        "key_name": key_name,
-        "encrypted": encrypted,
-        "label": label or key_name,
-    })
-
-    if not ok:
-        raise ValueError(
-            "Failed to save key to database.\n"
-            "Check Supabase connection."
-        )
+    try:
+        db.save_encrypted_key({
+            "key_name": key_name,
+            "encrypted": encrypted,
+            "label": label or key_name,
+        })
+    except RuntimeError as e:
+        raise ValueError(str(e))
 
     if key_name in _cache:
         del _cache[key_name]
