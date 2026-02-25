@@ -141,6 +141,8 @@ async def _route(query, data, update, context):
                 await p.show_perps_pending(query, context)
             elif data == "perps:others":
                 await p.show_perps_others(query, context)
+            elif data == "perps:models:purge_master":
+                await p.handle_purge_master_models(query, context)
             elif data == "hl:positions":
                 await p.show_hl_positions(query, context)
             elif data == "hl:orders":

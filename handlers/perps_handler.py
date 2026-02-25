@@ -74,7 +74,7 @@ async def show_perps_scanner(query, context):
 
     kb = IKM([
         [IKB("▶️ Run Now", callback_data="perps:scanner:run"), IKB("⏳ Pending", callback_data="perps:pending")],
-        [IKB("🧩 Manage Models", callback_data="perps:models")],
+        [IKB("🧩 Manage", callback_data="perps:models"), IKB("➕ Create", callback_data="perps:models:create")],
         [IKB("← Perps", callback_data="perps")],
     ])
     await _edit(query, text, kb)
@@ -151,15 +151,24 @@ async def show_perps_models(query, context):
     active_cnt = sum(1 for m in models if m.get("active", False) or str(m.get("status", "")).lower() == "active")
     total = len(models)
 
+    # Filter out master models from the main management list
+    filtered_models = [m for m in models if not str(m.get("id", "")).startswith("MM_") and "MASTER" not in str(m.get("name", "")).upper()]
+
     text = (
         f"🧩 *Perps Models*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Active: {active_cnt}/{total}\n\n"
+        f"Active: {active_cnt}/{total}\n"
     )
+    if len(filtered_models) < total:
+        text += f"Internal Models Hidden: {total - len(filtered_models)}\n"
+    text += "\n"
 
-    rows = [[IKB("✅ Activate All", callback_data="perps:models:all:on"), IKB("⭕ Deactivate All", callback_data="perps:models:all:off")]]
+    rows = [
+        [IKB("➕ Create Model", callback_data="perps:models:create"), IKB("📚 Presets", callback_data="perps:models:create")],
+        [IKB("✅ Activate All", callback_data="perps:models:all:on"), IKB("⭕ Deactivate All", callback_data="perps:models:all:off")]
+    ]
 
-    for m in models:
+    for m in filtered_models:
         mid = m.get("id", 0)
         name = (m.get("name") or "?")[:22]
         pair = m.get("pair", "?")
@@ -176,7 +185,6 @@ async def show_perps_models(query, context):
             IKB(toggle, callback_data=toggle_cb),
         ])
 
-    rows.append([IKB("➕ Create Model", callback_data="perps:models:create"), IKB("📚 Presets", callback_data="perps:models:create")])
     rows.append([IKB("← Perps", callback_data="perps")])
     await _edit(query, text, IKM(rows))
 
@@ -761,7 +769,27 @@ async def show_perps_pending(query, context):
 
 
 async def show_perps_others(query, context):
-    await _edit(query, "📦 *Perps — Others*", _kb([[_btn("← Perps", "perps")]]))
+    text = (
+        "📦 *Perps — Others*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Administrative utilities and advanced\n"
+        "tools for model management.\n"
+    )
+    kb = _kb([
+        [_btn("🧹 Purge Master Models", "perps:models:purge_master")],
+        [_btn("← Perps", "perps")]
+    ])
+    await _edit(query, text, kb)
+
+
+async def handle_purge_master_models(query, context):
+    try:
+        from create_master_models import purge_legacy_master_models
+        count = purge_legacy_master_models()
+        await query.answer(f"✅ Deleted {count} master models", show_alert=True)
+    except Exception as e:
+        await query.answer(f"Purge failed: {e}", show_alert=True)
+    await show_perps_others(query, context)
 
 
 async def show_hl_positions(query, context):
