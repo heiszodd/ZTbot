@@ -2229,13 +2229,31 @@ def set_degen_model_status(model_id: str, status: str) -> None:
     _cache_clear("active_degen_models")
 
 
-def delete_degen_model(model_id: str) -> None:
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM degen_model_alerts WHERE model_id=%s", (model_id,))
-            cur.execute("DELETE FROM degen_model_versions WHERE model_id=%s", (model_id,))
-            cur.execute("DELETE FROM degen_models WHERE id=%s", (model_id,))
-        conn.commit()
+def toggle_degen_model(model_id: str | int, active: bool) -> bool:
+    try:
+        status = "active" if bool(active) else "inactive"
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE degen_models SET active=%s, status=%s WHERE id=%s", (bool(active), status, str(model_id)))
+            conn.commit()
+        _cache_clear("active_degen_models")
+        return True
+    except Exception:
+        return False
+
+
+def delete_degen_model(model_id: str) -> bool:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM degen_model_alerts WHERE model_id=%s", (model_id,))
+                cur.execute("DELETE FROM degen_model_versions WHERE model_id=%s", (model_id,))
+                cur.execute("DELETE FROM degen_models WHERE id=%s", (model_id,))
+            conn.commit()
+        _cache_clear("active_degen_models")
+        return True
+    except Exception:
+        return False
 
 
 def delete_all_degen_models() -> None:
@@ -2899,7 +2917,54 @@ def update_demo_trade_pnl(trade_id: int, current_price: float) -> None:
         conn.commit()
 
 
-def close_demo_trade(trade_id: int, exit_price: float, result: str) -> dict:
+def close_demo_trade(trade_id: int, exit_price: float | None = None, result: str | None = None, pnl: float | None = None, reason: str = "manual"):
+    """Backward-compatible close helper.
+    Legacy mode: close_demo_trade(trade_id, exit_price, result) -> dict
+    New mode: close_demo_trade(trade_id, pnl=<value>, reason="manual") -> bool
+    """
+    if pnl is not None and (exit_price is None or result is None):
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT * FROM demo_trades WHERE id=%s", (int(trade_id),))
+                    tr = dict(cur.fetchone() or {})
+                    if not tr:
+                        return False
+                    if tr.get("result"):
+                        return True
+                    margin_reserved = float(tr.get("margin_reserved") or tr.get("risk_amount_usd") or 0)
+                    cur.execute(
+                        """
+                        UPDATE demo_trades
+                        SET result='CLOSED',
+                            final_pnl_usd=%s,
+                            current_pnl_usd=%s,
+                            closed_at=NOW(),
+                            margin_reserved=0,
+                            remaining_size_usd=0,
+                            close_reason=%s
+                        WHERE id=%s
+                        """,
+                        (float(pnl), float(pnl), reason, int(trade_id)),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE demo_accounts
+                        SET balance=GREATEST(balance+%s+%s, 0),
+                            total_pnl=COALESCE(total_pnl,0)+%s,
+                            total_trades=total_trades+1,
+                            winning_trades=winning_trades+CASE WHEN %s>0 THEN 1 ELSE 0 END,
+                            losing_trades=losing_trades+CASE WHEN %s<=0 THEN 1 ELSE 0 END
+                        WHERE section=%s
+                        """,
+                        (margin_reserved, float(pnl), float(pnl), float(pnl), float(pnl), tr.get("section")),
+                    )
+                conn.commit()
+            _cache_clear("demo_accounts")
+            return True
+        except Exception:
+            return False
+
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM demo_trades WHERE id=%s", (trade_id,))
@@ -2946,6 +3011,28 @@ def close_demo_trade(trade_id: int, exit_price: float, result: str) -> dict:
     _cache_clear("demo_accounts")
     log_demo_transaction(tr["section"], "trade_close", pnl_usd, f"Close demo trade #{trade_id} ({result})")
     return {**tr, "exit_price": exit_price, "final_pnl_usd": pnl_usd, "final_pnl_pct": pnl_pct, "final_x": final_x, "balance": acct.get("balance")}
+
+
+def get_closed_demo_trades(section: str, limit: int = 10) -> list:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT * FROM demo_trades
+                    WHERE section=%s AND (result IS NOT NULL OR final_pnl_usd IS NOT NULL)
+                    ORDER BY closed_at DESC NULLS LAST, opened_at DESC
+                    LIMIT %s
+                    """,
+                    (section, int(limit)),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+                for row in rows:
+                    if row.get("pnl") is None:
+                        row["pnl"] = row.get("final_pnl_usd") or row.get("current_pnl_usd") or 0
+                return rows
+    except Exception:
+        return []
 
 
 def get_open_demo_trades(section: str = None) -> list:

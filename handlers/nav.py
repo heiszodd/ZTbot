@@ -18,37 +18,70 @@ async def _edit_or_reply(query, text, kb):
 
 async def show_home(update, context):
     from datetime import datetime, timezone
-
     import db
+    from security.key_manager import key_exists
     from security.emergency_stop import is_halted
 
     now = datetime.now(timezone.utc)
+
     try:
-        hl_pnl = db.get_hl_pnl_today() or 0.0
-        sol_pnl = db.get_sol_pnl_today() or 0.0
-        poly_cnt = db.count_open_poly_positions()
+        hl_pnl = db.get_hl_pnl_today()
     except Exception:
         hl_pnl = 0.0
+    try:
+        sol_pnl = db.get_sol_pnl_today()
+    except Exception:
         sol_pnl = 0.0
+    try:
+        poly_cnt = db.count_open_poly_positions()
+    except Exception:
         poly_cnt = 0
+    try:
+        pending = db.get_pending_signals(active_only=True)
+    except Exception:
+        pending = []
+    try:
+        hl_ok = key_exists("hl_api_wallet")
+        sol_ok = key_exists("sol_hot_wallet")
+        poly_ok = key_exists("poly_hot_wallet")
+    except Exception:
+        hl_ok = sol_ok = poly_ok = False
 
     halted = is_halted()
+
+    hl_dot = "🟢" if hl_ok else "🔴"
+    sol_dot = "🟢" if sol_ok else "🔴"
+    poly_dot = "🟢" if poly_ok else "🔴"
+
+    pending_cnt = len(pending)
+    pending_str = f"  ⏳ {pending_cnt} pending signal{'s' if pending_cnt != 1 else ''}\n" if pending_cnt else ""
+
+    halt_str = "\n🛑 *TRADING HALTED — /resume to restart*\n" if halted else ""
+
     text = (
-        f"🤖 *Trading Bot*\n━━━━━━━━━━━━━━━━━━━━━━━━\n{now.strftime('%b %d  %H:%M')} UTC\n"
-        + ("\n🛑 TRADING HALTED\n" if halted else "")
-        + f"\n📈 Perps    {'🟢' if hl_pnl >= 0 else '🔴'} ${hl_pnl:+.2f}\n"
-        + f"🔥 Degen    {'🟢' if sol_pnl >= 0 else '🔴'} ${sol_pnl:+.2f}\n"
-        + f"🎯 Predictions  {poly_cnt} open\n"
+        f"🤖 *Trading Intelligence Bot*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📅 {now.strftime('%a %b %d  %H:%M')} UTC"
+        f"{halt_str}\n\n"
+        f"*Performance Today*\n"
+        f"  📈 Perps   {hl_dot}  ${hl_pnl:+.2f}\n"
+        f"  🔥 Degen   {sol_dot}  ${sol_pnl:+.2f}\n"
+        f"  🎯 Predict {poly_dot}  {poly_cnt} open\n"
+        f"{pending_str}"
     )
-    kb = _kb(
-        [
-            [_btn("📈 Perps", "perps"), _btn("🔥 Degen", "degen")],
-            [_btn("🎯 Predictions", "predictions"), _btn("⚙️ Settings", "settings")],
-            [_btn("❓ Help", "help")],
-        ]
-    )
+
+    kb = _kb([
+        [_btn("📈 Perps", "perps"), _btn("🔥 Degen", "degen")],
+        [_btn("🎯 Predictions", "predictions"), _btn("⚙️ Settings", "settings")],
+        [_btn("⏳ Pending Signals", "perps:pending") if pending_cnt > 0 else _btn("❓ Help", "help")],
+        [_btn("🔐 Security", "settings:security"), _btn("❓ Help", "help")],
+    ])
+
     if update.callback_query:
-        await _edit_or_reply(update.callback_query, text, kb)
+        try:
+            await update.callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+        except Exception:
+            await update.callback_query.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
     else:
         await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
