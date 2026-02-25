@@ -46,6 +46,30 @@ def _coerce_ohlcv_payload(market: dict[str, Any]) -> dict[str, pd.DataFrame]:
     return out
 
 
+def _resolve_min_score(model: dict[str, Any], features: list[dict[str, Any]]) -> float:
+    """Normalize legacy percent thresholds to ICT confluence-point thresholds."""
+
+    explicit = model.get("min_score")
+    if explicit is not None:
+        try:
+            return max(float(explicit), 0.0)
+        except Exception:
+            pass
+
+    raw = model.get("min_passing_score", 3)
+    try:
+        threshold = float(raw)
+    except Exception:
+        threshold = 3.0
+
+    # New math uses confluence points (typically <= 10); older models stored 0-100 % scores.
+    if threshold > 10:
+        total_weight = sum(float(f.get("weight", 1.0) or 1.0) for f in features) or 1.0
+        threshold = (threshold / 100.0) * total_weight
+
+    return max(threshold, 0.0)
+
+
 async def evaluate_market_against_model(market: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
     """Evaluate dynamic ICT model against multi-timeframe OHLCV payload."""
 
@@ -57,11 +81,13 @@ async def evaluate_market_against_model(market: dict[str, Any], model: dict[str,
     if not features:
         return {"passed": False, "score": 0.0, "grade": "F", "reason": "missing_model_features", "triggered_features": []}
 
+    min_score = _resolve_min_score(model, features)
+
     ict_model = ModelFactory.create_model(
         {
             "name": model.get("name", "ICT_DYNAMIC_MODEL"),
             "features": features,
-            "min_score": model.get("min_score", model.get("min_passing_score", 3)),
+            "min_score": min_score,
             "max_time_delta": model.get("max_time_delta", 180),
             "price_proximity_threshold": model.get("price_proximity_threshold", 0.3),
         }
