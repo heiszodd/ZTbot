@@ -787,8 +787,6 @@ def setup_db():
                 ALTER TABLE tracked_wallets ADD COLUMN IF NOT EXISTS total_copies INT DEFAULT 0;
                 ALTER TABLE tracked_wallets ADD COLUMN IF NOT EXISTS pnl_from_copies FLOAT DEFAULT 0;
 
-                ALTER TABLE solana_wallet ADD COLUMN IF NOT EXISTS wallet_index INT DEFAULT 1;
-                ALTER TABLE solana_wallet ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
                 """
             )
             cur.execute("""
@@ -952,12 +950,20 @@ def setup_db():
             CREATE TABLE IF NOT EXISTS solana_wallet (
                 id SERIAL PRIMARY KEY,
                 label VARCHAR(50) DEFAULT 'main',
-                public_key VARCHAR(100) NOT NULL,
+                public_key VARCHAR(100) NOT NULL UNIQUE,
                 sol_balance FLOAT DEFAULT 0,
                 usdc_balance FLOAT DEFAULT 0,
                 last_synced TIMESTAMP,
                 created_at TIMESTAMP DEFAULT NOW()
             );
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'solana_wallet_public_key_unique') THEN
+                    ALTER TABLE solana_wallet ADD CONSTRAINT solana_wallet_public_key_unique UNIQUE (public_key);
+                END IF;
+            END $$;
+            ALTER TABLE solana_wallet ADD COLUMN IF NOT EXISTS wallet_index INT DEFAULT 1;
+            ALTER TABLE solana_wallet ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
             CREATE TABLE IF NOT EXISTS solana_watchlist (
                 id SERIAL PRIMARY KEY,
                 token_address VARCHAR(100) NOT NULL UNIQUE,
