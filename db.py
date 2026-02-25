@@ -5750,3 +5750,302 @@ def get_sol_pnl_today() -> float:
         with conn.cursor() as cur:
             cur.execute("SELECT COALESCE(SUM(realised_pnl),0) AS p FROM sol_positions WHERE DATE(closed_at)=CURRENT_DATE")
             return float((cur.fetchone() or {}).get("p") or 0)
+
+# ── Phase 1 safe DB helpers (never raise) ─────────────────────────────
+
+def key_exists_safe(key_name: str) -> bool:
+    try:
+        return get_encrypted_key(key_name) is not None
+    except Exception:
+        return False
+
+
+def save_encrypted_key(data: dict) -> bool:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO encrypted_keys (key_name, encrypted, label, stored_at)
+                    VALUES (%s, %s, %s, NOW())
+                    ON CONFLICT (key_name) DO UPDATE SET
+                        encrypted = EXCLUDED.encrypted,
+                        label = EXCLUDED.label,
+                        stored_at = NOW()
+                    """,
+                    (data.get("key_name"), data.get("encrypted"), data.get("label", "")),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_pending_signal(id: int) -> dict | None:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM pending_signals WHERE id=%s LIMIT 1", (int(id),))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def get_all_prediction_models() -> list:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM prediction_models ORDER BY created_at")
+                return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def toggle_prediction_model(model_id: int, active: bool) -> bool:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE prediction_models SET active=%s WHERE id=%s", (bool(active), int(model_id)))
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_demo_balance(section: str = "perps") -> float:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT balance FROM demo_balance WHERE section=%s LIMIT 1", (section,))
+                row = cur.fetchone()
+                return float((row or {}).get("balance") or 10000.0)
+    except Exception:
+        return 10000.0
+
+
+def set_demo_balance(section: str, balance: float) -> None:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO demo_balance (section, balance, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (section) DO UPDATE
+                    SET balance=EXCLUDED.balance, updated_at=NOW()
+                    """,
+                    (section, float(balance)),
+                )
+            conn.commit()
+    except Exception:
+        return
+
+
+def reset_demo_balance(section: str, amount: float = 10000.0) -> None:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE demo_trades
+                    SET status='closed', closed_at=NOW(), close_reason='reset'
+                    WHERE section=%s AND status='open'
+                    """,
+                    (section,),
+                )
+            conn.commit()
+    except Exception:
+        pass
+    set_demo_balance(section, amount)
+
+
+def open_demo_trade(data: dict) -> int:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO demo_trades
+                    (section, pair, direction, entry_price, current_price, size_usd, risk_amount, stop_loss, take_profit, pnl, status)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING id
+                    """,
+                    (
+                        data.get("section", "perps"),
+                        data.get("pair"),
+                        data.get("direction"),
+                        float(data.get("entry_price") or 0),
+                        float(data.get("current_price") or data.get("entry_price") or 0),
+                        float(data.get("size_usd") or 0),
+                        float(data.get("risk_amount") or 0),
+                        float(data.get("stop_loss") or 0),
+                        float(data.get("take_profit") or 0),
+                        float(data.get("pnl") or 0),
+                        data.get("status", "open"),
+                    ),
+                )
+                row = cur.fetchone() or {}
+            conn.commit()
+            return int(row.get("id") or 0)
+    except Exception:
+        return 0
+
+
+def get_risk_settings(section: str = "perps") -> dict:
+    defaults = {"max_risk_pct": 1, "daily_loss_limit": 200, "max_positions": 5, "max_leverage": 10}
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM risk_settings WHERE section=%s LIMIT 1", (section,))
+                row = cur.fetchone()
+                return dict(row) if row else defaults
+    except Exception:
+        return defaults
+
+
+def save_risk_settings(section: str, data: dict) -> bool:
+    try:
+        payload = dict(data or {})
+        payload["section"] = section
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO risk_settings (section, max_risk_pct, daily_loss_limit, max_positions, max_leverage, max_daily_trades, updated_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,NOW())
+                    ON CONFLICT (section) DO UPDATE SET
+                      max_risk_pct=EXCLUDED.max_risk_pct,
+                      daily_loss_limit=EXCLUDED.daily_loss_limit,
+                      max_positions=EXCLUDED.max_positions,
+                      max_leverage=EXCLUDED.max_leverage,
+                      max_daily_trades=EXCLUDED.max_daily_trades,
+                      updated_at=NOW()
+                    """,
+                    (
+                        section,
+                        float(payload.get("max_risk_pct") or 1),
+                        float(payload.get("daily_loss_limit") or 200),
+                        int(payload.get("max_positions") or 5),
+                        int(payload.get("max_leverage") or 10),
+                        int(payload.get("max_daily_trades") or 10),
+                    ),
+                )
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_user_settings(chat_id: int | None = None) -> dict:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                if chat_id is None:
+                    cur.execute("SELECT * FROM user_settings WHERE user_id=0 LIMIT 1")
+                else:
+                    cur.execute("SELECT * FROM user_settings WHERE chat_id=%s LIMIT 1", (int(chat_id),))
+                row = cur.fetchone()
+                return dict(row) if row else {}
+    except Exception:
+        return {}
+
+
+def update_user_setting(key: str, value) -> bool:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO user_settings (user_id) VALUES (0) ON CONFLICT DO NOTHING")
+                cur.execute(f"UPDATE user_settings SET {key}=%s WHERE user_id=0", (value,))
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_sol_wallet_address() -> str:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT public_key FROM solana_wallet WHERE is_active=TRUE ORDER BY id DESC LIMIT 1")
+                row = cur.fetchone()
+                return str((row or {}).get("public_key") or "")
+    except Exception:
+        return ""
+
+
+def get_closed_poly_live_trades(limit: int = 10) -> list:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM poly_live_trades WHERE status='closed' ORDER BY closed_at DESC LIMIT %s",
+                    (int(limit),),
+                )
+                return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_auto_sell_config(token_address: str) -> dict | None:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM auto_sell_configs WHERE token_address=%s AND active=TRUE ORDER BY id DESC LIMIT 1",
+                    (token_address,),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def count_open_poly_positions() -> int:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS c FROM poly_live_trades WHERE status='open'")
+                return int((cur.fetchone() or {}).get("c") or 0)
+    except Exception:
+        return 0
+
+
+def count_open_poly_demo_trades() -> int:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS c FROM poly_demo_trades WHERE status='open'")
+                return int((cur.fetchone() or {}).get("c") or 0)
+    except Exception:
+        return 0
+
+
+def count_active_prediction_models() -> int:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS c FROM prediction_models WHERE active=TRUE")
+                return int((cur.fetchone() or {}).get("c") or 0)
+    except Exception:
+        return 0
+
+
+def get_hl_pnl_today() -> float:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COALESCE(SUM(closed_pnl),0) AS p FROM hl_trade_history WHERE DATE(timestamp)=CURRENT_DATE")
+                return float((cur.fetchone() or {}).get("p") or 0)
+    except Exception:
+        return 0.0
+
+
+def get_sol_pnl_today() -> float:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COALESCE(SUM(realised_pnl),0) AS p FROM sol_positions WHERE DATE(closed_at)=CURRENT_DATE")
+                return float((cur.fetchone() or {}).get("p") or 0)
+    except Exception:
+        return 0.0
