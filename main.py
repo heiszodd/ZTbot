@@ -45,6 +45,7 @@ async def post_init(app):
 
     import db
 
+    db.verify_connection()
     db.log_audit({"action": "bot_started", "details": {}, "success": True})
 
 

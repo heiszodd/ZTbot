@@ -95,19 +95,51 @@ async def handle_perps_scanner_run(query, context):
     await show_perps_scanner(query, context)
 
 
+async def _first_model_table_with_data() -> tuple[str | None, list]:
+    from psycopg2 import sql
+
+    for table in ("models", "trading_models", "perps_models"):
+        try:
+            with db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL("SELECT * FROM {} ORDER BY created_at NULLS LAST, id").format(sql.Identifier(table))
+                    )
+                    rows = [dict(r) for r in cur.fetchall()]
+                    if rows:
+                        return table, rows
+        except Exception:
+            continue
+    return None, []
+
+
+async def _detect_model_table() -> str | None:
+    from psycopg2 import sql
+
+    for table in ("models", "trading_models", "perps_models"):
+        try:
+            with db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql.SQL("SELECT 1 FROM {} LIMIT 1").format(sql.Identifier(table)))
+                    cur.fetchone()
+                conn.commit()
+            return table
+        except Exception:
+            continue
+    return None
+
+
 async def show_perps_models(query, context):
-    try:
-        models = db.get_all_models() or []
-    except Exception:
-        models = []
+    _, models = await _first_model_table_with_data()
 
     if not models:
         text = (
             "🧩 *Perps Models*\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "No models yet.\n"
+            "No models yet.\n\n"
             "Create your first model to start\n"
-            "scanning for trade setups."
+            "scanning for trade setups.\n\n"
+            "_Tap Create Model to get started._"
         )
         kb = IKM([
             [IKB("➕ Create Model", callback_data="perps:models:create")],
@@ -116,37 +148,36 @@ async def show_perps_models(query, context):
         await _edit(query, text, kb)
         return
 
-    active_count = sum(1 for m in models if m.get("active") or str(m.get("status", "")).lower() == "active")
+    active_cnt = sum(1 for m in models if m.get("active", False) or str(m.get("status", "")).lower() == "active")
     total = len(models)
 
     text = (
         f"🧩 *Perps Models*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Active: {active_count}/{total}\n\n"
+        f"Active: {active_cnt}/{total}\n\n"
     )
 
     rows = [[IKB("✅ Activate All", callback_data="perps:models:all:on"), IKB("⭕ Deactivate All", callback_data="perps:models:all:off")]]
 
     for m in models:
-        mid = str(m.get("id", ""))
-        name = m.get("name", "?")[:22]
+        mid = m.get("id", 0)
+        name = (m.get("name") or "?")[:22]
         pair = m.get("pair", "?")
         tf = m.get("timeframe", "?")
-        active = m.get("active") or str(m.get("status", "")).lower() == "active"
+        active = m.get("active", False) or str(m.get("status", "")).lower() == "active"
         grade = m.get("grade") or m.get("quality_grade") or ""
         status = "✅" if active else "⭕"
-        toggle_label = "Deactivate" if active else "Activate"
+        toggle = "Deactivate" if active else "Activate"
         toggle_cb = f"perps:models:off:{mid}" if active else f"perps:models:on:{mid}"
         grade_str = f" {grade}" if grade else ""
         text += f"{status} *{name}*{grade_str}\n   {pair} · {tf}\n"
         rows.append([
             IKB(f"📋 {name[:18]}", callback_data=f"perps:models:view:{mid}"),
-            IKB(toggle_label, callback_data=toggle_cb),
+            IKB(toggle, callback_data=toggle_cb),
         ])
 
     rows.append([IKB("➕ Create Model", callback_data="perps:models:create"), IKB("🏆 Master Model", callback_data="perps:models:master")])
     rows.append([IKB("← Perps", callback_data="perps")])
-
     await _edit(query, text, IKM(rows))
 
 
@@ -239,84 +270,199 @@ def _format_rules(rules: list) -> str:
     return ", ".join(names) + suffix
 
 
-async def handle_perps_model_toggle(query, context, mid: str, on: bool):
-    try:
-        db.set_model_status(mid, "active" if on else "inactive")
-        label = "activated" if on else "deactivated"
-        await query.answer(f"Model {label}", show_alert=False)
-    except Exception as e:
-        await query.answer(str(e), show_alert=True)
-    await show_perps_model_detail(query, context, mid)
+async def handle_perps_model_toggle(query, context, mid: int, on: bool):
+    from psycopg2 import sql
 
+    toggled = False
+    for table in ("models", "trading_models", "perps_models"):
+        try:
+            with db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL("UPDATE {} SET active=%s, status=%s WHERE id=%s RETURNING id").format(sql.Identifier(table)),
+                        (bool(on), "active" if on else "inactive", int(mid)),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+            if row:
+                toggled = True
+                break
+        except Exception:
+            continue
 
-async def handle_perps_models_all(query, context, on: bool):
-    try:
-        for m in (db.get_all_models() or []):
-            db.set_model_status(m.get("id"), "active" if on else "inactive")
-        label = "activated" if on else "deactivated"
-        await query.answer(f"All models {label}", show_alert=False)
-    except Exception as e:
-        await query.answer(str(e), show_alert=True)
+    label = "activated" if on else "deactivated"
+    if toggled:
+        await query.answer(f"✅ Model {label}", show_alert=False)
+    else:
+        await query.answer("Toggle failed — check logs", show_alert=True)
     await show_perps_models(query, context)
 
 
-async def handle_perps_model_delete(query, context, mid: str):
-    try:
-        db.delete_model(mid)
-        await query.answer("Model deleted", show_alert=False)
-    except Exception as e:
-        await query.answer(str(e), show_alert=True)
+async def handle_perps_models_all(query, context, on: bool):
+    from psycopg2 import sql
+
+    updated = False
+    for table in ("models", "trading_models", "perps_models"):
+        try:
+            with db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL("UPDATE {} SET active=%s, status=%s WHERE id <> %s RETURNING id").format(sql.Identifier(table)),
+                        (bool(on), "active" if on else "inactive", 0),
+                    )
+                    rows = cur.fetchall()
+                conn.commit()
+            if rows is not None:
+                updated = True
+                break
+        except Exception:
+            continue
+
+    label = "activated" if on else "deactivated"
+    if updated:
+        await query.answer(f"All models {label}", show_alert=False)
+    else:
+        await query.answer("Update failed", show_alert=True)
+    await show_perps_models(query, context)
+
+
+async def handle_perps_model_delete(query, context, mid: int):
+    from psycopg2 import sql
+
+    deleted = False
+    for table in ("models", "trading_models", "perps_models"):
+        try:
+            with db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql.SQL("DELETE FROM {} WHERE id=%s RETURNING id").format(sql.Identifier(table)), (int(mid),))
+                    row = cur.fetchone()
+                conn.commit()
+            if row:
+                deleted = True
+                break
+        except Exception:
+            continue
+
+    await query.answer("Model deleted" if deleted else "Delete failed", show_alert=False)
     await show_perps_models(query, context)
 
 
 async def show_perps_master_model(query, context):
-    models = db.get_all_models() or []
-    dynamic = [m for m in models if "MODEL" in str(m.get("id", "")).upper()]
-    active = sum(1 for m in dynamic if str(m.get("status", "")).lower() == "active")
-
     text = (
-        "🏆 *Master Models (ICT Dynamic)*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Seed and manage the new ICT models\n"
-        "used by the perps phase engine.\n\n"
-        f"Loaded dynamic models: {len(dynamic)}\n"
-        f"Active dynamic models: {active}\n"
+        "🏆 *Master Model*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "The master model aggregates signals\n"
+        "across all active models.\n\n"
+        "A signal must pass at least 2 active\n"
+        "models to reach Phase 4 alert.\n\n"
+        "_Configure individual models to\n"
+        "tune master model sensitivity._"
     )
-
-    kb = _kb([
-        [_btn("🌱 Seed / Refresh Dynamic Models", "perps:models:master:seed")],
-        [_btn("✅ Activate Dynamic Models", "perps:models:master:activate")],
-        [_btn("← Models", "perps:models")],
+    kb = IKM([
+        [IKB("🧩 Manage Models", callback_data="perps:models")],
+        [IKB("← Perps", callback_data="perps")],
     ])
     await _edit(query, text, kb)
 
 
-async def handle_perps_master_model_seed(query, context):
-    try:
-        from create_master_models import purge_legacy_master_models, seed_dynamic_models
-
-        deleted = purge_legacy_master_models()
-        seeded = seed_dynamic_models()
-        await query.answer(f"Seeded {len(seeded)} dynamic model(s)", show_alert=True)
-        msg = f"✅ Seeded dynamic ICT models.\nDeleted legacy: {deleted}\nCreated/updated: {len(seeded)}"
-        await _edit(query, msg, _kb([[_btn("← Master Models", "perps:models:master")]]))
-    except Exception as e:
-        await query.answer("Failed to seed models", show_alert=True)
-        await _edit(query, f"❌ Failed to seed dynamic models: {e}", _kb([[_btn("← Master Models", "perps:models:master")]]))
-
-
-async def handle_perps_master_model_activate(query, context):
-    try:
-        models = db.get_all_models() or []
-        dynamic = [m for m in models if "MODEL" in str(m.get("id", "")).upper()]
-        for m in dynamic:
-            db.set_model_status(m.get("id"), "active")
-        await query.answer(f"Activated {len(dynamic)} model(s)", show_alert=False)
-    except Exception as e:
-        await query.answer(str(e), show_alert=True)
-    await show_perps_master_model(query, context)
+async def show_perps_model_create(query, context):
+    text = (
+        "➕ *Create Perps Model*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Use the wizard to build a model:\n\n"
+        "1. Choose a pair (BTC, ETH, SOL...)\n"
+        "2. Choose a timeframe (1h, 4h, 1d)\n"
+        "3. Select Phase rules for each phase\n"
+        "4. Set quality score threshold\n"
+        "5. Save and activate\n\n"
+        "_Send /wizard to start the model\n"
+        "creation wizard._\n\n"
+        "Or tap a preset below to add a\n"
+        "pre-built model instantly:"
+    )
+    kb = IKM([
+        [IKB("📚 BTC 4H Trend", callback_data="perps:models:preset:btc4h")],
+        [IKB("📚 ETH 1H Scalp", callback_data="perps:models:preset:eth1h")],
+        [IKB("📚 SOL 1H Momentum", callback_data="perps:models:preset:sol1h")],
+        [IKB("← Models", callback_data="perps:models")],
+    ])
+    await _edit(query, text, kb)
 
 
+async def handle_perps_model_preset(query, context, preset: str):
+    from psycopg2 import sql
+    import json
+
+    presets = {
+        "btc4h": {
+            "name": "BTC 4H Trend", "pair": "BTCUSDT", "timeframe": "4h", "active": True,
+            "description": "BTC trend following on 4H. Looks for structure, OB, FVG confluence.",
+            "phase1_rules": [{"rule_id": "rule_htf_bullish", "weight": 1}, {"rule_id": "rule_bos_bullish", "weight": 1}],
+            "phase2_rules": [{"rule_id": "rule_fvg_bullish", "weight": 1}, {"rule_id": "rule_bullish_ob_present", "weight": 1}],
+            "phase3_rules": [{"rule_id": "rule_ote_zone", "weight": 1}],
+            "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
+            "min_quality_score": 60,
+        },
+        "eth1h": {
+            "name": "ETH 1H Scalp", "pair": "ETHUSDT", "timeframe": "1h", "active": True,
+            "description": "ETH scalp on 1H. Session-based entries.",
+            "phase1_rules": [{"rule_id": "rule_htf_bullish", "weight": 1}],
+            "phase2_rules": [{"rule_id": "rule_fvg_bullish", "weight": 1}],
+            "phase3_rules": [{"rule_id": "rule_session_overlap", "weight": 1}],
+            "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
+            "min_quality_score": 55,
+        },
+        "sol1h": {
+            "name": "SOL 1H Momentum", "pair": "SOLUSDT", "timeframe": "1h", "active": True,
+            "description": "SOL momentum on 1H. High volatility entries.",
+            "phase1_rules": [{"rule_id": "rule_bos_bullish", "weight": 1}],
+            "phase2_rules": [{"rule_id": "rule_fvg_bullish", "weight": 1}],
+            "phase3_rules": [{"rule_id": "rule_ote_zone", "weight": 1}],
+            "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
+            "min_quality_score": 55,
+        },
+    }
+
+    p = presets.get(preset)
+    if not p:
+        await query.answer("Unknown preset", show_alert=True)
+        return
+
+    saved = False
+    for table in ("models", "trading_models", "perps_models"):
+        try:
+            with db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL(
+                            """
+                            INSERT INTO {} (
+                                name, pair, timeframe, active, status,
+                                description, phase1_rules, phase2_rules,
+                                phase3_rules, phase4_rules, min_quality_score
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s)
+                            RETURNING id
+                            """
+                        ).format(sql.Identifier(table)),
+                        (
+                            p["name"], p["pair"], p["timeframe"], bool(p["active"]), "active",
+                            p["description"], json.dumps(p["phase1_rules"]), json.dumps(p["phase2_rules"]),
+                            json.dumps(p["phase3_rules"]), json.dumps(p["phase4_rules"]), p["min_quality_score"],
+                        ),
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+            if row:
+                saved = True
+                break
+        except Exception:
+            continue
+
+    if saved:
+        await query.answer(f"✅ {p['name']} added", show_alert=True)
+    else:
+        await query.answer("Failed to save — check table name", show_alert=True)
+    await show_perps_models(query, context)
 async def show_perps_journal(query, context):
     entries = db.get_journal_entries(limit=5) or []
     lines = "\n".join([f"• {e.get('title','Untitled')}" for e in entries]) or "No journal entries yet."

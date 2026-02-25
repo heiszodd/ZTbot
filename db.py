@@ -5852,13 +5852,49 @@ def save_encrypted_key(data: dict) -> bool:
                         label = EXCLUDED.label,
                         stored_at = NOW()
                     """,
-                    (data.get("key_name"), data.get("encrypted"), data.get("label", "")),
+                    (data["key_name"], data["encrypted"], data.get("label", "")),
                 )
             conn.commit()
         return True
-    except Exception:
-        return False
+    except Exception as e:
+        import logging
 
+        log = logging.getLogger(__name__)
+        log.error(
+            "save_encrypted_key FAILED: key=%s error=%s: %s",
+            data.get("key_name"),
+            type(e).__name__,
+            e,
+            exc_info=True,
+        )
+        print(
+            "save_encrypted_key FAILED: "
+            f"key={data.get('key_name')} "
+            f"error={type(e).__name__}: {e}",
+            flush=True,
+        )
+        raise RuntimeError(f"Database write failed: {e}") from e
+
+
+def verify_connection() -> bool:
+    """
+    Call once at startup to verify DB works.
+    Logs the result. Never raises.
+    """
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM encrypted_keys LIMIT 1")
+                cur.fetchone()
+        import logging
+
+        logging.getLogger(__name__).info("✅ DB connection verified (encrypted_keys)")
+        return True
+    except Exception as e:
+        import logging
+
+        logging.getLogger(__name__).error(f"❌ DB connection FAILED: {e}")
+        return False
 
 def get_pending_signal(id: int) -> dict | None:
     try:

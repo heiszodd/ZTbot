@@ -92,26 +92,24 @@ async def _route(query, data, update, context):
                 await p.handle_perps_scanner_run(query, context)
             elif data == "perps:models":
                 await p.show_perps_models(query, context)
-            elif data == "perps:models:create":
-                await _edit("Model creation flow coming soon.", _kb([[_btn("← Models", "perps:models")]]))
             elif data.startswith("perps:models:view:"):
-                await p.show_perps_model_detail(query, context, data.split(":", 3)[-1])
+                await p.show_perps_model_detail(query, context, int(data.split(":")[-1]))
             elif data.startswith("perps:models:on:"):
-                await p.handle_perps_model_toggle(query, context, data.split(":", 3)[-1], True)
+                await p.handle_perps_model_toggle(query, context, int(data.split(":")[-1]), True)
             elif data.startswith("perps:models:off:"):
-                await p.handle_perps_model_toggle(query, context, data.split(":", 3)[-1], False)
+                await p.handle_perps_model_toggle(query, context, int(data.split(":")[-1]), False)
             elif data == "perps:models:all:on":
                 await p.handle_perps_models_all(query, context, True)
             elif data == "perps:models:all:off":
                 await p.handle_perps_models_all(query, context, False)
-            elif data.startswith("perps:models:delete:"):
-                await p.handle_perps_model_delete(query, context, data.split(":", 3)[-1])
+            elif data == "perps:models:create":
+                await p.show_perps_model_create(query, context)
             elif data == "perps:models:master":
                 await p.show_perps_master_model(query, context)
-            elif data == "perps:models:master:seed":
-                await p.handle_perps_master_model_seed(query, context)
-            elif data == "perps:models:master:activate":
-                await p.handle_perps_master_model_activate(query, context)
+            elif data.startswith("perps:models:preset:"):
+                await p.handle_perps_model_preset(query, context, data.split(":")[-1])
+            elif data.startswith("perps:models:delete:"):
+                await p.handle_perps_model_delete(query, context, int(data.split(":")[-1]))
             elif data == "perps:journal":
                 await p.show_perps_journal(query, context)
             elif data in {"perps:live", "hl:refresh"}:
