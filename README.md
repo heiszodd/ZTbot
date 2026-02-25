@@ -1,3 +1,4 @@
+
 # 🤖 ZTbot — Trading Intelligence Bot
 
 A **Telegram-based trading intelligence bot** that combines ICT / SMC technical analysis, multi-chain execution, AI-powered chart reading, and disciplined risk management into a single automated assistant.
