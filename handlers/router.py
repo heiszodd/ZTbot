@@ -257,9 +257,15 @@ async def _route(query, data, update, context):
             elif data.startswith("degen:demo:risk:"):
                 await d.handle_demo_risk_action(query, context, data.split(":", 3)[-1])
             elif data.startswith("degen:watchlist:add:"):
-                await query.answer("Added to watchlist", show_alert=False)
+                import db
+                address = data.split(":")[-1]
+                db.add_to_solana_watchlist(address)
+                await query.answer("Added to watchlist", show_alert=True)
             elif data.startswith("degen:blacklist:add:"):
-                await query.answer("Added to blacklist", show_alert=False)
+                import db
+                address = data.split(":")[-1]
+                db.add_to_solana_blacklist(address)
+                await query.answer("Added to blacklist", show_alert=True)
             elif data.startswith("degen:buy:"):
                 parts = data.split(":")
                 await d.handle_quick_buy(query, context, parts[2], float(parts[3]))

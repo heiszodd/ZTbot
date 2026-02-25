@@ -98,27 +98,24 @@ async def hl_receive_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except ValueError as e:
         await status_msg.edit_text(
-            f"❌ *Could not store key*\n\n"
+            f"❌ Could not store key\n\n"
             f"{str(e)}\n\n"
             f"Please try again:",
-            parse_mode="Markdown",
             reply_markup=_kb([[IKB("🔄 Try Again", callback_data="hl:connect"), IKB("❌ Cancel", callback_data="perps")]]),
         )
         return ConversationHandler.END
     except asyncio.TimeoutError:
         await status_msg.edit_text(
-            "❌ *Timeout while processing key*\n\nPlease try again.",
-            parse_mode="Markdown",
+            "❌ Timeout while processing key\n\nPlease try again.",
             reply_markup=_kb([[IKB("🔄 Try Again", callback_data="hl:connect"), IKB("❌ Cancel", callback_data="perps")]]),
         )
         return ConversationHandler.END
     except Exception as e:
         log.error("Wallet setup error: %s", e, exc_info=True)
         await status_msg.edit_text(
-            f"❌ *Unexpected error*\n\n"
-            f"`{str(e)[:300]}`\n\n"
+            f"❌ Unexpected error\n\n"
+            f"{str(e)[:300]}\n\n"
             f"Please try again.",
-            parse_mode="Markdown",
             reply_markup=_kb([[IKB("← Back", callback_data="perps")]]),
         )
         return ConversationHandler.END
@@ -191,23 +188,20 @@ async def sol_receive_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except ValueError as e:
         await status_msg.edit_text(
-            f"❌ *Could not store key*\n\n{str(e)}\n\nPlease try again:",
-            parse_mode="Markdown",
+            f"❌ Could not store key\n\n{str(e)}\n\nPlease try again:",
             reply_markup=_kb([[IKB("🔄 Try Again", callback_data="sol:connect"), IKB("❌ Cancel", callback_data="degen")]]),
         )
         return ConversationHandler.END
     except asyncio.TimeoutError:
         await status_msg.edit_text(
-            "❌ *Timeout while processing key*\n\nPlease try again.",
-            parse_mode="Markdown",
+            "❌ Timeout while processing key\n\nPlease try again.",
             reply_markup=_kb([[IKB("🔄 Try Again", callback_data="sol:connect"), IKB("❌ Cancel", callback_data="degen")]]),
         )
         return ConversationHandler.END
     except Exception as e:
         log.error("Solana setup error: %s", e, exc_info=True)
         await status_msg.edit_text(
-            f"❌ *Unexpected error*\n\n`{str(e)[:300]}`\n\nPlease try again.",
-            parse_mode="Markdown",
+            f"❌ Unexpected error\n\n{str(e)[:300]}\n\nPlease try again.",
             reply_markup=_kb([[IKB("← Back", callback_data="degen")]]),
         )
         return ConversationHandler.END

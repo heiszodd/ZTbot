@@ -73,7 +73,7 @@ async def show_home(update, context):
     bottom_rows = []
     if pending_cnt > 0:
         bottom_rows.append([_btn("⏳ Pending Signals", "perps:pending")])
-    bottom_rows.append([_btn("🔐 Security", "settings:security"), _btn("❓ Help", "help")])
+    bottom_rows.append([_btn("🔐 Security", "settings:security")])
 
     kb = _kb([
         [_btn("📈 Perps", "perps"), _btn("🔥 Degen", "degen")],

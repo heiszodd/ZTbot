@@ -625,11 +625,64 @@ async def show_position_detail(query, context, address):
 
 
 async def handle_quick_buy(query, context, address, amount):
-    await query.answer("Buy flow submitted", show_alert=True)
+    await query.answer("⏳ Generating trade plan...", show_alert=False)
+    try:
+        from engine.solana.trade_planner import generate_trade_plan, format_trade_plan
+        from engine.solana.contract_scanner import scan_contract
+        
+        # Try to get some scan data for better slippage calc
+        try:
+            scan_data = await scan_contract(address)
+        except Exception:
+            scan_data = {}
+            
+        symbol = scan_data.get("symbol") or "TOKEN"
+        plan = await generate_trade_plan(address, symbol, "buy", float(amount), scan_data)
+        
+        if not plan.get("success"):
+            await query.answer(f"❌ Failed: {plan.get('error')}", show_alert=True)
+            return
+
+        text = format_trade_plan(plan)
+        await _edit(query, text, IKM([[IKB("← Back", callback_data=f"degen:scan_contract")]]))
+        
+    except Exception as e:
+        await query.answer(f"Error: {str(e)[:100]}", show_alert=True)
 
 
 async def handle_demo_buy(query, context, address, amount):
-    await query.answer("Demo buy created", show_alert=True)
+    await query.answer("⏳ Executing demo buy...", show_alert=False)
+    try:
+        from engine.solana.contract_scanner import scan_contract
+        from engine.solana.wallet_reader import get_token_price_usd
+        
+        scan_data = await scan_contract(address)
+        symbol = scan_data.get("symbol") or "TOKEN"
+        price = await get_token_price_usd(address)
+        
+        if price <= 0:
+            await query.answer("❌ Could not get price", show_alert=True)
+            return
+
+        # Execute in DB
+        ok = db.execute_demo_trade(
+            section="degen",
+            pair=symbol,
+            side="buy",
+            entry_price=price,
+            size_usd=float(amount),
+            token_address=address
+        )
+        
+        if ok:
+            await query.answer(f"✅ Demo bought ${amount} of {symbol}", show_alert=True)
+        else:
+            await query.answer("❌ Demo execution failed", show_alert=True)
+            
+        await show_degen_demo(query, context)
+        
+    except Exception as e:
+        await query.answer(f"Error: {str(e)[:100]}", show_alert=True)
 
 
 async def handle_ca_input(update, context, address: str):

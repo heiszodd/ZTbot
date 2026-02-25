@@ -174,22 +174,43 @@ def _process_solana_key(raw: str, is_seed: bool) -> tuple[str, str]:
                 mnemo = Mnemonic("english")
                 seed_bytes = mnemo.to_seed(raw, passphrase="")
                 kp = _derive_sol_keypair(seed_bytes)
-            except ImportError:
+            except Exception as e:
+                log.error("Seed derivation failed: %s", e)
                 import hashlib
-                seed_bytes = hashlib.pbkdf2_hmac(
-                    "sha512",
-                    raw.encode(), b"mnemonic", 2048
-                )
+                seed_bytes = hashlib.pbkdf2_hmac("sha512", raw.encode(), b"mnemonic", 2048)
                 kp = Keypair.from_seed(seed_bytes[:32])
         else:
+            # Try Base58
             try:
                 from base58 import b58decode
                 secret = b58decode(raw)
-                kp = Keypair.from_bytes(secret)
-            except Exception:
-                import json
-                byte_list = json.loads(raw)
-                kp = Keypair.from_bytes(bytes(byte_list))
+                if len(secret) == 64:
+                    kp = Keypair.from_bytes(secret)
+                elif len(secret) == 32:
+                    kp = Keypair.from_seed(secret)
+                else:
+                    raise ValueError(f"Invalid secret length: {len(secret)}")
+            except Exception as b58e:
+                # Try JSON byte array
+                try:
+                    import json
+                    byte_list = json.loads(raw)
+                    if isinstance(byte_list, list):
+                        kp = Keypair.from_bytes(bytes(byte_list))
+                    else:
+                        raise ValueError("Not a JSON list")
+                except Exception as jsone:
+                    # Try Hex
+                    try:
+                        secret = bytes.fromhex(raw.replace("0x", ""))
+                        if len(secret) == 64:
+                            kp = Keypair.from_bytes(secret)
+                        elif len(secret) == 32:
+                            kp = Keypair.from_seed(secret)
+                        else:
+                            raise ValueError(f"Invalid hex length: {len(secret)}")
+                    except Exception as hexe:
+                        raise ValueError("Invalid format. Provide Base58 string, JSON [bytes...], or Hex string.")
 
         address = str(kp.pubkey())
         from base58 import b58encode

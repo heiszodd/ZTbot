@@ -272,9 +272,27 @@ def setup_db():
         created_at TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS user_settings (
-        chat_id BIGINT PRIMARY KEY,
-        briefing_hour INT DEFAULT 7,
-        updated_at TIMESTAMP DEFAULT NOW()
+        chat_id               BIGINT PRIMARY KEY,
+        user_id               BIGINT DEFAULT 0,
+        perps_mode            VARCHAR(20) DEFAULT 'simple',
+        degen_mode            VARCHAR(20) DEFAULT 'simple',
+        sol_mode              VARCHAR(20) DEFAULT 'simple',
+        buy_preset_1          FLOAT DEFAULT 25.0,
+        buy_preset_2          FLOAT DEFAULT 50.0,
+        buy_preset_3          FLOAT DEFAULT 100.0,
+        buy_preset_4          FLOAT DEFAULT 250.0,
+        live_sl_pct           FLOAT DEFAULT 20.0,
+        live_trail_pct        FLOAT DEFAULT 10.0,
+        demo_sl_pct           FLOAT DEFAULT 20.0,
+        demo_trail_pct        FLOAT DEFAULT 10.0,
+        mev_protection        BOOLEAN DEFAULT TRUE,
+        instant_buy_enabled   BOOLEAN DEFAULT TRUE,
+        display_chart_style   VARCHAR(20) DEFAULT 'candlestick',
+        display_verbosity     VARCHAR(20) DEFAULT 'normal',
+        display_emoji_density VARCHAR(20) DEFAULT 'medium',
+        display_theme         VARCHAR(20) DEFAULT 'dark',
+        briefing_hour         INT DEFAULT 7,
+        updated_at            TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS weekly_reviews (
         id SERIAL PRIMARY KEY,
@@ -5010,30 +5028,6 @@ def save_solana_wallet(data: dict) -> None:
         conn.commit()
 
 
-def get_user_settings(chat_id: int) -> dict:
-    defaults = {
-        "degen_mode": "simple",
-        "perps_mode": "simple",
-        "sol_mode": "simple",
-        "buy_preset_1": 25.0,
-        "buy_preset_2": 50.0,
-        "buy_preset_3": 100.0,
-        "buy_preset_4": 250.0,
-        "instant_buy_threshold": 50.0,
-        "instant_buy_enabled": True,
-        "mev_protection": True,
-        "trenches_alerts": False,
-        "session_summary_time": "22:00",
-    }
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM user_settings WHERE chat_id=%s", (int(chat_id),))
-            row = cur.fetchone()
-            if not row:
-                cur.execute("INSERT INTO user_settings (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING", (int(chat_id),))
-                conn.commit()
-                return dict(defaults)
-            return {**defaults, **dict(row)}
 
 
 def update_user_settings(chat_id: int, fields: dict) -> None:
@@ -6244,30 +6238,77 @@ def save_risk_settings(section: str, data: dict) -> bool:
         return False
 
 
-def get_user_settings(chat_id: int | None = None) -> dict:
+def execute_demo_trade(section: str, pair: str, side: str, entry_price: float, size_usd: float, token_address: str = None) -> bool:
     try:
+        balance = get_demo_balance(section)
+        if balance < size_usd:
+            return False
+            
+        data = {
+            "section": section,
+            "pair": pair,
+            "direction": side.upper(),
+            "entry_price": entry_price,
+            "current_price": entry_price,
+            "size_usd": size_usd,
+            "risk_amount": size_usd,
+            "pnl": 0.0,
+            "status": "open",
+            "token_address": token_address
+        }
+        
+        tid = open_demo_trade(data)
+        if tid:
+            set_demo_balance(section, balance - size_usd)
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def get_user_settings(chat_id: int | None = None) -> dict:
+    defaults = {
+        "perps_mode": "simple",
+        "degen_mode": "simple",
+        "sol_mode": "simple",
+        "buy_preset_1": 25.0,
+        "buy_preset_2": 50.0,
+        "buy_preset_3": 100.0,
+        "buy_preset_4": 250.0,
+        "live_sl_pct": 20.0,
+        "live_trail_pct": 10.0,
+        "demo_sl_pct": 20.0,
+        "demo_trail_pct": 10.0,
+        "mev_protection": True,
+        "instant_buy_enabled": True,
+        "display_chart_style": "candlestick",
+        "display_verbosity": "normal",
+        "display_emoji_density": "medium",
+        "display_theme": "dark",
+        "briefing_hour": 7,
+    }
+    try:
+        cid = int(chat_id) if chat_id is not None else 0
         with get_conn() as conn:
             with conn.cursor() as cur:
-                if chat_id is None:
-                    cur.execute("SELECT * FROM user_settings WHERE user_id=0 LIMIT 1")
-                else:
-                    cur.execute("SELECT * FROM user_settings WHERE chat_id=%s LIMIT 1", (int(chat_id),))
+                cur.execute("SELECT * FROM user_settings WHERE chat_id=%s", (cid,))
                 row = cur.fetchone()
-                return dict(row) if row else {}
+                if not row and cid != 0:
+                    cur.execute("INSERT INTO user_settings (chat_id) VALUES (%s) ON CONFLICT DO NOTHING", (cid,))
+                    conn.commit()
+                    return defaults
+                return {**defaults, **dict(row or {})}
     except Exception:
-        return {}
+        return defaults
 
 
 def update_user_setting(key: str, value, chat_id: int | None = None) -> bool:
     try:
+        cid = int(chat_id) if chat_id is not None else 0
         with get_conn() as conn:
             with conn.cursor() as cur:
-                if chat_id is None:
-                    cur.execute("INSERT INTO user_settings (user_id) VALUES (0) ON CONFLICT DO NOTHING")
-                    cur.execute(f"UPDATE user_settings SET {key}=%s WHERE user_id=0", (value,))
-                else:
-                    cur.execute("INSERT INTO user_settings (chat_id) VALUES (%s) ON CONFLICT DO NOTHING", (int(chat_id),))
-                    cur.execute(f"UPDATE user_settings SET {key}=%s WHERE chat_id=%s", (value, int(chat_id)))
+                cur.execute("INSERT INTO user_settings (chat_id) VALUES (%s) ON CONFLICT DO NOTHING", (cid,))
+                cur.execute(f"UPDATE user_settings SET {key}=%s WHERE chat_id=%s", (value, cid))
             conn.commit()
         return True
     except Exception:
@@ -6342,12 +6383,65 @@ def count_active_prediction_models() -> int:
         return 0
 
 
+def save_tracked_wallet(wallet: dict) -> int:
+    """Convenience alias for add_tracked_wallet"""
+    return add_tracked_wallet(wallet)
+
+
+def add_to_solana_watchlist(address: str, symbol: str = "?") -> bool:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO solana_watchlist (token_address, symbol) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (address, symbol)
+                )
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def add_to_solana_blacklist(address: str) -> bool:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO solana_blacklist (token_address) VALUES (%s) ON CONFLICT DO NOTHING",
+                    (address,)
+                )
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def get_all_open_sol_positions() -> list:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM sol_positions WHERE status='open'")
+                return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+def get_sol_position(address: str) -> dict | None:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM sol_positions WHERE token_address=%s AND status='open' LIMIT 1", (address,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+    except Exception:
+        return None
+
 def get_hl_pnl_today() -> float:
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT COALESCE(SUM(closed_pnl),0) AS p FROM hl_trade_history WHERE DATE(timestamp)=CURRENT_DATE")
-                return float((cur.fetchone() or {}).get("p") or 0)
+                res = cur.fetchone()
+                return float(res["p"] if res else 0)
     except Exception:
         return 0.0
 
@@ -6357,6 +6451,8 @@ def get_sol_pnl_today() -> float:
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT COALESCE(SUM(realised_pnl),0) AS p FROM sol_positions WHERE DATE(closed_at)=CURRENT_DATE")
-                return float((cur.fetchone() or {}).get("p") or 0)
+                res = cur.fetchone()
+                return float(res["p"] if res else 0)
     except Exception:
         return 0.0
+
