@@ -15,7 +15,11 @@ async def _edit(query, text, kb):
 
 async def show_predictions_home(query, context):
     from security.key_manager import key_exists
-    poly_ok = key_exists("poly_hot_wallet")
+
+    try:
+        poly_ok = key_exists("poly_hot_wallet")
+    except Exception:
+        poly_ok = False
     await _edit(query, "🎯 *Predictions*", _kb([
         [_btn("🔍 Scanner", "predictions:scanner"), _btn("⭐ Watchlist", "predictions:watchlist")],
         [_btn("💼 Live Predictions" + (" ✅" if poly_ok else " 🔴"), "predictions:live")],
@@ -37,9 +41,18 @@ async def show_predictions_watchlist(query, context):
 
 async def show_predictions_live(query, context):
     from security.key_manager import key_exists
-    if not key_exists("poly_hot_wallet"):
+
+    try:
+        has_poly_wallet = key_exists("poly_hot_wallet")
+    except Exception:
+        has_poly_wallet = False
+
+    if not has_poly_wallet:
         return await _edit(query, "💼 *Live Predictions — Polymarket*\nConnect wallet to trade.", _kb([[_btn("🔑 Connect Polymarket", "poly:connect")], [_btn("← Predictions", "predictions")]]))
-    positions = db.get_open_poly_live_trades() or []
+    try:
+        positions = db.get_open_poly_live_trades() or []
+    except Exception:
+        positions = []
     await _edit(query, f"💼 *Live Predictions*\nOpen: {len(positions)}", _kb([
         [_btn("🔄 Refresh", "predictions:live:refresh"), _btn("📊 All", "predictions:live:positions")],
         [_btn("📜 History", "predictions:live:history")],

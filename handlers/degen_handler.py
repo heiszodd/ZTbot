@@ -15,7 +15,11 @@ async def _edit(query, text, kb):
 
 async def show_degen_home(query, context):
     from security.key_manager import key_exists
-    sol_ok = key_exists("sol_hot_wallet")
+
+    try:
+        sol_ok = key_exists("sol_hot_wallet")
+    except Exception:
+        sol_ok = False
     await _edit(query, "🔥 *Degen*", _kb([
         [_btn("🔍 Scanner", "degen:scanner"), _btn("🔬 Scan Contract", "degen:scan_contract")],
         [_btn("🧩 Models", "degen:models"), _btn("💼 Live Wallet" + (" ✅" if sol_ok else " 🔴"), "degen:live")],
@@ -41,7 +45,13 @@ async def show_degen_models(query, context):
 
 async def show_degen_live(query, context):
     from security.key_manager import key_exists
-    if not key_exists("sol_hot_wallet"):
+
+    try:
+        has_sol_wallet = key_exists("sol_hot_wallet")
+    except Exception:
+        has_sol_wallet = False
+
+    if not has_sol_wallet:
         await _edit(query, "💼 *Live Wallet — Solana*\nConnect wallet to trade.", _kb([[_btn("🔑 Connect Solana Wallet", "sol:connect")], [_btn("← Degen", "degen")]]))
         return
     await _edit(query, "💼 *Live Wallet*", _kb([

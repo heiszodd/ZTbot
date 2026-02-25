@@ -99,6 +99,15 @@ def list_stored_keys() -> list:
 
 
 def key_exists(key_name: str) -> bool:
-    import db
+    """
+    Check if a key is stored.
+    Returns False on ANY error —
+    never crashes a screen render.
+    """
+    try:
+        import db
 
-    return db.get_encrypted_key(key_name) is not None
+        result = db.get_encrypted_key(key_name)
+        return result is not None
+    except Exception:
+        return False
