@@ -1,12 +1,53 @@
-async def route_callback(update, context) -> None:
-    import logging
+import logging
 
-    log = logging.getLogger(__name__)
+
+async def route_callback(update, context) -> None:
     query = update.callback_query
     if not query:
         return
 
-    data = (query.data or "").strip().lower()
+    data = query.data or ""
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    try:
+        from security.auth import is_authorised
+        if not is_authorised(query.from_user.id):
+            return
+    except Exception:
+        pass
+
+    try:
+        await _route(query, data, update, context)
+    except Exception as e:
+        logging.getLogger(__name__).error(
+            "Router crash on '%s': %s",
+            data,
+            e,
+            exc_info=True,
+        )
+        try:
+            from telegram import InlineKeyboardMarkup
+            from telegram import InlineKeyboardButton
+            await query.message.edit_text(
+                f"❌ *Error*\n\n`{str(e)[:300]}`\n\nTap Home to continue.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🏠 Home", callback_data="home")
+                ]]),
+            )
+        except Exception:
+            pass
+
+
+async def _route(query, data, update, context):
+    """All routing logic here."""
+    log = logging.getLogger(__name__)
+
+    data = (data or "").strip().lower()
     aliases = {
         "start": "home",
         "main": "home",
@@ -26,25 +67,28 @@ async def route_callback(update, context) -> None:
         "nav:settings": "settings",
     }
     data = aliases.get(data, data)
-
-    from security.auth import is_authorised
-
     uid = query.from_user.id
-    if not is_authorised(uid):
-        await query.answer()
-        return
 
     try:
         from security.rate_limiter import check_command_rate
 
-        ok, reason = check_command_rate(uid)
+        ok, reason = check_command_rate(query.from_user.id)
         if not ok:
             await query.answer(reason, show_alert=True)
             return
     except Exception as e:
         log.error("rate limiter error: %s", e)
 
-    await query.answer()
+    from telegram import (
+        InlineKeyboardMarkup as IKM,
+        InlineKeyboardButton as IKB,
+    )
+
+    def _kb(rows):
+        return IKM(rows)
+
+    def _btn(label: str, cb: str):
+        return IKB(label, callback_data=cb)
 
     async def _edit(text: str, kb=None):
         try:
@@ -54,17 +98,6 @@ async def route_callback(update, context) -> None:
                 await query.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
             except Exception as e:
                 log.error("edit/reply failed: %s", e)
-
-    def _kb(rows):
-        from telegram import InlineKeyboardMarkup
-
-        return InlineKeyboardMarkup(rows)
-
-    def _btn(label: str, cb: str):
-        from telegram import InlineKeyboardButton
-
-        return InlineKeyboardButton(label, callback_data=cb)
-
     if data == "home":
         try:
             from handlers.nav import show_home

@@ -1488,3 +1488,36 @@ ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_tp3_pct FLOAT DEFAULT 20
 ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_tp3_sell_pct FLOAT DEFAULT 50;
 ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_trail_pct FLOAT DEFAULT 20;
 ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS demo_trail_auto BOOLEAN DEFAULT FALSE;
+
+-- Emergency stop state
+CREATE TABLE IF NOT EXISTS emergency_stop (
+    id       SERIAL PRIMARY KEY,
+    halted   BOOLEAN DEFAULT FALSE,
+    reason   TEXT,
+    set_at   TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO emergency_stop (halted)
+SELECT FALSE WHERE NOT EXISTS (
+    SELECT 1 FROM emergency_stop
+);
+
+-- Demo trading balance
+CREATE TABLE IF NOT EXISTS demo_balance (
+    id         SERIAL PRIMARY KEY,
+    section    VARCHAR(20) DEFAULT 'perps',
+    balance    FLOAT DEFAULT 10000,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO demo_balance (section, balance)
+SELECT 'perps', 10000 WHERE NOT EXISTS (
+    SELECT 1 FROM demo_balance
+    WHERE section = 'perps'
+);
+
+INSERT INTO demo_balance (section, balance)
+SELECT 'degen', 10000 WHERE NOT EXISTS (
+    SELECT 1 FROM demo_balance
+    WHERE section = 'degen'
+);

@@ -5390,18 +5390,25 @@ def save_encrypted_key(data: dict) -> None:
 
 
 def get_encrypted_key(key_name: str) -> dict | None:
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT key_name, encrypted, label, stored_at, last_used FROM encrypted_keys WHERE key_name=%s",
-                (key_name,),
-            )
-            row = cur.fetchone()
-            if row:
-                cur.execute("UPDATE encrypted_keys SET last_used=NOW() WHERE key_name=%s", (key_name,))
-                conn.commit()
-                return dict(row)
-        conn.commit()
+    """
+    Fetch encrypted key record.
+    Returns None if not found or on any error.
+    """
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT key_name, encrypted, label, stored_at, last_used FROM encrypted_keys WHERE key_name=%s",
+                    (key_name,),
+                )
+                row = cur.fetchone()
+                if row:
+                    cur.execute("UPDATE encrypted_keys SET last_used=NOW() WHERE key_name=%s", (key_name,))
+                    conn.commit()
+                    return dict(row)
+            conn.commit()
+    except Exception:
+        return None
     return None
 
 

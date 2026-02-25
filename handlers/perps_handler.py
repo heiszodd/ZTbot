@@ -15,7 +15,11 @@ async def _edit(query, text, kb):
 
 async def show_perps_home(query, context):
     from security.key_manager import key_exists
-    hl_ok = key_exists("hl_api_wallet")
+
+    try:
+        hl_ok = key_exists("hl_api_wallet")
+    except Exception:
+        hl_ok = False
     await _edit(query, "📈 *Perps*", _kb([
         [_btn("🔍 Scanner", "perps:scanner"), _btn("🧩 Models", "perps:models")],
         [_btn("📓 Journal", "perps:journal"), _btn("🔷 Live Account" + (" ✅" if hl_ok else " 🔴"), "perps:live")],
@@ -43,11 +47,24 @@ async def show_perps_journal(query, context):
 
 async def show_perps_live(query, context):
     from security.key_manager import key_exists
-    if not key_exists("hl_api_wallet"):
+
+    try:
+        has_hl_wallet = key_exists("hl_api_wallet")
+    except Exception:
+        has_hl_wallet = False
+
+    if not has_hl_wallet:
         await _edit(query, "🔷 *Live Account — Hyperliquid*\nConnect wallet to trade.", _kb([[_btn("🔑 Connect Hyperliquid", "hl:connect")], [_btn("← Perps", "perps")]]))
         return
-    address = db.get_hl_address() or ""
-    positions = db.get_hl_positions(address) if address else []
+    try:
+        address = db.get_hl_address() or ""
+    except Exception:
+        address = ""
+
+    try:
+        positions = db.get_hl_positions(address) if address else []
+    except Exception:
+        positions = []
     await _edit(query, f"🔷 *Hyperliquid*\nPositions: {len(positions)}", _kb([
         [_btn("🔄 Refresh", "hl:refresh"), _btn("📊 Positions", "hl:positions")],
         [_btn("📋 Orders", "hl:orders"), _btn("📈 Performance", "hl:performance")],
@@ -83,8 +100,15 @@ async def show_perps_others(query, context):
 
 
 async def show_hl_positions(query, context):
-    address = db.get_hl_address() or ""
-    positions = db.get_hl_positions(address) if address else []
+    try:
+        address = db.get_hl_address() or ""
+    except Exception:
+        address = ""
+
+    try:
+        positions = db.get_hl_positions(address) if address else []
+    except Exception:
+        positions = []
     rows, text = [], "📊 *Open Positions*\n"
     for p in positions:
         coin = p.get("coin", "?")
