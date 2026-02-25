@@ -4,6 +4,7 @@ import time as time_module
 from datetime import datetime, timedelta, timezone
 
 import httpx
+import pandas as pd
 
 from config import BINANCE_BASE_URL, CRYPTOPANIC_TOKEN
 
@@ -72,7 +73,7 @@ def _confirmed(candles: list) -> list:
     return candles[:-1] if len(candles) > 1 else candles
 
 
-async def get_candles(pair: str, timeframe: str, limit: int = 100, cache: dict = None) -> list:
+async def get_candles(pair: str, timeframe: str, limit: int = 100, cache: dict = None, as_df: bool = False) -> list | pd.DataFrame:
     if cache is None:
         cache = {}
 
@@ -138,6 +139,16 @@ async def get_candles(pair: str, timeframe: str, limit: int = 100, cache: dict =
     _GLOBAL_CACHE[cache_key] = {"ts": now, "data": candles}
     cache[cache_key] = candles
     log.debug("Binance %s %s: %s candles fetched", symbol, interval, len(candles))
+
+    if as_df:
+        df = pd.DataFrame(candles)
+        if not df.empty:
+            # ICT engine expects 'timestamp' instead of 'time'
+            df = df.rename(columns={"time": "timestamp"})
+            # Convert timestamp to ms if necessary or just ensure it's numeric/datetime
+            # ICT validate_ohlcv handles conversion if it's already a timestamp or numeric
+        return df
+
     return candles
 
 

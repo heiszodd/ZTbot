@@ -390,6 +390,7 @@ async def show_perps_model_create(query, context):
         [IKB("📚 ETH 1H Scalp", callback_data="perps:models:preset:eth1h")],
         [IKB("📚 SOL 1H Momentum", callback_data="perps:models:preset:sol1h")],
         [IKB("📚 SOL 15m Sniper", callback_data="perps:models:preset:sol15m")],
+        [IKB("💎 ICT Sniper (Master)", callback_data="perps:models:preset:ict_sniper")],
         [IKB("← Models", callback_data="perps:models")],
     ])
     await _edit(query, text, kb)
@@ -402,48 +403,53 @@ async def handle_perps_model_preset(query, context, preset: str):
     presets = {
         "btc4h": {
             "name": "BTC 4H Trend", "pair": "BTCUSDT", "timeframe": "4h", "active": True,
-            "description": "BTC trend following on 4H. Looks for structure, OB, FVG confluence.",
-            "phase1_rules": [{"rule_id": "rule_htf_bullish", "weight": 1}, {"rule_id": "rule_bos_bullish", "weight": 1}],
-            "phase2_rules": [{"rule_id": "rule_fvg_bullish", "weight": 1}, {"rule_id": "rule_bullish_ob_present", "weight": 1}],
-            "phase3_rules": [{"rule_id": "rule_ote_zone", "weight": 1}],
-            "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
-            "min_quality_score": 60,
+            "description": "HTF Trend following. HTF BOS + OB + FVG Confluence.",
+            "features": [
+                {"type": "BOS", "tf": "4h", "direction": "bullish", "weight": 2.0},
+                {"type": "OrderBlock", "tf": "1h", "direction": "bullish", "weight": 1.5},
+                {"type": "FVG", "tf": "15m", "direction": "bullish", "weight": 1.0}
+            ],
+            "min_score": 3.0,
         },
         "btc1h": {
             "name": "BTC 1H Scalp", "pair": "BTCUSDT", "timeframe": "1h", "active": True,
-            "description": "BTC scalp on 1H. Session overlaps, FVG entries.",
-            "phase1_rules": [{"rule_id": "rule_htf_bullish", "weight": 1}],
-            "phase2_rules": [{"rule_id": "rule_fvg_bullish", "weight": 1}, {"rule_id": "rule_liquidity_sweep", "weight": 1}],
-            "phase3_rules": [{"rule_id": "rule_session_overlap", "weight": 1}],
-            "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
-            "min_quality_score": 55,
+            "description": "BTC scalp. Liquidity sweep + FVG CE trigger.",
+            "features": [
+                {"type": "LiquiditySweep", "tf": "1h", "direction": "bullish", "weight": 2.0},
+                {"type": "FVG", "tf": "15m", "entry": "CE", "direction": "bullish", "weight": 1.5},
+                {"type": "MSS", "tf": "5m", "direction": "bullish", "weight": 1.0}
+            ],
+            "min_score": 3.0,
         },
         "eth1h": {
             "name": "ETH 1H Scalp", "pair": "ETHUSDT", "timeframe": "1h", "active": True,
-            "description": "ETH scalp on 1H. Session-based entries.",
-            "phase1_rules": [{"rule_id": "rule_htf_bullish", "weight": 1}],
-            "phase2_rules": [{"rule_id": "rule_fvg_bullish", "weight": 1}],
-            "phase3_rules": [{"rule_id": "rule_session_overlap", "weight": 1}],
-            "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
-            "min_quality_score": 55,
-        },
-        "sol1h": {
-            "name": "SOL 1H Momentum", "pair": "SOLUSDT", "timeframe": "1h", "active": True,
-            "description": "SOL momentum on 1H. High volatility entries.",
-            "phase1_rules": [{"rule_id": "rule_bos_bullish", "weight": 1}],
-            "phase2_rules": [{"rule_id": "rule_fvg_bullish", "weight": 1}],
-            "phase3_rules": [{"rule_id": "rule_ote_zone", "weight": 1}],
-            "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
-            "min_quality_score": 55,
+            "description": "ETH session scalp. MSS + Order Block mitigation.",
+            "features": [
+                {"type": "MSS", "tf": "1h", "direction": "bullish", "weight": 2.0},
+                {"type": "OrderBlock", "tf": "15m", "direction": "bullish", "weight": 1.5},
+                {"type": "FVG", "tf": "5m", "direction": "bullish", "weight": 1.0}
+            ],
+            "min_score": 3.0,
         },
         "sol15m": {
             "name": "SOL 15m Sniper", "pair": "SOLUSDT", "timeframe": "15m", "active": True,
-            "description": "SOL aggressive scalp on 15m. Quick entries on displacement.",
-            "phase1_rules": [{"rule_id": "rule_bos_bullish", "weight": 1}],
-            "phase2_rules": [{"rule_id": "rule_liquidity_sweep", "weight": 1}],
-            "phase3_rules": [{"rule_id": "rule_fvg_bullish", "weight": 1}, {"rule_id": "rule_displacement", "weight": 1}],
-            "phase4_rules": [{"rule_id": "rule_candle_confirmation", "weight": 1}],
-            "min_quality_score": 50,
+            "description": "Aggressive ICT setup. BOS + Sweep + FVG Confluence.",
+            "features": [
+                {"type": "BOS", "tf": "1h", "direction": "bullish", "weight": 2.0},
+                {"type": "LiquiditySweep", "tf": "15m", "direction": "bullish", "weight": 1.5},
+                {"type": "FVG", "tf": "5m", "entry": "CE", "direction": "bullish", "weight": 1.5}
+            ],
+            "min_score": 4.0,
+        },
+        "ict_sniper": {
+            "name": "ICT Master Sniper", "pair": "BTCUSDT", "timeframe": "15m", "active": True,
+            "description": "The ultimate BOS + Sweep + FVG Master Template.",
+            "features": [
+                {"type": "BOS", "tf": "4h", "direction": "bullish", "weight": 2.5},
+                {"type": "LiquiditySweep", "tf": "1h", "direction": "bullish", "weight": 2.0},
+                {"type": "FVG", "tf": "15m", "entry": "CE", "direction": "bullish", "weight": 1.5}
+            ],
+            "min_score": 5.0,
         },
     }
 
@@ -462,16 +468,14 @@ async def handle_perps_model_preset(query, context, preset: str):
                             """
                             INSERT INTO {} (
                                 name, pair, timeframe, active, status,
-                                description, phase1_rules, phase2_rules,
-                                phase3_rules, phase4_rules, min_quality_score
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s)
+                                description, features, min_score
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
                             RETURNING id
                             """
                         ).format(sql.Identifier(table)),
                         (
                             p["name"], p["pair"], p["timeframe"], bool(p["active"]), "active",
-                            p["description"], json.dumps(p["phase1_rules"]), json.dumps(p["phase2_rules"]),
-                            json.dumps(p["phase3_rules"]), json.dumps(p["phase4_rules"]), p["min_quality_score"],
+                            p["description"], json.dumps(p["features"]), p.get("min_score", 3.0),
                         ),
                     )
                     row = cur.fetchone()

@@ -5,8 +5,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 import db
 from config import CHAT_ID, SUPPORTED_PAIRS
-from engine.rules import calc_atr, evaluate_rule, get_candles
 import prices as px
+from engine.ict_engine import ConfluenceEngine, FeatureLayer, ModelFactory, create_model as create_ict_model
+from engine.rules import calc_atr, evaluate_rule, get_candles
 
 log = logging.getLogger(__name__)
 
@@ -158,6 +159,11 @@ async def _run_phase_engine_inner(context):
 
 
 async def evaluate_model_phases(context, model, pair, direction, rules, candle_cache):
+    # Support for new ICT Engine models
+    if model.get("features") or "features" in model:
+        await evaluate_ict_model_confluence(context, model, pair, direction, candle_cache)
+        return
+
     phase_tfs = model.get("phase_timeframes", {"1": "4h", "2": "1h", "3": "15m", "4": "5m"})
     existing = db.get_setup_phase(model["id"], pair, direction)
     if existing is None:
@@ -191,6 +197,61 @@ async def evaluate_model_phases(context, model, pair, direction, rules, candle_c
     elif status == "phase4":
         result = await evaluate_phase(4, rules, pair, phase_tfs.get("4", "5m"), candle_cache, direction)
         await _send_phase4_result(context, existing, result, model, pair)
+
+
+async def evaluate_ict_model_confluence(context, model: dict, pair: str, direction: str, candle_cache: dict):
+    """Bridge to the new ICT Engine logic."""
+    try:
+        ict_model = ModelFactory.create_model(model)
+        
+        # Determine unique timeframes to fetch
+        timeframes = list(set([f.tf for f in ict_model.features]))
+        event_map = {}
+        layer = FeatureLayer()
+        
+        latest_price = 0.0
+        for tf in timeframes:
+            # Fetch sufficient lookback for swing detection
+            candles_df = await get_candles(pair, tf, 200, candle_cache, as_df=True)
+            if candles_df is None or candles_df.empty:
+                continue
+            
+            latest_price = float(candles_df["close"].iloc[-1])
+            _, struct = layer.detect_structure_events(candles_df)
+            sweeps = layer.detect_liquidity_sweeps(candles_df)
+            fvgs = layer.detect_fvg(candles_df)
+            event_map[tf] = struct + sweeps + fvgs
+
+        if not event_map:
+            return
+
+        engine = ConfluenceEngine()
+        res = engine.evaluate(ict_model, event_map, price=latest_price)
+        
+        if res["passed"] and res["direction"] == direction:
+            log.info("ICT Model '%s' PASSED for %s %s", model.get("name"), pair, direction)
+            # Create a virtual phase result for compatibility with alert system
+            result = {
+                "phase": 4, # Jump to alert phase
+                "passed": True,
+                "score": res["score"],
+                "max_score": sum(f.weight for f in ict_model.features),
+                "score_pct": (res["score"] / sum(f.weight for f in ict_model.features)) * 100,
+                "passed_rules": res["triggered_features"],
+                "failed_rules": [],
+                "direction": res["direction"],
+                "confidence": res["confidence_score"]
+            }
+            
+            existing = db.get_setup_phase(model["id"], pair, direction)
+            if existing is None:
+                sid = db.save_setup_phase({"model_id": model["id"], "model_name": model["name"], "pair": pair, "direction": direction, "overall_status": "phase1"})
+                existing = db.get_setup_phase(model["id"], pair, direction)
+            
+            await _fire_alert(context, existing, result, model, pair)
+            
+    except Exception as e:
+        log.error("Error in ICT confluence evaluation for %s: %s", model.get('name'), e, exc_info=True)
 
 
 def _is_expired(existing: dict, phase_num: int) -> bool:

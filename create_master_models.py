@@ -59,6 +59,7 @@ def create_model(config: dict[str, Any]) -> dict[str, Any]:
         "bias": str(config.get("bias", "Both")),
         "status": str(config.get("status", "inactive")),
         "rules": rules,
+        "features": config.get("features", []),
         "phase_timeframes": config.get("phase_timeframes", {"1": "4h", "2": "1h", "3": "15m", "4": "5m"}),
         "tier_a_threshold": max_score * 0.8,
         "tier_b_threshold": max_score * 0.65,
