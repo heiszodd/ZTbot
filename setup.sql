@@ -1455,7 +1455,7 @@ CREATE TABLE IF NOT EXISTS prediction_models (
     max_size_usd         FLOAT DEFAULT 100,
     mandatory_checks     JSONB DEFAULT '[]',
     weighted_checks      JSONB DEFAULT '[]',
-    min_passing_score    FLOAT DEFAULT 60,
+    min_passing_score    FLOAT DEFAULT 3,
     sentiment_filter     VARCHAR(20) DEFAULT 'any',
     auto_trade           BOOLEAN DEFAULT FALSE,
     auto_trade_threshold FLOAT DEFAULT 75,

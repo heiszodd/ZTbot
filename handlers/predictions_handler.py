@@ -106,12 +106,12 @@ async def show_predictions_models(query, context):
         yes_mn = float(m.get("min_yes_pct", 0))
         yes_mx = float(m.get("max_yes_pct", 100))
         active = m.get("active", False)
-        score = float(m.get("min_passing_score", 60))
+        score = float(m.get("min_passing_score", 3))
         status = "✅" if active else "⭕"
         toggle = "Deactivate" if active else "Activate"
         toggle_cb = f"predictions:models:off:{mid}" if active else f"predictions:models:on:{mid}"
         pos_e = "YES" if pos == "YES" else "NO" if pos == "NO" else "YES/NO"
-        text += f"{status} *{name}*\n   {pos_e}  YES {yes_mn:.0f}%-{yes_mx:.0f}%  Score {score:.0f}\n"
+        text += f"{status} *{name}*\n   {pos_e}  YES {yes_mn:.0f}%-{yes_mx:.0f}%  Min score {score:.1f}pts\n"
         rows.append([IKB(f"📋 {name[:18]}", callback_data=f"predictions:models:view:{mid}"), IKB(toggle, callback_data=toggle_cb)])
 
     rows.append([IKB("➕ Create Model", callback_data="predictions:models:create"), IKB("📚 Presets", callback_data="predictions:models:presets")])
@@ -142,7 +142,7 @@ async def show_prediction_model_detail(query, context, mid: int):
     days_mx = model.get("max_days_to_resolve", 30)
     size_mn = model.get("min_size_usd", 10)
     size_mx = model.get("max_size_usd", 100)
-    score = model.get("min_passing_score", 60)
+    score = float(model.get("min_passing_score", 3) or 3)
     auto = model.get("auto_trade", False)
     sigs = model.get("total_signals", 0)
     wr = model.get("win_rate", 0)
@@ -174,7 +174,7 @@ async def show_prediction_model_detail(query, context, mid: int):
         f"  Min volume: {fmt_vol(vol)}/24h\n"
         f"  Resolves in: {days_mn}—{days_mx} days\n"
         f"  Trade size: ${size_mn}—${size_mx}\n"
-        f"  Min score: {score:.0f}/100\n\n"
+        f"  Min score: {score:.1f} confluence points\n\n"
         f"*Stats:*\n"
         f"  Signals: {sigs}  Win rate: {wr:.0f}%\n"
         f"  Auto-trade: {'🤖 ON' if auto else 'OFF'}\n"
@@ -217,10 +217,82 @@ async def show_prediction_model_presets(query, context):
 
 async def handle_prediction_model_preset(query, context, preset: str):
     presets = {
-        "mean": {"name": "Mean Reversion", "description": "Uncertain markets near 50%.", "active": True, "position_type": "both", "min_yes_pct": 40, "max_yes_pct": 60, "min_volume_24h": 50000, "min_days_to_resolve": 1, "max_days_to_resolve": 14, "min_size_usd": 10, "max_size_usd": 50, "min_passing_score": 60},
-        "fade": {"name": "Fade the Crowd", "description": "Buy NO on overpriced consensus.", "active": True, "position_type": "NO", "min_yes_pct": 75, "max_yes_pct": 95, "min_volume_24h": 100000, "min_days_to_resolve": 1, "max_days_to_resolve": 7, "min_size_usd": 10, "max_size_usd": 100, "min_passing_score": 65},
-        "momentum": {"name": "Momentum Rider", "description": "Buy YES on rising probability.", "active": True, "position_type": "YES", "min_yes_pct": 20, "max_yes_pct": 55, "min_volume_24h": 75000, "min_days_to_resolve": 1, "max_days_to_resolve": 7, "min_size_usd": 25, "max_size_usd": 100, "min_passing_score": 65},
-        "crypto": {"name": "Crypto Correlation", "description": "Crypto markets aligned with perps phase engine signals.", "active": True, "position_type": "both", "min_yes_pct": 30, "max_yes_pct": 70, "min_volume_24h": 25000, "min_days_to_resolve": 1, "max_days_to_resolve": 30, "min_size_usd": 10, "max_size_usd": 75, "min_passing_score": 60},
+        "mean": {
+            "name": "Mean Reversion",
+            "description": "Uncertain markets near 50%.",
+            "active": True,
+            "position_type": "both",
+            "min_yes_pct": 40,
+            "max_yes_pct": 60,
+            "min_volume_24h": 50000,
+            "min_days_to_resolve": 1,
+            "max_days_to_resolve": 14,
+            "min_size_usd": 10,
+            "max_size_usd": 50,
+            "min_passing_score": 1.8,
+            "weighted_checks": [
+                {"check": "CHoCH", "tf": "1h", "weight": 1.0},
+                {"check": "LiquiditySweep", "tf": "15m", "weight": 1.0},
+                {"check": "FVG", "tf": "5m", "weight": 1.0},
+            ],
+        },
+        "fade": {
+            "name": "Fade the Crowd",
+            "description": "Buy NO on overpriced consensus.",
+            "active": True,
+            "position_type": "NO",
+            "min_yes_pct": 75,
+            "max_yes_pct": 95,
+            "min_volume_24h": 100000,
+            "min_days_to_resolve": 1,
+            "max_days_to_resolve": 7,
+            "min_size_usd": 10,
+            "max_size_usd": 100,
+            "min_passing_score": 2.2,
+            "weighted_checks": [
+                {"check": "LiquiditySweep", "tf": "15m", "weight": 1.5},
+                {"check": "CHoCH", "tf": "15m", "weight": 1.0},
+                {"check": "FVG", "tf": "5m", "weight": 1.0},
+            ],
+        },
+        "momentum": {
+            "name": "Momentum Rider",
+            "description": "Buy YES on rising probability.",
+            "active": True,
+            "position_type": "YES",
+            "min_yes_pct": 20,
+            "max_yes_pct": 55,
+            "min_volume_24h": 75000,
+            "min_days_to_resolve": 1,
+            "max_days_to_resolve": 7,
+            "min_size_usd": 25,
+            "max_size_usd": 100,
+            "min_passing_score": 2.3,
+            "weighted_checks": [
+                {"check": "BOS", "tf": "4h", "weight": 1.5},
+                {"check": "FVG", "tf": "15m", "weight": 1.0},
+                {"check": "FVG", "tf": "5m", "weight": 1.0},
+            ],
+        },
+        "crypto": {
+            "name": "Crypto Correlation",
+            "description": "Crypto markets aligned with perps phase engine signals.",
+            "active": True,
+            "position_type": "both",
+            "min_yes_pct": 30,
+            "max_yes_pct": 70,
+            "min_volume_24h": 25000,
+            "min_days_to_resolve": 1,
+            "max_days_to_resolve": 30,
+            "min_size_usd": 10,
+            "max_size_usd": 75,
+            "min_passing_score": 2.0,
+            "weighted_checks": [
+                {"check": "BOS", "tf": "4h", "weight": 1.0},
+                {"check": "MSS", "tf": "1h", "weight": 1.0},
+                {"check": "FVG", "tf": "15m", "weight": 1.0},
+            ],
+        },
     }
 
     p = presets.get(preset)

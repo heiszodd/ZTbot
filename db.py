@@ -4984,7 +4984,7 @@ def save_prediction_model(data: dict) -> int:
                     int(data.get("min_days_to_resolve") or 1), int(data.get("max_days_to_resolve") or 30),
                     float(data.get("min_size_usd") or 10), float(data.get("max_size_usd") or 100),
                     json.dumps(data.get("mandatory_checks") or []), json.dumps(data.get("weighted_checks") or []),
-                    float(data.get("min_passing_score") or 60), data.get("sentiment_filter", "any"),
+                    float(data.get("min_passing_score") or 3), data.get("sentiment_filter", "any"),
                     bool(data.get("auto_trade", False)), float(data.get("auto_trade_threshold") or 75),
                 ),
             )
