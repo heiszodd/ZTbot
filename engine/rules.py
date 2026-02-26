@@ -544,89 +544,6 @@ def rule_volume_spike(candles: list, **kwargs) -> bool:
         return candles[-1]["volume"] > avg * 2
     except Exception: return False
 
-# Rule Registry
-RULE_REGISTRY = {
-    "htf_bullish": wrapper_htf_bull,
-    "htf_bearish": wrapper_htf_bear,
-    "ltf_bullish": rule_ltf_bullish_structure,
-    "ltf_bearish": rule_ltf_bearish_structure,
-    "ob_bullish": rule_bullish_ob_present,
-    "ob_bearish": rule_bearish_ob_present,
-    "ob_respected": rule_ob_respected,
-    "fvg_bullish": rule_bullish_fvg,
-    "fvg_bearish": rule_bearish_fvg,
-    "mss_bullish": rule_mss_bullish,
-    "mss_bearish": rule_mss_bearish,
-    "bos_bullish": rule_bos_bullish,
-    "bos_bearish": rule_bos_bearish,
-    "liquidity_swept_bull": rule_liquidity_swept_bull,
-    "liquidity_swept_bear": rule_liquidity_swept_bear,
-    "pin_bar_bull": rule_pin_bar_bull,
-    "pin_bar_bear": rule_pin_bar_bear,
-    "engulfing_bull": rule_bullish_engulfing,
-    "engulfing_bear": rule_bearish_engulfing,
-    "volume_spike": rule_volume_spike,
-    "choch_bullish": rule_choch_bullish,
-    "choch_bearish": rule_choch_bearish,
-    "breaker_bullish": rule_breaker_block,
-    "breaker_bearish": rule_breaker_block,
-    
-    # Direction-agnostic aliases (resolved in evaluate_rule)
-    "bos": "bos",
-    "mss": "mss",
-    "choch": "choch",
-    "fvg": "fvg",
-    "ifvg": "fvg",
-    "order_block": "ob",
-    "ob": "ob",
-    "liquidity_sweep": "liquidity_swept",
-    "breaker": "breaker",
-}
-
-async def evaluate_rule(rule: dict, pair: str, timeframe: str, direction: str, cache: dict) -> bool:
-    rule = rule or {}
-    raw_id = str(rule.get("rule_id") or rule.get("tag") or rule.get("function") or rule.get("id") or "").lower()
-    if not raw_id:
-        return False
-        
-    # Resolve aliases and direction
-    is_bull = "bull" in direction.lower() or direction.lower() in {"long", "buy"}
-    suffix = "_bullish" if is_bull else "_bearish"
-    
-    fn_key = raw_id
-    if fn_key in RULE_REGISTRY:
-        val = RULE_REGISTRY[fn_key]
-        if isinstance(val, str): # It's an alias like "bos" -> "bos_bullish"
-            fn_key = f"{val}{suffix}"
-    
-    # Final check if key exists
-    if fn_key not in RULE_REGISTRY:
-        # One last try: append suffix if not present
-        if not fn_key.endswith("_bullish") and not fn_key.endswith("_bearish"):
-            if f"{fn_key}{suffix}" in RULE_REGISTRY:
-                fn_key = f"{fn_key}{suffix}"
-        
-    if fn_key not in RULE_REGISTRY:
-        log.warning("Rule not found: '%s' (resolved from '%s') - returning False", fn_key, raw_id)
-        return False
-        
-    fn = RULE_REGISTRY[fn_key]
-    if isinstance(fn, str): # Nested alias? shouldn't happen but safe-guard
-        fn = RULE_REGISTRY.get(f"{fn}{suffix}")
-        if not fn: return False
-
-    candles = await get_candles(pair, timeframe, 150, cache)
-    if not candles:
-        return False
-
-    try:
-        kwargs = {"pair": pair, "tf": timeframe, "direction": direction, "cache": cache}
-        if asyncio.iscoroutinefunction(fn):
-            return await fn(candles, **kwargs)
-        return bool(fn(candles, **kwargs))
-    except Exception as e:
-        log.error("Rule evaluation failed for '%s': %s", fn_key, e)
-        return False
 
 async def rule_htf_ltf_aligned_bull(pair, tf, direction, cache):
     h = await get_candles(pair, get_htf(tf), 80, cache)
@@ -689,8 +606,7 @@ async def rule_stop_hunt(pair, tf, direction, cache):
     return upper_wick > body * 2.5 and upper_wick > lower_wick * 2 and nxt["close"] < nxt["open"]
 
 
-async def rule_choch_bullish(pair, timeframe, direction, cache) -> bool:
-    candles = await get_candles(pair, timeframe, 60, cache)
+async def rule_choch_bullish(candles: list, **kwargs) -> bool:
     confirmed = _confirmed(candles)
     if len(confirmed) < 30:
         return False
@@ -713,8 +629,7 @@ async def rule_choch_bullish(pair, timeframe, direction, cache) -> bool:
     return prior_bearish and higher_lows and structure_break
 
 
-async def rule_choch_bearish(pair, timeframe, direction, cache) -> bool:
-    candles = await get_candles(pair, timeframe, 60, cache)
+async def rule_choch_bearish(candles: list, **kwargs) -> bool:
     confirmed = _confirmed(candles)
     if len(confirmed) < 30:
         return False
@@ -732,9 +647,9 @@ async def rule_choch_bearish(pair, timeframe, direction, cache) -> bool:
         return False
     first_half_avg = sum(mid_highs[:split]) / split
     second_half_avg = sum(mid_highs[split:]) / (len(mid_highs) - split)
-    lower_highs = second_half_avg < first_half_avg
+    higher_highs = second_half_avg < first_half_avg
     structure_break = min(c["close"] for c in recent) < min(c["low"] for c in early)
-    return prior_bullish and lower_highs and structure_break
+    return prior_bullish and higher_highs and structure_break
 
 
 async def rule_session_london(pair, tf, direction, cache):
@@ -963,15 +878,77 @@ async def rule_lower_low_confirmation(pair, tf, direction, cache):
     return await rule_bos_bearish(pair, tf, direction, cache)
 
 
+# Rule Registry
+RULE_REGISTRY = {
+    "htf_bullish": wrapper_htf_bull,
+    "htf_bearish": wrapper_htf_bear,
+    "ltf_bullish": rule_ltf_bullish_structure,
+    "ltf_bearish": rule_ltf_bearish_structure,
+    "ob_bullish": rule_bullish_ob_present,
+    "ob_bearish": rule_bearish_ob_present,
+    "ob_respected": rule_ob_respected,
+    "fvg_bullish": rule_bullish_fvg,
+    "fvg_bearish": rule_bearish_fvg,
+    "mss_bullish": rule_mss_bullish,
+    "mss_bearish": rule_mss_bearish,
+    "bos_bullish": rule_bos_bullish,
+    "bos_bearish": rule_bos_bearish,
+    "liquidity_swept_bull": rule_liquidity_swept_bull,
+    "liquidity_swept_bear": rule_liquidity_swept_bear,
+    "pin_bar_bull": rule_pin_bar_bull,
+    "pin_bar_bear": rule_pin_bar_bear,
+    "engulfing_bull": rule_bullish_engulfing,
+    "engulfing_bear": rule_bearish_engulfing,
+    "volume_spike": rule_volume_spike,
+    "choch_bullish": rule_choch_bullish,
+    "choch_bearish": rule_choch_bearish,
+    "breaker_bullish": rule_breaker_block,
+    "breaker_bearish": rule_breaker_block,
+    
+    # Direction-agnostic aliases (resolved in evaluate_rule)
+    "bos": "bos",
+    "mss": "mss",
+    "choch": "choch",
+    "fvg": "fvg",
+    "ifvg": "fvg",
+    "order_block": "ob",
+    "ob": "ob",
+    "liquidity_sweep": "liquidity_swept",
+    "breaker": "breaker",
+}
+
 async def evaluate_rule(rule: dict, pair: str, timeframe: str, direction: str, cache: dict) -> bool:
     rule = rule or {}
-    rule_id = str(rule.get("rule_id") or rule.get("tag") or rule.get("function") or rule.get("id") or "").lower()
-    
-    if rule_id not in RULE_REGISTRY:
-        log.warning("Rule not found: '%s' - returning False", rule_id)
+    raw_id = str(rule.get("rule_id") or rule.get("tag") or rule.get("function") or rule.get("id") or "").lower()
+    if not raw_id:
         return False
         
-    fn = RULE_REGISTRY[rule_id]
+    # Resolve aliases and direction
+    is_bull = "bull" in direction.lower() or direction.lower() in {"long", "buy"}
+    suffix = "_bullish" if is_bull else "_bearish"
+    
+    fn_key = raw_id
+    if fn_key in RULE_REGISTRY:
+        val = RULE_REGISTRY[fn_key]
+        if isinstance(val, str): # It's an alias like "bos" -> "bos_bullish"
+            fn_key = f"{val}{suffix}"
+    
+    # Final check if key exists
+    if fn_key not in RULE_REGISTRY:
+        # One last try: append suffix if not present
+        if not fn_key.endswith("_bullish") and not fn_key.endswith("_bearish"):
+            if f"{fn_key}{suffix}" in RULE_REGISTRY:
+                fn_key = f"{fn_key}{suffix}"
+        
+    if fn_key not in RULE_REGISTRY:
+        log.warning("Rule not found: '%s' (resolved from '%s') - returning False", fn_key, raw_id)
+        return False
+        
+    fn = RULE_REGISTRY[fn_key]
+    if isinstance(fn, str): # Nested alias? shouldn't happen but safe-guard
+        fn = RULE_REGISTRY.get(f"{fn}{suffix}")
+        if not fn: return False
+
     candles = await get_candles(pair, timeframe, 150, cache)
     if not candles:
         return False
@@ -982,5 +959,5 @@ async def evaluate_rule(rule: dict, pair: str, timeframe: str, direction: str, c
             return await fn(candles, **kwargs)
         return bool(fn(candles, **kwargs))
     except Exception as e:
-        log.error("Rule evaluation failed for '%s': %s", rule_id, e)
+        log.error("Rule evaluation failed for '%s': %s", fn_key, e)
         return False
